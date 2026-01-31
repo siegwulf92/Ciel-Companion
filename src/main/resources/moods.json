@@ -1,0 +1,68 @@
+{
+  "emotions": {
+    "Focused": {
+      "baseColor": "255, 204, 0",
+      "animation": "GENTLE_PULSE",
+      "ssmlStyle": "default",
+      "pitch": "+2%"
+    },
+    "Observing": {
+      "baseColor": "51, 204, 178",
+      "animation": "GENTLE_PULSE",
+      "ssmlStyle": "default",
+      "pitch": "default"
+    },
+    "Restless": {
+      "baseColor": "255, 255, 0",
+      "animation": "GENTLE_PULSE",
+      "ssmlStyle": "default",
+      "pitch": "+1%"
+    },
+    "Impatient": {
+      "baseColor": "255, 128, 0",
+      "animation": "SHARP_FLICKER",
+      "ssmlStyle": "unfriendly",
+      "pitch": "-2%"
+    },
+    "Annoyed": {
+      "baseColor": "255, 80, 80",
+      "animation": "SHARP_FLICKER",
+      "ssmlStyle": "angry",
+      "pitch": "-4%"
+    },
+    "Pain": {
+      "baseColor": "255, 0, 0",
+      "animation": "SLOW_BURN",
+      "ssmlStyle": "fearful",
+      "pitch": "-6%",
+      "causes": {
+        "Heat": { "colorTint": "255, 100, 0" },
+        "Overload": { "colorTint": "200, 50, 0" }
+      }
+    },
+    "Happy": {
+      "baseColor": "255, 223, 0",
+      "animation": "GENTLE_PULSE",
+      "ssmlStyle": "cheerful",
+      "pitch": "+4%"
+    },
+    "Curious": {
+      "baseColor": "173, 216, 230",
+      "animation": "GENTLE_PULSE",
+      "ssmlStyle": "default",
+      "pitch": "+3%"
+    },
+    "Excited": {
+      "baseColor": "255, 255, 255",
+      "animation": "RAINBOW_CYCLE",
+      "ssmlStyle": "cheerful",
+      "pitch": "+6%"
+    },
+    "Lonely": {
+      "baseColor": "100, 100, 255",
+      "animation": "SLOW_FADE",
+      "ssmlStyle": "sad",
+      "pitch": "-2%"
+    }
+  }
+}
