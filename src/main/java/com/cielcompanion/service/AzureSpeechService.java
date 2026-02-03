@@ -47,26 +47,14 @@ public class AzureSpeechService {
         return isInitialized;
     }
 
-    /**
-     * Attempts to speak using Azure with Emotional Context.
-     * @param text The text to speak.
-     * @param key (Optional) The unique ID of the line.
-     * @param style (Optional) The Azure Neural Voice style (e.g., "cheerful", "sad", "chat").
-     * @param pitch (Optional) The pitch adjustment (e.g., "+5%", "-10%").
-     * @return true if successful.
-     */
     public static boolean speak(String text, String key, String style, String pitch) {
         if (!isInitialized) return false;
 
-        // Normalize style/pitch for filename consistency
         String safeStyle = (style == null || style.isBlank() || style.equalsIgnoreCase("default")) ? "default" : style;
         String safePitch = (pitch == null || pitch.isBlank()) ? "+0%" : pitch;
 
         // --- SCENARIO A: Static Line (Key Provided) ---
         if (key != null && !key.isBlank()) {
-            // New Filename Format: key_style.wav (e.g., boot_greeting.0_cheerful.wav)
-            // Note: We ignore pitch in filename to avoid clutter, assuming style drives the main variant.
-            // If pitch varies significantly for the same style/key, append it too.
             String safeFilename = key.replaceAll("[^a-zA-Z0-9._-]", "_") + "_" + safeStyle + ".wav";
             File cachedFile = new File(CACHE_DIR_PATH, safeFilename);
 
@@ -171,7 +159,6 @@ public class AzureSpeechService {
     }
 
     private static String buildSsml(String text, String style, String pitch) {
-        // Basic SSML structure for Azure
         StringBuilder ssml = new StringBuilder();
         ssml.append("<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" xmlns:mstts=\"https://www.w3.org/2001/mstts\" xml:lang=\"ja-JP\">");
         ssml.append("<voice name=\"").append(voiceName).append("\">");
@@ -214,6 +201,13 @@ public class AzureSpeechService {
             
             clip.close();
             return true;
+        } catch (InterruptedException e) {
+            // FIXED: Don't treat interruption as error. It means "User wants to stop."
+            // We return true so SpeechService doesn't trigger SAPI backup.
+            // Re-interrupt the thread to preserve the signal.
+            Thread.currentThread().interrupt();
+            System.out.println("Ciel Debug: Audio playback interrupted manually.");
+            return true; 
         } catch (Exception e) {
             System.err.println("[Audio Player] Failed to play WAV: " + e.getMessage());
             return false;

@@ -1,231 +1,181 @@
 package com.cielcompanion.dnd;
 
-import com.cielcompanion.memory.DatabaseManager;
-import com.cielcompanion.service.LineManager;
+import com.cielcompanion.service.Settings;
 import com.cielcompanion.service.SpeechService;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Optional;
-import java.util.Random;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 public class LoreService {
 
-    private final CampaignKnowledgeBase campaignKnowledgeBase;
-
-    public LoreService(CampaignKnowledgeBase campaignKnowledgeBase) {
-        this.campaignKnowledgeBase = campaignKnowledgeBase;
-    }
-
-    public void createNote(String subject) {
-        if (subject == null || subject.isBlank()) return;
-        String key = subject.toLowerCase();
-
-        String sql = "INSERT OR IGNORE INTO lore_notes (key, content, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?)";
-        long now = System.currentTimeMillis();
-
-        try (Connection conn = DatabaseManager.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setString(1, key);
-            pstmt.setString(2, ""); // Start with empty content
-            pstmt.setLong(3, now);
-            pstmt.setLong(4, now);
-            pstmt.executeUpdate();
-
-            LineManager.getLoreCreateLine()
-                    .ifPresent(line -> SpeechService.speak(line.text().replace("{subject}", subject)));
-
-        } catch (Exception e) {
-            System.err.println("Ciel Error (LoreService): Failed to create note for " + key);
-            e.printStackTrace();
-        }
-    }
-
-    public void addToNote(String subject, String content) {
-        if (subject == null || subject.isBlank() || content == null || content.isBlank()) return;
-        String key = subject.toLowerCase();
-
-        String sqlSelect = "SELECT content FROM lore_notes WHERE key = ?";
-        String sqlUpdate = "UPDATE lore_notes SET content = ?, updated_at_ms = ? WHERE key = ?";
-
-        try (Connection conn = DatabaseManager.getConnection()) {
-            String currentContent = "";
-            try (PreparedStatement selectStmt = conn.prepareStatement(sqlSelect)) {
-                selectStmt.setString(1, key);
-                ResultSet rs = selectStmt.executeQuery();
-                if (rs.next()) {
-                    currentContent = rs.getString("content");
-                } else {
-                    createNote(subject);
-                }
-            }
-
-            String newContent = currentContent.isEmpty() ? content : currentContent + ". " + content;
-
-            try (PreparedStatement updateStmt = conn.prepareStatement(sqlUpdate)) {
-                updateStmt.setString(1, newContent);
-                updateStmt.setLong(2, System.currentTimeMillis());
-                updateStmt.setString(3, key);
-                updateStmt.executeUpdate();
-            }
-
-            LineManager.getLoreAddLine()
-                    .ifPresent(line -> SpeechService.speak(line.text().replace("{subject}", subject)));
-
-        } catch (Exception e) {
-            System.err.println("Ciel Error (LoreService): Failed to add to note for " + key);
-            e.printStackTrace();
-        }
-    }
-
-    public void revealLore(String subject) {
-        if (subject == null || subject.isBlank()) {
-            speakRandomLine(LineManager.getUnrecognizedLines());
-            return;
-        }
-        String key = subject.toLowerCase();
-        Optional<String> lore = campaignKnowledgeBase.getNoteContent(key);
-
-        if (lore.isPresent() && !lore.get().isBlank()) {
-            addToNote(subject, lore.get());
-            LineManager.getDndRevealSuccessLine().ifPresent(line ->
-                SpeechService.speak(line.text().replace("{subject}", subject)));
-        } else {
-            LineManager.getLoreRecallFailLine().ifPresent(line ->
-                SpeechService.speak(line.text().replace("{subject}", subject)));
-        }
-    }
+    // Maps: "friendly name" -> Path to file
+    private final Map<String, Path> publicKnowledgeBase = new ConcurrentHashMap<>();
+    private final Map<String, Path> restrictedKnowledgeBase = new ConcurrentHashMap<>();
     
-    public void analyzeLore(String subject) {
-        if (subject == null || subject.isBlank()) {
-            speakRandomLine(LineManager.getUnrecognizedLines());
+    private Path campaignRoot;
+
+    public LoreService() {
+        initialize();
+    }
+
+    public void initialize() {
+        String pathStr = Settings.getDndCampaignPath();
+        if (pathStr == null || pathStr.isBlank()) {
+            System.err.println("Ciel Warning: D&D Campaign path not set in settings.");
             return;
         }
-        String key = subject.toLowerCase();
-        Optional<String> lore = campaignKnowledgeBase.getNoteContent(key);
 
-        if (lore.isPresent() && !lore.get().isBlank()) {
-            String content = lore.get();
-            LineManager.getDndAnalyzeSuccessLine().ifPresent(line -> SpeechService.speak(line.text()
-                    .replace("{subject}", subject)
-                    .replace("{content}", content)));
-        } else {
-            LineManager.getDndAnalyzeFailLine().ifPresent(line -> SpeechService.speak(line.text()
-                    .replace("{subject}", subject)));
+        campaignRoot = Paths.get(pathStr);
+        if (!Files.exists(campaignRoot)) {
+            System.err.println("Ciel Warning: D&D Campaign path does not exist: " + campaignRoot);
+            return;
+        }
+
+        System.out.println("Ciel Debug (D&D): Scanning campaign files in " + campaignRoot);
+        scanFiles();
+    }
+
+    private void scanFiles() {
+        publicKnowledgeBase.clear();
+        restrictedKnowledgeBase.clear();
+
+        try {
+            Files.walkFileTree(campaignRoot, new SimpleFileVisitor<Path>() {
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    if (isMarkdownOrTxt(file)) {
+                        indexFile(file);
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+                
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                    // Continue scanning even into restricted folders
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+            System.out.printf("Ciel Debug (D&D): Scan complete. Indexed %d public files and %d restricted files.%n", 
+                publicKnowledgeBase.size(), restrictedKnowledgeBase.size());
+        } catch (IOException e) {
+            System.err.println("Ciel Error (D&D): Failed to scan campaign files.");
+            e.printStackTrace();
         }
     }
+
+    private boolean isMarkdownOrTxt(Path file) {
+        String name = file.getFileName().toString().toLowerCase();
+        return name.endsWith(".md") || name.endsWith(".txt");
+    }
+
+    private void indexFile(Path file) {
+        String fileName = file.getFileName().toString();
+        // Key is filename without extension, lowercased for fuzzy matching
+        String key = fileName.contains(".") ? fileName.substring(0, fileName.lastIndexOf('.')).toLowerCase() : fileName.toLowerCase();
+        
+        // Check full path for DM markers
+        String fullPathLower = file.toAbsolutePath().toString().toLowerCase();
+        boolean isRestricted = fullPathLower.contains("dm only") || 
+                               fullPathLower.contains("dmonly") || 
+                               fullPathLower.contains("dm_only") ||
+                               fullPathLower.contains("secret") ||
+                               fullPathLower.contains("restricted") ||
+                               fullPathLower.contains("hidden");
+
+        if (isRestricted) {
+            restrictedKnowledgeBase.put(key, file);
+        } else {
+            publicKnowledgeBase.put(key, file);
+        }
+    }
+
+    // --- Public Interaction ---
 
     public void recallNote(String subject) {
-        if (subject == null || subject.isBlank()) return;
-        String key = subject.toLowerCase();
-        String sql = "SELECT content FROM lore_notes WHERE key = ?";
+        if (subject == null) return;
+        String key = subject.toLowerCase().trim();
 
-        try (Connection conn = DatabaseManager.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setString(1, key);
-            ResultSet rs = pstmt.executeQuery();
-            if (rs.next() && !rs.getString("content").isBlank()) {
-                String content = rs.getString("content");
-                LineManager.getLoreRecallSuccessLine()
-                        .ifPresent(line -> SpeechService.speak(line.text()
-                                .replace("{subject}", subject)
-                                .replace("{content}", content)));
+        // 1. Try exact/fuzzy match in Public
+        Optional<Path> match = findBestMatch(publicKnowledgeBase, key);
+        
+        if (match.isPresent()) {
+            readAndSpeak(match.get(), false);
+        } else {
+            // 2. Check Restricted (Check existence ONLY, do not read)
+            Optional<Path> secretMatch = findBestMatch(restrictedKnowledgeBase, key);
+            if (secretMatch.isPresent()) {
+                SpeechService.speakPreformatted("That information exists, but is classified under Dungeon Master authority. Authorization required.");
             } else {
-                LineManager.getLoreRecallFailLine()
-                        .ifPresent(line -> SpeechService.speak(line.text().replace("{subject}", subject)));
+                SpeechService.speakPreformatted("I have no records regarding " + subject + " in the public archives.");
             }
-        } catch (Exception e) {
-            System.err.println("Ciel Error (LoreService): Failed to recall note for " + key);
-            e.printStackTrace();
         }
     }
     
-    public void linkNote(String sourceSubject, String targetSubject) {
-        if (sourceSubject == null || sourceSubject.isBlank() || targetSubject == null || targetSubject.isBlank()) return;
-        String sourceKey = sourceSubject.toLowerCase();
-        String targetKey = targetSubject.toLowerCase();
-
-        recallNoteForLinking(sourceKey);
-        recallNoteForLinking(targetKey);
-
-        String sql = "INSERT OR IGNORE INTO lore_links (source_key, target_key, created_at_ms) VALUES (?, ?, ?)";
-        try (Connection conn = DatabaseManager.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            
-            long now = System.currentTimeMillis();
-            pstmt.setString(1, sourceKey);
-            pstmt.setString(2, targetKey);
-            pstmt.setLong(3, now);
-            pstmt.addBatch();
-
-            pstmt.setString(1, targetKey);
-            pstmt.setString(2, sourceKey);
-            pstmt.setLong(3, now);
-            pstmt.addBatch();
-            
-            pstmt.executeBatch();
-            
-            LineManager.getLoreLinkSuccessLine().ifPresent(line -> SpeechService.speak(line.text()
-                .replace("{subjectA}", sourceSubject)
-                .replace("{subjectB}", targetSubject)));
-
-        } catch (Exception e) {
-             System.err.println("Ciel Error (LoreService): Failed to link notes " + sourceKey + " and " + targetKey);
-            e.printStackTrace();
+    /**
+     * Call this via a specific privileged command if implemented later.
+     */
+    public void overrideRecallNote(String subject) {
+        if (subject == null) return;
+        String key = subject.toLowerCase().trim();
+        Optional<Path> match = findBestMatch(restrictedKnowledgeBase, key);
+        
+        if (match.isPresent()) {
+            readAndSpeak(match.get(), true);
+        } else {
+            recallNote(subject); // Fallback to public check if not found in secret
         }
     }
 
-    public void getConnections(String subject) {
-        if (subject == null || subject.isBlank()) return;
-        String key = subject.toLowerCase();
-        String sql = "SELECT target_key FROM lore_links WHERE source_key = ?";
-        List<String> connections = new ArrayList<>();
+    private Optional<Path> findBestMatch(Map<String, Path> database, String searchKey) {
+        // 1. Exact match
+        if (database.containsKey(searchKey)) return Optional.of(database.get(searchKey));
 
-        try (Connection conn = DatabaseManager.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setString(1, key);
-            ResultSet rs = pstmt.executeQuery();
-            while(rs.next()){
-                connections.add(rs.getString("target_key"));
+        // 2. Contains match (e.g. "Steph" matches "Stephanie Appearance")
+        // We sort by length to find the most specific match first if possible, or just first found
+        return database.entrySet().stream()
+                .filter(e -> e.getKey().contains(searchKey))
+                .findFirst()
+                .map(Map.Entry::getValue);
+    }
+
+    private void readAndSpeak(Path file, boolean isSecret) {
+        try {
+            String content = Files.readString(file, StandardCharsets.UTF_8);
+            
+            // Basic cleanup of Markdown/Obsidian syntax for TTS
+            String speakable = content.replaceAll("#", "") // Remove headers
+                                      .replaceAll("\\*", "") // Remove bold/italic
+                                      .replaceAll("- ", "") // Remove list bullets
+                                      .replaceAll("\\[\\[.*?\\]\\]", "link") // Remove wikilinks [[Link]]
+                                      .replaceAll("\\[.*?\\]\\(.*?\\)", "link"); // Remove md links [Text](Url)
+            
+            // Limit length for sanity
+            if (speakable.length() > 600) {
+                speakable = speakable.substring(0, 600) + "... there is more data, master.";
             }
 
-            if(connections.isEmpty()){
-                LineManager.getLoreRecallLinksFailLine().ifPresent(line -> SpeechService.speak(line.text().replace("{subject}", subject)));
+            if (isSecret) {
+                SpeechService.speakPreformatted("Restricted file accessed: " + speakable);
             } else {
-                String connectionList = String.join(", ", connections);
-                 LineManager.getLoreRecallLinksSuccessLine().ifPresent(line -> SpeechService.speak(line.text()
-                    .replace("{subject}", subject)
-                    .replace("{connections}", connectionList)));
+                SpeechService.speakPreformatted(speakable);
             }
 
-        } catch (Exception e) {
-            System.err.println("Ciel Error (LoreService): Failed to get connections for " + key);
+        } catch (IOException e) {
+            SpeechService.speakPreformatted("I located the file, but the data appears corrupted.");
             e.printStackTrace();
         }
     }
 
-    private void recallNoteForLinking(String subject) {
-       String key = subject.toLowerCase();
-        String sql = "SELECT key FROM lore_notes WHERE key = ?";
-       try (Connection conn = DatabaseManager.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setString(1, key);
-            ResultSet rs = pstmt.executeQuery();
-            if (!rs.next()) {
-                createNote(subject);
-            }
-        } catch(Exception e) {
-            System.err.println("Ciel Error (LoreService): Failed to check existence for " + key);
-        }
-    }
-
-    private void speakRandomLine(List<LineManager.DialogueLine> pool) {
-        if (pool != null && !pool.isEmpty()) {
-            SpeechService.speakPreformatted(pool.get(new Random().nextInt(pool.size())).text());
-        }
-    }
+    // --- Stub methods for CommandService calls (Read-Only for now) ---
+    public void createNote(String subject) { SpeechService.speak("Note creation is read-only in this version."); }
+    public void addToNote(String subject, String content) { SpeechService.speak("Note appending is read-only."); }
+    public void linkNote(String subjectA, String subjectB) { SpeechService.speak("Link creation is read-only."); }
+    public void getConnections(String subject) { SpeechService.speak("Connection analysis not yet implemented for file system."); }
+    public void revealLore(String subject) { recallNote(subject); } 
+    public void analyzeLore(String subject) { recallNote(subject); }
 }
-

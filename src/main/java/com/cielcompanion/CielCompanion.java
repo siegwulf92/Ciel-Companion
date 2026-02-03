@@ -1,6 +1,5 @@
 package com.cielcompanion;
 
-import com.cielcompanion.dnd.CampaignKnowledgeBase;
 import com.cielcompanion.dnd.LoreService;
 import com.cielcompanion.dnd.RulebookService;
 import com.cielcompanion.memory.MemoryService;
@@ -36,7 +35,6 @@ public class CielCompanion {
     private static final String COMMAND_TRIGGER_PASSPHRASE = "ciel_privileged_access_protocol_-alpha-";
     private static final String SEARCH_TRIGGER_PASSPHRASE = "ciel_web_search_protocol-beta-";
     private static final Path SHUTDOWN_FLAG_PATH = Paths.get(System.getenv("LOCALAPPDATA") + File.separator + "CielCompanion", "clean_shutdown.flag");
-    private static CampaignKnowledgeBase campaignKnowledgeBase;
 
     public static void main(String[] args) {
         System.setProperty("jdk.http.auth.tunneling.disabledSchemes", "");
@@ -82,9 +80,11 @@ public class CielCompanion {
             AppFinderService appFinderService = new AppFinderService();
             AppScannerService appScannerService = new AppScannerService(appLauncherService);
             SoundService soundService = new SoundService();
-            campaignKnowledgeBase = new CampaignKnowledgeBase();
+            
+            // FIXED: LoreService self-initializes now, no external KnowledgeBase needed
+            LoreService loreService = new LoreService();
             RulebookService rulebookService = new RulebookService();
-            LoreService loreService = new LoreService(campaignKnowledgeBase);
+            
             CommandService commandService = new CommandService(intentService, appLauncherService, conversationService, routineService, webService, appFinderService, appScannerService, emotionManager, soundService, loreService, rulebookService);
             voiceListener = new VoiceListener(commandService);
             commandService.setVoiceListener(voiceListener);
@@ -94,6 +94,7 @@ public class CielCompanion {
             startMainLoop(emotionManager);
             System.out.println("Ciel Companion initialized successfully.");
 
+            // Pass services to background init
             startBackgroundInitialization(intentService, appLauncherService, routineService, conversationService, webService, appFinderService, appScannerService, soundService, loreService, rulebookService, commandService);
 
         } catch (Exception e) {
@@ -109,7 +110,7 @@ public class CielCompanion {
                     Files.createFile(SHUTDOWN_FLAG_PATH);
                 } catch (IOException ignored) {}
             }
-            if (campaignKnowledgeBase != null) campaignKnowledgeBase.close();
+            // LoreService handles its own file IO, no explicit close needed for the old KB
             if (voiceListener != null) voiceListener.close();
             if (scheduler != null) scheduler.shutdown();
             SpeechService.cleanup();
@@ -158,7 +159,8 @@ public class CielCompanion {
                 appLauncherService.initialize();
                 routineService.initialize();
                 soundService.initialize();
-                campaignKnowledgeBase.initialize();
+                // LoreService initialized in constructor, but checking here is safe
+                // loreService.initialize(); 
                 rulebookService.initialize();
                 voiceListener.initialize();
                 voiceListener.initializeMicrophoneAsync();

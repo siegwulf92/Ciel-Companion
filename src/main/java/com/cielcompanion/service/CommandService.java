@@ -14,15 +14,15 @@ import com.cielcompanion.service.nlu.Intent;
 import com.cielcompanion.service.nlu.IntentService;
 import com.cielcompanion.service.SystemMonitor.SystemMetrics;
 import com.cielcompanion.service.SystemMonitor.ProcessInfo;
-import com.cielcompanion.util.AstroUtils; // ADDED
+import com.cielcompanion.util.AstroUtils;
 import com.cielcompanion.util.EnglishNumber;
 import com.cielcompanion.astronomy.CombinedAstronomyData;
 import com.cielcompanion.service.AstronomyService.AstronomyReport;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
-import java.time.ZoneId; // ADDED
-import java.time.ZonedDateTime; // ADDED
+import java.time.ZoneId; 
+import java.time.ZonedDateTime; 
 import java.time.format.DateTimeFormatter;
 import java.time.format.TextStyle;
 import java.util.*;
@@ -148,8 +148,21 @@ public class CommandService {
             case SET_MODE_DND: handleSetModeCommand(OperatingMode.DND_ASSISTANT); break;
             case SET_MODE_INTEGRATED: handleSetModeCommand(OperatingMode.INTEGRATED); break;
             
+            // D&D Commands
             case DND_ROLL_DICE: handleDiceRollCommand(analysis); break;
-            case DND_PLAY_SOUND: handlePlaySoundCommand(analysis); break;
+            
+            case DND_PLAY_SOUND: 
+                // Ensure D&D mode is active OR allow global override if desired (Currently enforced in DND mode for safety)
+                if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT || CielState.getCurrentMode() == OperatingMode.INTEGRATED) {
+                     String soundName = analysis.entities().get("soundName");
+                     if (soundName != null && !soundName.isBlank()) {
+                         LineManager.getPlaySoundConfirmLine()
+                             .ifPresent(line -> SpeechService.speakPreformatted(line.text().replace("{sound_name}", soundName), line.key()));
+                         soundService.playSound(soundName);
+                     }
+                }
+                break;
+
             case DND_CREATE_SESSION_NOTE: loreService.createNote(analysis.entities().get("subject")); break;
             case DND_ADD_TO_SESSION_NOTE: loreService.addToNote(analysis.entities().get("subject"), analysis.entities().get("content")); break;
             case DND_RECALL_SESSION_NOTE: loreService.recallNote(analysis.entities().get("subject")); break;
@@ -175,7 +188,7 @@ public class CommandService {
         }
     }
     
-    // ... [D&D Methods] ...
+    // ... [Helper Methods] ...
     
     private void handleApiSearch(CommandAnalysis analysis) {
         if (CielState.getCurrentMode() != OperatingMode.DND_ASSISTANT) return;
@@ -291,18 +304,6 @@ public class CommandService {
         } catch (Exception e) {
             System.err.println("Ciel Error: Failed to parse dice notation: " + diceNotation);
             LineManager.getDiceRollErrorLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
-        }
-    }
-    
-    private void handlePlaySoundCommand(CommandAnalysis analysis) {
-        if (CielState.getCurrentMode() != OperatingMode.DND_ASSISTANT) {
-            return;
-        }
-        String soundName = analysis.entities().get("soundName");
-        if (soundName != null && !soundName.isBlank()) {
-            soundService.playSound(soundName);
-            LineManager.getPlaySoundConfirmLine()
-                .ifPresent(line -> SpeechService.speakPreformatted(line.text().replace("{sound_name}", soundName)));
         }
     }
 
@@ -549,7 +550,7 @@ public class CommandService {
         }
     }
 
-    // --- NEW On-Demand Astronomy Handlers (Dynamic Calculation) ---
+    // --- On-Demand Astronomy Handlers (Dynamic Calculation) ---
     private void ensureFreshAstronomyData() {
         if (CielState.needsAstronomyApiFetch()) {
             System.out.println("Ciel Debug (CommandService): Proactively fetching fresh astronomy data for on-demand query.");
@@ -575,11 +576,10 @@ public class CommandService {
         
         if (data.isPresent() && data.get().planetCoordinates != null && !data.get().planetCoordinates.isEmpty()) {
             List<String> visibleLines = new ArrayList<>();
-            ZonedDateTime now = ZonedDateTime.now(ZoneId.of(LocationService.getTimezone()));
+            ZonedDateTime now = ZonedDateTime.now(ZoneId.of(com.cielcompanion.service.LocationService.getTimezone()));
             
-            // Calculate dynamic visibility based on cached coordinates
             for (CombinedAstronomyData.PlanetCoordinate p : data.get().planetCoordinates) {
-                double alt = AstroUtils.getAltitude(p.ra(), p.dec(), LocationService.getLatitude(), LocationService.getLongitude(), now);
+                double alt = AstroUtils.getAltitude(p.ra(), p.dec(), com.cielcompanion.service.LocationService.getLatitude(), com.cielcompanion.service.LocationService.getLongitude(), now);
                 if (alt > 10.0) {
                      LineManager.getPlanetLine(p.id()).ifPresent(line -> visibleLines.add(line.text()));
                 }

@@ -7,6 +7,8 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.time.Month;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 public class LineManager {
@@ -286,12 +288,35 @@ public class LineManager {
             });
     }
 
+    // FIXED: Numerical Sorting for Keys (chunk.2 vs chunk.10)
     private static List<DialogueLine> getLinesByKeyPrefix(Properties props, String prefix) {
-        return props.stringPropertyNames().stream()
+        List<DialogueLine> lines = props.stringPropertyNames().stream()
             .filter(key -> key.startsWith(prefix))
-            .sorted()
             .map(key -> new DialogueLine(key, props.getProperty(key)))
             .collect(Collectors.toList());
+
+        lines.sort((l1, l2) -> {
+            // Try to extract integer suffixes
+            Integer i1 = extractSuffix(l1.key, prefix);
+            Integer i2 = extractSuffix(l2.key, prefix);
+            
+            if (i1 != null && i2 != null) {
+                return i1.compareTo(i2); // Numerical Sort (1, 2, 10)
+            } else {
+                return l1.key.compareTo(l2.key); // Fallback to Alphabetical (String)
+            }
+        });
+        
+        return lines;
+    }
+
+    private static Integer extractSuffix(String key, String prefix) {
+        try {
+            String suffix = key.substring(prefix.length());
+            return Integer.parseInt(suffix);
+        } catch (NumberFormatException e) {
+            return null; // Not a number
+        }
     }
 
     public static DialogueLine getAppAwarenessLine(String category) {
@@ -458,4 +483,3 @@ public class LineManager {
         return Optional.of(SCAN_APPS_FAIL_LINES.get(random.nextInt(SCAN_APPS_FAIL_LINES.size())));
     }
 }
-

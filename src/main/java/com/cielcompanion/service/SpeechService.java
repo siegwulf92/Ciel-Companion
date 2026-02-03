@@ -7,6 +7,10 @@ import com.cielcompanion.mood.MoodConfig;
 import com.cielcompanion.service.LineManager.DialogueLine;
 import com.cielcompanion.ui.CielGui;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
@@ -15,6 +19,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 public class SpeechService {
@@ -22,6 +27,8 @@ public class SpeechService {
     private static final ExecutorService speechExecutor = Executors.newSingleThreadExecutor();
     private static volatile Future<?> sequentialSpeechTask = null;
     private static final AtomicBoolean isActivelySpeaking = new AtomicBoolean(false);
+    
+    private static final AtomicReference<Process> activeProcess = new AtomicReference<>();
     
     private static VoiceListener voiceListener;
 
@@ -43,6 +50,7 @@ public class SpeechService {
         ShortTermMemoryService.getMemory().setSpeechEndTime(System.currentTimeMillis());
     }
 
+    // --- OVERLOADS ---
     public static void speak(String text) { speakPreformatted(text, null, false); }
     public static void speak(String text, boolean isRare) { speakPreformatted(text, null, isRare); }
     public static void speak(String text, String key) { speakPreformatted(text, key, false); }
@@ -62,6 +70,7 @@ public class SpeechService {
         long estimatedDuration = estimateSpeechDuration(text);
         ShortTermMemoryService.getMemory().setSpeechEndTime(System.currentTimeMillis() + estimatedDuration);
         
+        // --- SMART EMOTION MIXING ---
         String style = "default";
         String pitch = "+0%";
 
@@ -70,6 +79,7 @@ public class SpeechService {
                 .sorted(Comparator.comparingDouble(Emotion::intensity).reversed())
                 .collect(Collectors.toList());
 
+            // 1. Determine Pitch from Dominant Emotion
             if (!activeEmotions.isEmpty()) {
                 Emotion dominant = activeEmotions.get(0);
                 Optional<MoodConfig.EmotionDefinition> domDef = MoodConfig.getEmotionDef(dominant.name());
@@ -79,6 +89,7 @@ public class SpeechService {
                 }
             }
 
+            // 2. Style Override: If dominant is "default" (Neutral/Focused), allow secondary emotions to color the voice
             if ("default".equals(style)) {
                 for (Emotion e : activeEmotions) {
                     Optional<MoodConfig.EmotionDefinition> def = MoodConfig.getEmotionDef(e.name());
@@ -96,7 +107,7 @@ public class SpeechService {
         executeSpeech(text, key, Settings.getTtsRate(), style, pitch);
     }
     
-    // UPDATED: Accepts List<DialogueLine> to preserve keys
+    // UPDATED: Now accepts List<DialogueLine> to preserve keys for caching
     public static void speakSequentially(List<DialogueLine> lines, long delayMs, boolean preformatted, Runnable onComplete) {
         if (lines == null || lines.isEmpty()) {
             if (onComplete != null) onComplete.run();
@@ -111,6 +122,7 @@ public class SpeechService {
                     DialogueLine line = lines.get(i);
                     if (line != null && line.text() != null && !line.text().isBlank()) {
                         
+                        // Resolve style per-line for monologues to catch mood shifts
                         String style = "default";
                         String pitch = "+0%";
                         if (CielState.getEmotionManager().isPresent()) {
@@ -154,6 +166,7 @@ public class SpeechService {
 
         boolean azureSuccess = false;
 
+        // --- AZURE ATTEMPT ---
         if (AzureSpeechService.isAvailable()) {
             azureSuccess = AzureSpeechService.speak(text, key, style, pitch);
             if (azureSuccess) {
@@ -163,15 +176,69 @@ public class SpeechService {
             }
         }
         
+        // --- FALLBACK ---
         if (!azureSuccess) {
-            // SAPI Fallback logic (abbreviated)
             String targetVoice = Settings.getVoiceNameHint();
-            System.out.println("Ciel Debug: SAPI Speaking: \"" + text + "\"");
+            System.out.println("Ciel Debug: SAPI Speaking: \"" + text + "\" (Target: " + targetVoice + ")");
+            
+            // Re-use simple PS script for SAPI fallback
+            String safeText = text.replace("'", "''");
+            String safeVoice = targetVoice.replace("'", "''");
+            String psScript = "$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SetOutputToDefaultAudioDevice(); try { $s.SelectVoice('" + safeVoice + "'); } catch {} $s.Rate = " + rate + "; $s.Speak('" + safeText + "'); $s.Dispose();";
+            String encodedCommand = Base64.getEncoder().encodeToString(psScript.getBytes(StandardCharsets.UTF_16LE));
+            
+            ProcessBuilder pb = new ProcessBuilder("pwsh.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand);
+            try { pb.start().waitFor(15, TimeUnit.SECONDS); } catch (Exception e) {}
         }
 
         isActivelySpeaking.set(false);
         if (voiceListener != null) voiceListener.setInternalMute(false);
         CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
+    }
+
+    private static boolean runProcess(String shellExecutable, String encodedCommand) {
+        Process process = null;
+        try {
+            ProcessBuilder pb = new ProcessBuilder(
+                shellExecutable, 
+                "-NoProfile", 
+                "-NonInteractive", 
+                "-ExecutionPolicy", "Bypass", 
+                "-EncodedCommand", 
+                encodedCommand
+            );
+            pb.redirectErrorStream(true);
+            
+            process = pb.start();
+            activeProcess.set(process); 
+
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.contains("Warning") || line.contains("Error") || line.contains("Exception")) {
+                        System.out.println("PS Output (" + shellExecutable + "): " + line);
+                    }
+                }
+            }
+            
+            boolean finished = process.waitFor(15, TimeUnit.SECONDS);
+            if (!finished) {
+                System.out.println("Ciel Warning: Speech process timed out.");
+                process.destroyForcibly();
+                return false;
+            }
+            return true;
+
+        } catch (InterruptedException e) {
+            if (process != null) process.destroyForcibly();
+            Thread.currentThread().interrupt();
+            return false;
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Failed to launch speech process: " + e.getMessage());
+            return false;
+        } finally {
+            activeProcess.set(null); 
+        }
     }
 
     public static long estimateSpeechDuration(String text) {
