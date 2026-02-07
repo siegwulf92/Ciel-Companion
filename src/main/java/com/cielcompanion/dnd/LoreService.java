@@ -22,17 +22,20 @@ public class LoreService {
 
     public void initialize() {
         String pathStr = Settings.getDndCampaignPath();
-        if (pathStr == null || pathStr.isBlank()) return;
+        if (pathStr == null || pathStr.isBlank()) {
+            System.err.println("Ciel Warning (D&D): Campaign path not set in settings.");
+            return;
+        }
 
         campaignRoot = Paths.get(pathStr);
         if (Files.exists(campaignRoot)) {
+            System.out.println("Ciel Debug (D&D): Scanning campaign files in " + campaignRoot);
             scanFiles();
+        } else {
+            System.err.println("Ciel Warning (D&D): Campaign path does not exist: " + campaignRoot);
         }
     }
 
-    /**
-     * Scans the campaign folder and compares indexed files against the 401 target.
-     */
     public void runCampaignAudit() {
         int total = publicKnowledgeBase.size() + restrictedKnowledgeBase.size();
         SpeechService.speakPreformatted("Audit initiated. I have indexed " + total + " total campaign files.");
@@ -55,7 +58,12 @@ public class LoreService {
                     return FileVisitResult.CONTINUE;
                 }
             });
-        } catch (IOException e) { e.printStackTrace(); }
+            System.out.printf("Ciel Debug (D&D): Scan complete. Indexed %d public files and %d restricted files.%n", 
+                publicKnowledgeBase.size(), restrictedKnowledgeBase.size());
+        } catch (IOException e) { 
+            System.err.println("Ciel Error (D&D): Failed to scan campaign files.");
+            e.printStackTrace(); 
+        }
     }
 
     private boolean isMarkdownOrTxt(Path file) {
@@ -68,7 +76,7 @@ public class LoreService {
         String key = fileName.contains(".") ? fileName.substring(0, fileName.lastIndexOf('.')).toLowerCase() : fileName.toLowerCase();
         
         String fullPathLower = file.toAbsolutePath().toString().toLowerCase();
-        boolean isRestricted = fullPathLower.contains("dm only") || fullPathLower.contains("secret") || fullPathLower.contains("restricted");
+        boolean isRestricted = fullPathLower.contains("dm only") || fullPathLower.contains("secret") || fullPathLower.contains("restricted") || fullPathLower.contains("hidden");
 
         if (isRestricted) {
             restrictedKnowledgeBase.put(key, file);
@@ -114,7 +122,6 @@ public class LoreService {
         } catch (IOException e) { e.printStackTrace(); }
     }
 
-    // --- Added back to satisfy CommandService.java requirements ---
     public void createNote(String subject) { SpeechService.speak("Note creation is currently disabled."); }
     public void addToNote(String subject, String content) { SpeechService.speak("Note appending is currently disabled."); }
     public void linkNote(String subjectA, String subjectB) { SpeechService.speak("Note linking is currently disabled."); }

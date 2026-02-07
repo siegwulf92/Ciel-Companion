@@ -6,6 +6,7 @@ import com.cielcompanion.mood.Emotion;
 import com.cielcompanion.mood.MoodConfig;
 import com.cielcompanion.service.LineManager.DialogueLine;
 import com.cielcompanion.ui.CielGui;
+import com.cielcompanion.util.PhonoKana; // Ensure this import is present
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -22,6 +23,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
+/**
+ * Handles Text-to-Speech operations using Azure Cognitive Services.
+ * REWORKED: Automatically converts English text to Katakana via PhonoKana 
+ * to maintain the Japanese accent and logs final output for troubleshooting.
+ */
 public class SpeechService {
 
     private static final ExecutorService speechExecutor = Executors.newSingleThreadExecutor();
@@ -79,7 +85,6 @@ public class SpeechService {
                 .sorted(Comparator.comparingDouble(Emotion::intensity).reversed())
                 .collect(Collectors.toList());
 
-            // 1. Determine Pitch from Dominant Emotion
             if (!activeEmotions.isEmpty()) {
                 Emotion dominant = activeEmotions.get(0);
                 Optional<MoodConfig.EmotionDefinition> domDef = MoodConfig.getEmotionDef(dominant.name());
@@ -89,7 +94,6 @@ public class SpeechService {
                 }
             }
 
-            // 2. Style Override: If dominant is "default" (Neutral/Focused), allow secondary emotions to color the voice
             if ("default".equals(style)) {
                 for (Emotion e : activeEmotions) {
                     Optional<MoodConfig.EmotionDefinition> def = MoodConfig.getEmotionDef(e.name());
@@ -107,7 +111,6 @@ public class SpeechService {
         executeSpeech(text, key, Settings.getTtsRate(), style, pitch);
     }
     
-    // UPDATED: Now accepts List<DialogueLine> to preserve keys for caching
     public static void speakSequentially(List<DialogueLine> lines, long delayMs, boolean preformatted, Runnable onComplete) {
         if (lines == null || lines.isEmpty()) {
             if (onComplete != null) onComplete.run();
@@ -122,12 +125,11 @@ public class SpeechService {
                     DialogueLine line = lines.get(i);
                     if (line != null && line.text() != null && !line.text().isBlank()) {
                         
-                        // Resolve style per-line for monologues to catch mood shifts
                         String style = "default";
                         String pitch = "+0%";
                         if (CielState.getEmotionManager().isPresent()) {
                              List<Emotion> active = CielState.getEmotionManager().get().getEmotionalState().getActiveEmotions().values().stream()
-                                .sorted(Comparator.comparingDouble(Emotion::intensity).reversed()).collect(Collectors.toList());
+                                 .sorted(Comparator.comparingDouble(Emotion::intensity).reversed()).collect(Collectors.toList());
                              if(!active.isEmpty()) {
                                  Optional<MoodConfig.EmotionDefinition> def = MoodConfig.getEmotionDef(active.get(0).name());
                                  if(def.isPresent()) { pitch = def.get().pitch(); style = def.get().ssmlStyle(); }
@@ -160,29 +162,41 @@ public class SpeechService {
     private static void executeSpeechBlocking(String text, String key, int rate, String style, String pitch) {
         if (Thread.currentThread().isInterrupted()) return;
 
+        // 1. Apply manual phonetic fixes first
+        String filtered = applyPhoneticFixes(text);
+
+        // 2. Convert to Katakana via PhonoKana to ensure the Japanese voice has an accent
+        // This catches English words like "Cleveland" or "Ohio" even if the caller forgot to convert them.
+        String finalKatakana = PhonoKana.getInstance().toKatakana(filtered);
+
+        // 3. Log the dialogue for troubleshooting
+        if (!text.equals(finalKatakana)) {
+             // System.out.println("[Ciel Raw Text]: " + text); // Uncomment if you want to see the original English
+        }
+        System.out.println("[Ciel Dialogue]: " + finalKatakana);
+
         if (voiceListener != null) voiceListener.setInternalMute(true);
         isActivelySpeaking.set(true);
         CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
 
         boolean azureSuccess = false;
 
-        // --- AZURE ATTEMPT ---
+        // --- AZURE ATTEMPT (Using converted Katakana) ---
         if (AzureSpeechService.isAvailable()) {
-            azureSuccess = AzureSpeechService.speak(text, key, style, pitch);
+            azureSuccess = AzureSpeechService.speak(finalKatakana, key, style, pitch);
             if (azureSuccess) {
                 System.out.println("Ciel Debug: Azure Speech successful (Key: " + (key != null ? key : "Dynamic") + ", Style: " + style + ")");
             } else {
-                System.out.println("Ciel Warning: Azure Speech failed or skipped. Falling back to SAPI.");
+                System.out.println("Ciel Warning: Azure Speech failed. Falling back to SAPI.");
             }
         }
         
         // --- FALLBACK ---
         if (!azureSuccess) {
             String targetVoice = Settings.getVoiceNameHint();
-            System.out.println("Ciel Debug: SAPI Speaking: \"" + text + "\" (Target: " + targetVoice + ")");
+            System.out.println("Ciel Debug: SAPI Speaking: \"" + finalKatakana + "\" (Target: " + targetVoice + ")");
             
-            // Re-use simple PS script for SAPI fallback
-            String safeText = text.replace("'", "''");
+            String safeText = finalKatakana.replace("'", "''");
             String safeVoice = targetVoice.replace("'", "''");
             String psScript = "$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SetOutputToDefaultAudioDevice(); try { $s.SelectVoice('" + safeVoice + "'); } catch {} $s.Rate = " + rate + "; $s.Speak('" + safeText + "'); $s.Dispose();";
             String encodedCommand = Base64.getEncoder().encodeToString(psScript.getBytes(StandardCharsets.UTF_16LE));
@@ -196,49 +210,14 @@ public class SpeechService {
         CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
     }
 
-    private static boolean runProcess(String shellExecutable, String encodedCommand) {
-        Process process = null;
-        try {
-            ProcessBuilder pb = new ProcessBuilder(
-                shellExecutable, 
-                "-NoProfile", 
-                "-NonInteractive", 
-                "-ExecutionPolicy", "Bypass", 
-                "-EncodedCommand", 
-                encodedCommand
-            );
-            pb.redirectErrorStream(true);
-            
-            process = pb.start();
-            activeProcess.set(process); 
-
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.contains("Warning") || line.contains("Error") || line.contains("Exception")) {
-                        System.out.println("PS Output (" + shellExecutable + "): " + line);
-                    }
-                }
-            }
-            
-            boolean finished = process.waitFor(15, TimeUnit.SECONDS);
-            if (!finished) {
-                System.out.println("Ciel Warning: Speech process timed out.");
-                process.destroyForcibly();
-                return false;
-            }
-            return true;
-
-        } catch (InterruptedException e) {
-            if (process != null) process.destroyForcibly();
-            Thread.currentThread().interrupt();
-            return false;
-        } catch (Exception e) {
-            System.err.println("Ciel Error: Failed to launch speech process: " + e.getMessage());
-            return false;
-        } finally {
-            activeProcess.set(null); 
-        }
+    /**
+     * Pre-processing for specific English words before Katakana conversion.
+     */
+    private static String applyPhoneticFixes(String text) {
+        if (text == null) return null;
+        
+        // You can add emergency fixes here if the properties file isn't working
+        return text; 
     }
 
     public static long estimateSpeechDuration(String text) {
