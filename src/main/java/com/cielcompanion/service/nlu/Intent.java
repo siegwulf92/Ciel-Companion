@@ -28,6 +28,7 @@ public enum Intent {
     SET_MODE_DND,
     SET_MODE_INTEGRATED,
     TOGGLE_LISTENING,
+    LEARN_PHONETIC, // Added to allow Ciel to add to her dictionary/thesaurus
 
     // D&D Specific Intents
     DND_ROLL_DICE,

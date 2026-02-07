@@ -1,7 +1,6 @@
 package com.cielcompanion.util;
 
-import java.io.InputStream;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
 import java.util.*;
@@ -12,6 +11,7 @@ public final class PhonoKana {
     private final Map<String, String> exceptions;
     private final Map<Pattern, String> rules;
     private final Map<String, String> letterNames;
+    private static final String EXTERNAL_FILE = "config/custom_phonetics.properties";
 
     private PhonoKana(Map<String, String> exceptions, Map<Pattern, String> rules, Map<String, String> letterNames) {
         this.exceptions = exceptions;
@@ -19,35 +19,42 @@ public final class PhonoKana {
         this.letterNames = letterNames;
     }
 
-    public static boolean isKatakana(String text) {
-        if (text == null || text.isBlank()) {
-            return false;
-        }
-        for (char c : text.toCharArray()) {
-            if (Character.UnicodeBlock.of(c) == Character.UnicodeBlock.KATAKANA) {
-                return true;
+    /**
+     * Dynamically adds a new word/pronunciation and saves it to the disk.
+     */
+    public void addException(String english, String katakana) {
+        String lower = english.toLowerCase().trim();
+        exceptions.put(lower, katakana);
+        saveExternalExceptions();
+        System.out.println("Ciel Debug: Learned new phonetic: " + lower + " = " + katakana);
+    }
+
+    private void saveExternalExceptions() {
+        try {
+            File file = new File(EXTERNAL_FILE);
+            file.getParentFile().mkdirs();
+            Properties props = new Properties();
+            // We only save the "new" ones or current state to the external file
+            exceptions.forEach(props::setProperty);
+            try (OutputStream os = new FileOutputStream(file)) {
+                props.store(new OutputStreamWriter(os, StandardCharsets.UTF_8), "Ciel Custom Phonetics");
             }
+        } catch (IOException e) {
+            System.err.println("Ciel Error: Failed to save custom phonetics.");
+            e.printStackTrace();
         }
-        return false;
     }
 
     public String toKatakana(String input) {
         if (input == null || input.isBlank()) return "";
-        
-        String normalizedInput = Normalizer.normalize(input, Normalizer.Form.NFD)
-                                           .replaceAll("\\p{M}", "");
-
+        String normalizedInput = Normalizer.normalize(input, Normalizer.Form.NFD).replaceAll("\\p{M}", "");
         String preprocessedInput = expandRomanNumerals(normalizedInput);
         String s = Normalizer.normalize(preprocessedInput, Normalizer.Form.NFC);
-
         List<Token> tokens = tokenize(s);
         StringBuilder out = new StringBuilder();
 
         for (Token t : tokens) {
-            if (out.length() > 0 && t.type != Type.OTHER) {
-                out.append(" ");
-            }
-            
+            if (out.length() > 0 && t.type != Type.OTHER) out.append(" ");
             String k = switch (t.type) {
                 case WORD -> wordToKatakana(t.text);
                 case NUMBER -> EnglishNumber.convert(t.text);
@@ -58,30 +65,10 @@ public final class PhonoKana {
         }
         return out.toString().trim();
     }
-    
-    private String expandRomanNumerals(String s) {
-        // CORRECTED: The rule for a single "I" has been removed to prevent ambiguity.
-        return s.replaceAll("\\bX-?2\\b", " Ten Two")
-                .replaceAll("\\bX-?II\\b", " Ten Two")
-                .replaceAll("\\bXIII\\b", " Thirteen")
-                .replaceAll("\\bXII\\b", " Twelve")
-                .replaceAll("\\bXI\\b", " Eleven")
-                .replaceAll("\\bX\\b", " Ten")
-                .replaceAll("\\bIX\\b", " Nine")
-                .replaceAll("\\bVIII\\b", " Eight")
-                .replaceAll("\\bVII\\b", " Seven")
-                .replaceAll("\\bVI\\b", " Six")
-                .replaceAll("\\bV\\b", " Five")
-                .replaceAll("\\bIV\\b", " Four")
-                .replaceAll("\\bIII\\b", " Three")
-                .replaceAll("\\bII\\b", " Two");
-    }
 
     private String wordToKatakana(String w) {
         String lower = w.toLowerCase(Locale.ROOT);
-        if (exceptions.containsKey(lower)) {
-            return exceptions.get(lower);
-        }
+        if (exceptions.containsKey(lower)) return exceptions.get(lower);
         String romajiLike = applyRules(lower);
         return romajiLikeToKatakana(romajiLike);
     }
@@ -98,19 +85,14 @@ public final class PhonoKana {
 
     private String romajiLikeToKatakana(String r) {
         r = r.replaceAll("(?<![aiueo])(k)([aiueo])", "ク$2");
-        return r.replace("shon", "ション")
-                .replace("jon", "ジョン")
-                .replace("chaa", "チャー")
-                .replace("jaa", "ジャー")
+        return r.replace("shon", "ション").replace("jon", "ジョン").replace("chaa", "チャー").replace("jaa", "ジャー")
                 .replace("va", "ヴァ").replace("vi", "ヴィ").replace("ve", "ヴェ").replace("vo", "ヴォ")
                 .replace("fa", "ファ").replace("fi", "フィ").replace("fe", "フェ").replace("fo", "フォ")
-                .replace("ti", "ティ").replace("di", "ディ")
-                .replace("tu", "テュ").replace("du", "デュ")
+                .replace("ti", "ティ").replace("di", "ディ").replace("tu", "テュ").replace("du", "デュ")
                 .replace("shi", "シ").replace("chi", "チ").replace("tsu", "ツ")
                 .replace("kya", "キャ").replace("kyu", "キュ").replace("kyo", "キョ")
                 .replace("sha", "シャ").replace("shu", "シュ").replace("sho", "ショ")
-                .replace("ai", "アイ").replace("a", "ア").replace("i", "イ")
-                .replace("u", "ウ").replace("e", "エ").replace("o", "オ")
+                .replace("ai", "アイ").replace("a", "ア").replace("i", "イ").replace("u", "ウ").replace("e", "エ").replace("o", "オ")
                 .replace("ka", "カ").replace("ki", "キ").replace("ku", "ク").replace("ke", "ケ").replace("ko", "コ")
                 .replace("sa", "サ").replace("su", "ス").replace("se", "セ").replace("so", "ソ")
                 .replace("ta", "タ").replace("te", "テ").replace("to", "ト")
@@ -122,11 +104,18 @@ public final class PhonoKana {
                 .replace("wa", "ワ").replace("wo", "ヲ").replace("n", "ン")
                 .replace("ga", "ガ").replace("gi", "ギ").replace("gu", "グ").replace("ge", "ゲ").replace("go", "ゴ")
                 .replace("za", "ザ").replace("ji", "ジ").replace("zu", "ズ").replace("ze", "ゼ").replace("zo", "ゾ")
-                .replace("da", "ダ").replace("de", "デ").replace("do", "ド")
+                .replace("da", "ダ").replace("de", "ディ").replace("do", "ド")
                 .replace("ba", "バ").replace("bi", "ビ").replace("bu", "ブ").replace("be", "ベ").replace("bo", "ボ")
                 .replace("pa", "パ").replace("pi", "ピ").replace("pu", "プ").replace("pe", "ペ").replace("po", "ポ")
-                .replaceAll("aa", "アー").replaceAll("ii", "イー").replaceAll("uu", "ウー")
-                .replaceAll("ee", "エー").replaceAll("oo", "オー");
+                .replaceAll("aa", "アー").replaceAll("ii", "イー").replaceAll("uu", "ウー").replaceAll("ee", "エー").replaceAll("oo", "オー");
+    }
+
+    private String expandRomanNumerals(String s) {
+        return s.replaceAll("\\bX-?2\\b", " Ten Two").replaceAll("\\bX-?II\\b", " Ten Two").replaceAll("\\bXIII\\b", " Thirteen")
+                .replaceAll("\\bXII\\b", " Twelve").replaceAll("\\bXI\\b", " Eleven").replaceAll("\\bX\\b", " Ten")
+                .replaceAll("\\bIX\\b", " Nine").replaceAll("\\bVIII\\b", " Eight").replaceAll("\\bVII\\b", " Seven")
+                .replaceAll("\\bVI\\b", " Six").replaceAll("\\bV\\b", " Five").replaceAll("\\bIV\\b", " Four")
+                .replaceAll("\\bIII\\b", " Three").replaceAll("\\bII\\b", " Two");
     }
 
     private String spellAcronym(String s) {
@@ -164,18 +153,26 @@ public final class PhonoKana {
 
     private static PhonoKana createDefaultInstance() {
         Map<String, String> ex = new HashMap<>();
+        // Load Internal
         try (InputStream is = PhonoKana.class.getResourceAsStream("/phonokana_exceptions.properties")) {
-            if (is == null) {
-                throw new RuntimeException("Could not find phonokana_exceptions.properties in resources.");
+            if (is != null) {
+                Properties props = new Properties();
+                props.load(new InputStreamReader(is, StandardCharsets.UTF_8));
+                props.forEach((key, value) -> ex.put((String) key, (String) value));
             }
-            Properties props = new Properties();
-            props.load(new InputStreamReader(is, StandardCharsets.UTF_8));
-            props.forEach((key, value) -> ex.put((String) key, (String) value));
-            System.out.println("Ciel Debug: Loaded " + ex.size() + " internal phonetic exceptions.");
-        } catch (Exception e) {
-            System.err.println("Ciel FATAL: Failed to load internal phonetic exceptions. Pronunciation will be impacted.");
-            e.printStackTrace();
+        } catch (Exception e) { e.printStackTrace(); }
+
+        // Load External overrides
+        File external = new File(EXTERNAL_FILE);
+        if (external.exists()) {
+            try (InputStream is = new FileInputStream(external)) {
+                Properties props = new Properties();
+                props.load(new InputStreamReader(is, StandardCharsets.UTF_8));
+                props.forEach((key, value) -> ex.put((String) key, (String) value));
+                System.out.println("Ciel Debug: Loaded " + props.size() + " custom external phonetics.");
+            } catch (Exception e) { e.printStackTrace(); }
         }
+
         Map<Pattern, String> rules = new LinkedHashMap<>();
         rules.put(Pattern.compile("\\bwh"), "hw");
         rules.put(Pattern.compile("(?<=[^aeiou])t\\b"), "to");
@@ -185,27 +182,18 @@ public final class PhonoKana {
         rules.put(Pattern.compile("c(?=[eiy])"), "s");
         rules.put(Pattern.compile("c"), "k");
         rules.put(Pattern.compile("g(?=[eiy])"), "j");
-        rules.put(Pattern.compile("([st])([r])"), "$1u$2");
-        rules.put(Pattern.compile("([bcdfghkpt])([lr])"), "$1u$2");
         rules.put(Pattern.compile("tion\\b"), "shon");
         rules.put(Pattern.compile("sion\\b"), "jon");
         rules.put(Pattern.compile("([aeiou])ture\\b"), "$1chaa");
         rules.put(Pattern.compile("([aeiou])sure\\b"), "$1jaa");
         rules.put(Pattern.compile("\\bthe\\b"), "za");
         rules.put(Pattern.compile(" th"), "s");
-        rules.put(Pattern.compile("ph"), "f");
-        rules.put(Pattern.compile("igh"), "ai");
-        rules.put(Pattern.compile("kn"), "n");
-        rules.put(Pattern.compile("ou"), "au");
-        rules.put(Pattern.compile("ow"), "au");
         rules.put(Pattern.compile("ar\\b"), "aa");
         rules.put(Pattern.compile("er\\b"), "aa");
-        rules.put(Pattern.compile("or\\b"), "oo");
         rules.put(Pattern.compile("ee"), "ii");
         rules.put(Pattern.compile("ea"), "ii");
-        rules.put(Pattern.compile("oa"), "oo");
         rules.put(Pattern.compile("oo"), "uu");
-        rules.put(Pattern.compile("(?<=[^aeiou])y\\b"), "ii");
+
         Map<String, String> letters = Map.ofEntries(
                 Map.entry("A", "エー"), Map.entry("B", "ビー"), Map.entry("C", "シー"),
                 Map.entry("D", "ディー"), Map.entry("E", "イー"), Map.entry("F", "エフ"),

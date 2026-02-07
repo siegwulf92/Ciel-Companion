@@ -66,6 +66,10 @@ public class IntentService {
         intentPatterns.put(Intent.DND_RECALL_SESSION_NOTE, Pattern.compile("(?i)(what do we know about|recall the session note for|tell me about) (?<subject>.+)"));
         intentPatterns.put(Intent.DND_ANALYZE_LORE, Pattern.compile("(?i)(analyze my notes on|what are my notes on) (?<subject>.+)"));
 
+        // --- Learning Mode (NEW) ---
+        // Command: "Ciel, remember that [word] is pronounced [phonetic]"
+        intentPatterns.put(Intent.LEARN_PHONETIC, Pattern.compile("(?i)remember that (?<key>.+) is (pronounced |called )?(?<value>.+)"));
+
         // --- General Utility Intents ---
         intentPatterns.put(Intent.GET_WEATHER_FORECAST, Pattern.compile("(?i)(weather|forecast).*(tomorrow|later|tonight)"));
         intentPatterns.put(Intent.GET_WEATHER, Pattern.compile("(?i)(weather|forecast|temperature|hot|cold|outside)"));
