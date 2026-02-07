@@ -1,5 +1,8 @@
 package com.cielcompanion.service.nlu;
 
+/**
+ * All possible user intents the NLU can recognize.
+ */
 public enum Intent {
     GET_TIME,
     GET_DAILY_REPORT,
@@ -38,6 +41,8 @@ public enum Intent {
     DND_ANALYZE_LORE,
     DND_GET_RULE,
     DND_API_SEARCH,
+    DND_RUN_AUDIT,          // Added for folder indexing verification
+    DND_RECORD_MASTERY,     // Added for skill progression tracking
 
     // NEW On-Demand Astronomy Intents
     GET_MOON_PHASE,
@@ -48,4 +53,3 @@ public enum Intent {
     EASTER_EGG,
     UNKNOWN
 }
-
