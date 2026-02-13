@@ -26,6 +26,7 @@ public class AzureSpeechService {
             try {
                 config = SpeechConfig.fromSubscription(key, region);
                 config.setSpeechSynthesisVoiceName(voiceName);
+                // Default language is Japanese as per your setup
                 config.setSpeechSynthesisLanguage("ja-JP"); 
                 
                 // Ensure cache directory exists in the root folder
@@ -47,15 +48,21 @@ public class AzureSpeechService {
         return isInitialized;
     }
 
+    // Overloaded for backward compatibility
     public static boolean speak(String text, String key, String style, String pitch) {
+        return speak(text, key, style, pitch, "ja-JP");
+    }
+
+    public static boolean speak(String text, String key, String style, String pitch, String langCode) {
         if (!isInitialized) return false;
 
         String safeStyle = (style == null || style.isBlank() || style.equalsIgnoreCase("default")) ? "default" : style;
         String safePitch = (pitch == null || pitch.isBlank()) ? "+0%" : pitch;
+        String safeLang = (langCode == null || langCode.isBlank()) ? "ja-JP" : langCode;
 
         // --- SCENARIO A: Static Line (Key Provided) ---
         if (key != null && !key.isBlank()) {
-            String safeFilename = key.replaceAll("[^a-zA-Z0-9._-]", "_") + "_" + safeStyle + ".wav";
+            String safeFilename = key.replaceAll("[^a-zA-Z0-9._-]", "_") + "_" + safeStyle + "_" + safeLang + ".wav";
             File cachedFile = new File(CACHE_DIR_PATH, safeFilename);
 
             // 1. Check Local Cache
@@ -72,7 +79,7 @@ public class AzureSpeechService {
             }
 
             // 3. Generate and Save using SSML
-            return generateAndPlayFile(text, safeStyle, safePitch, cachedFile);
+            return generateAndPlayFile(text, safeStyle, safePitch, safeLang, cachedFile);
         }
 
         // --- SCENARIO B: Dynamic Line (No Key) ---
@@ -84,11 +91,11 @@ public class AzureSpeechService {
             }
 
             // 2. Stream Directly using SSML
-            return streamDirectly(text, safeStyle, safePitch);
+            return streamDirectly(text, safeStyle, safePitch, safeLang);
         }
     }
 
-    private static boolean generateAndPlayFile(String text, String style, String pitch, File destination) {
+    private static boolean generateAndPlayFile(String text, String style, String pitch, String lang, File destination) {
         SpeechSynthesizer synthesizer = null;
         AudioConfig fileOutput = null;
         try {
@@ -97,7 +104,7 @@ public class AzureSpeechService {
             fileOutput = AudioConfig.fromWavFileOutput(destination.getAbsolutePath());
             synthesizer = new SpeechSynthesizer(config, fileOutput);
 
-            String ssml = buildSsml(text, style, pitch);
+            String ssml = buildSsml(text, style, pitch, lang);
             SpeechSynthesisResult result = synthesizer.SpeakSsml(ssml);
 
             if (result.getReason() == ResultReason.SynthesizingAudioCompleted) {
@@ -126,15 +133,15 @@ public class AzureSpeechService {
         return false;
     }
 
-    private static boolean streamDirectly(String text, String style, String pitch) {
+    private static boolean streamDirectly(String text, String style, String pitch, String lang) {
         SpeechSynthesizer synthesizer = null;
         try {
-            System.out.println("[Azure TTS] Streaming dynamic content (Style: " + style + ")...");
+            System.out.println("[Azure TTS] Streaming dynamic content (Style: " + style + ", Lang: " + lang + ")...");
             
             AudioConfig audioConfig = AudioConfig.fromDefaultSpeakerOutput();
             synthesizer = new SpeechSynthesizer(config, audioConfig);
 
-            String ssml = buildSsml(text, style, pitch);
+            String ssml = buildSsml(text, style, pitch, lang);
             SpeechSynthesisResult result = synthesizer.SpeakSsml(ssml);
 
             if (result.getReason() == ResultReason.SynthesizingAudioCompleted) {
@@ -158,9 +165,9 @@ public class AzureSpeechService {
         return false;
     }
 
-    private static String buildSsml(String text, String style, String pitch) {
+    private static String buildSsml(String text, String style, String pitch, String lang) {
         StringBuilder ssml = new StringBuilder();
-        ssml.append("<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" xmlns:mstts=\"https://www.w3.org/2001/mstts\" xml:lang=\"ja-JP\">");
+        ssml.append("<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" xmlns:mstts=\"https://www.w3.org/2001/mstts\" xml:lang=\"").append(lang).append("\">");
         ssml.append("<voice name=\"").append(voiceName).append("\">");
         
         boolean useStyle = !style.equals("default");
@@ -202,9 +209,6 @@ public class AzureSpeechService {
             clip.close();
             return true;
         } catch (InterruptedException e) {
-            // FIXED: Don't treat interruption as error. It means "User wants to stop."
-            // We return true so SpeechService doesn't trigger SAPI backup.
-            // Re-interrupt the thread to preserve the signal.
             Thread.currentThread().interrupt();
             System.out.println("Ciel Debug: Audio playback interrupted manually.");
             return true; 

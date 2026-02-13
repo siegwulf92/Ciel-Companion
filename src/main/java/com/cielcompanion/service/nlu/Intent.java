@@ -28,7 +28,7 @@ public enum Intent {
     SET_MODE_DND,
     SET_MODE_INTEGRATED,
     TOGGLE_LISTENING,
-    LEARN_PHONETIC, // Added to allow Ciel to add to her dictionary/thesaurus
+    LEARN_PHONETIC, // Fixes IntentService error
 
     // D&D Specific Intents
     DND_ROLL_DICE,
@@ -42,8 +42,10 @@ public enum Intent {
     DND_ANALYZE_LORE,
     DND_GET_RULE,
     DND_API_SEARCH,
-    DND_RUN_AUDIT,          // Added for folder indexing verification
-    DND_RECORD_MASTERY,     // Added for skill progression tracking
+    DND_RUN_AUDIT,
+    DND_RECORD_MASTERY,
+    DND_REPORT_SURGE,   // Fixes CommandService error
+    OPEN_CHEAT_SHEET,   // Fixes CommandService error
 
     // NEW On-Demand Astronomy Intents
     GET_MOON_PHASE,

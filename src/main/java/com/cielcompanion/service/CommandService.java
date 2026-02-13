@@ -1,7 +1,9 @@
 package com.cielcompanion.service;
 
 import com.cielcompanion.CielState;
+import com.cielcompanion.dnd.DndCampaignService;
 import com.cielcompanion.dnd.LoreService;
+import com.cielcompanion.dnd.MasteryService;
 import com.cielcompanion.dnd.RulebookService;
 import com.cielcompanion.memory.Fact;
 import com.cielcompanion.memory.MemoryService;
@@ -16,13 +18,19 @@ import com.cielcompanion.service.SystemMonitor.SystemMetrics;
 import com.cielcompanion.service.SystemMonitor.ProcessInfo;
 import com.cielcompanion.util.AstroUtils;
 import com.cielcompanion.util.EnglishNumber;
+import com.cielcompanion.util.PhonoKana;
 import com.cielcompanion.astronomy.CombinedAstronomyData;
 import com.cielcompanion.service.AstronomyService.AstronomyReport;
 
+import java.awt.Desktop;
+import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.LocalDateTime;
-import java.time.ZoneId; 
-import java.time.ZonedDateTime; 
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.TextStyle;
 import java.util.*;
@@ -31,7 +39,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.stream.Collectors;
 
 public class CommandService {
 
@@ -40,6 +47,7 @@ public class CommandService {
     private final ExecutorService commandExecutor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean isBusy = new AtomicBoolean(false);
 
+    // Services
     private final IntentService intentService;
     private final AppLauncherService appLauncherService;
     private final ConversationService conversationService;
@@ -49,11 +57,22 @@ public class CommandService {
     private final AppScannerService appScannerService;
     private final EmotionManager emotionManager;
     private final SoundService soundService;
+    
+    // D&D Specific Services
     private final LoreService loreService;
     private final RulebookService rulebookService;
+    private final MasteryService masteryService;
+    private final DndCampaignService dndCampaignService;
+    
     private VoiceListener voiceListener;
 
-    public CommandService(IntentService intentService, AppLauncherService appLauncherService, ConversationService conversationService, RoutineService routineService, WebService webService, AppFinderService appFinderService, AppScannerService appScannerService, EmotionManager emotionManager, SoundService soundService, LoreService loreService, RulebookService rulebookService) {
+    public CommandService(IntentService intentService, AppLauncherService appLauncherService, 
+                          ConversationService conversationService, RoutineService routineService, 
+                          WebService webService, AppFinderService appFinderService, 
+                          AppScannerService appScannerService, EmotionManager emotionManager, 
+                          SoundService soundService, LoreService loreService, 
+                          RulebookService rulebookService, MasteryService masteryService, 
+                          DndCampaignService dndCampaignService) {
         this.intentService = intentService;
         this.appLauncherService = appLauncherService;
         this.conversationService = conversationService;
@@ -65,6 +84,8 @@ public class CommandService {
         this.soundService = soundService;
         this.loreService = loreService;
         this.rulebookService = rulebookService;
+        this.masteryService = masteryService;
+        this.dndCampaignService = dndCampaignService;
     }
 
     public void setVoiceListener(VoiceListener voiceListener) {
@@ -87,20 +108,30 @@ public class CommandService {
 
                 emotionManager.recordUserInteraction();
 
+                // 1. Analyze Intent
                 CommandAnalysis analysis = conversationService.checkForFollowUp(text);
                 if (analysis == null) {
                     analysis = intentService.analyze(text);
                 }
 
+                // 2. Speaker & Quirk Check (Dynamic World Voice)
+                // If the IntentService identified a speaker (e.g. "Brandon: I see an asteroid")
+                // Check if that triggers a character quirk via DndCampaignService
+                String speaker = analysis.entities().get("speaker");
+                if (speaker != null) {
+                    dndCampaignService.checkQuirks(speaker, text);
+                }
+
                 conversationService.updateConversationTopic(analysis);
 
+                // 3. Command Confirmation
                 if (analysis.intent() != Intent.UNKNOWN && analysis.intent() != Intent.SEARCH_WEB && analysis.intent() != Intent.EASTER_EGG) {
                     LineManager.getCommandConfirmationLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
                 }
 
                 processCommand(analysis);
             } catch (Exception e) {
-                System.err.println("Ciel FATAL Error: Uncaught exception in CommandService. This indicates a serious problem.");
+                System.err.println("Ciel FATAL Error: Uncaught exception in CommandService.");
                 e.printStackTrace();
             } finally {
                 isBusy.set(false);
@@ -110,9 +141,7 @@ public class CommandService {
     }
 
     public void handleExplicitSearch(String query) {
-       if (!isBusy.compareAndSet(false, true)) {
-           return;
-       }
+       if (!isBusy.compareAndSet(false, true)) return;
         commandExecutor.submit(() -> {
             try {
                 emotionManager.recordUserInteraction();
@@ -125,6 +154,7 @@ public class CommandService {
 
     private void processCommand(CommandAnalysis analysis) {
         switch (analysis.intent()) {
+            // --- Core System Commands ---
             case GET_TIME: handleTimeCommand(); break;
             case GET_DAILY_REPORT: handleDailyReportCommand(); break;
             case GET_WEATHER: handleWeatherCommand(); break;
@@ -148,18 +178,36 @@ public class CommandService {
             case SET_MODE_DND: handleSetModeCommand(OperatingMode.DND_ASSISTANT); break;
             case SET_MODE_INTEGRATED: handleSetModeCommand(OperatingMode.INTEGRATED); break;
             
-            // D&D Commands
+            // --- NEW: Phonetic Learning ---
+            case LEARN_PHONETIC: handleLearnPhoneticCommand(analysis); break;
+
+            // --- D&D Campaign Management ---
+            case DND_RUN_AUDIT: 
+                loreService.runCampaignAudit(); 
+                break;
+            case DND_RECORD_MASTERY:
+                masteryService.recordMeaningfulUse(
+                    analysis.entities().get("player"), 
+                    analysis.entities().get("skill")
+                );
+                break;
+            case DND_REPORT_SURGE:
+                dndCampaignService.incrementSurge(analysis.entities().get("player"));
+                break;
+            case OPEN_CHEAT_SHEET:
+                handleOpenCheatSheet();
+                break;
+
+            // --- D&D Gameplay ---
             case DND_ROLL_DICE: handleDiceRollCommand(analysis); break;
-            
             case DND_PLAY_SOUND: 
-                // Ensure D&D mode is active OR allow global override if desired (Currently enforced in DND mode for safety)
                 if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT || CielState.getCurrentMode() == OperatingMode.INTEGRATED) {
-                     String soundName = analysis.entities().get("soundName");
-                     if (soundName != null && !soundName.isBlank()) {
-                         LineManager.getPlaySoundConfirmLine()
-                             .ifPresent(line -> SpeechService.speakPreformatted(line.text().replace("{sound_name}", soundName), line.key()));
-                         soundService.playSound(soundName);
-                     }
+                      String soundName = analysis.entities().get("soundName");
+                      if (soundName != null && !soundName.isBlank()) {
+                          LineManager.getPlaySoundConfirmLine()
+                              .ifPresent(line -> SpeechService.speakPreformatted(line.text().replace("{sound_name}", soundName), line.key()));
+                          soundService.playSound(soundName);
+                      }
                 }
                 break;
 
@@ -173,6 +221,7 @@ public class CommandService {
             case DND_GET_RULE: handleGetRule(analysis); break;
             case DND_API_SEARCH: handleApiSearch(analysis); break;
 
+            // --- Astronomy ---
             case GET_MOON_PHASE: handleGetMoonPhase(); break;
             case GET_VISIBLE_PLANETS: handleGetVisiblePlanets(); break;
             case GET_CONSTELLATIONS: handleGetConstellations(); break;
@@ -188,8 +237,40 @@ public class CommandService {
         }
     }
     
-    // ... [Helper Methods] ...
-    
+    // ... [Helpers] ...
+
+    private void handleOpenCheatSheet() {
+        String pathStr = Settings.getDndCampaignPath();
+        if (pathStr == null || pathStr.isBlank()) {
+            SpeechService.speak("Campaign path is not configured.");
+            return;
+        }
+        File sheet = Paths.get(pathStr, "Tavern_Master_Sheet.md").toFile();
+        if (sheet.exists()) {
+            try {
+                Desktop.getDesktop().open(sheet);
+                SpeechService.speak("Displaying the Master Sheet.");
+            } catch (IOException e) {
+                SpeechService.speak("I could not open the file.");
+            }
+        } else {
+            SpeechService.speak("The Master Sheet file is missing.");
+        }
+    }
+
+    private void handleLearnPhoneticCommand(CommandAnalysis analysis) {
+        String key = analysis.entities().get("key");
+        String value = analysis.entities().get("value");
+        if (key != null && value != null) {
+            PhonoKana.getInstance().addException(key, value);
+            SpeechService.speakPreformatted("Understood. I will pronounce " + key + " as " + value + " from now on.");
+        } else {
+            SpeechService.speak("I didn't catch the word you wanted me to learn.");
+        }
+    }
+
+    // --- (Keeping your existing methods below for stability) ---
+
     private void handleApiSearch(CommandAnalysis analysis) {
         if (CielState.getCurrentMode() != OperatingMode.DND_ASSISTANT) return;
         String category = analysis.entities().get("type"); 
@@ -198,7 +279,6 @@ public class CommandService {
             speakRandomLine(LineManager.getUnrecognizedLines());
             return;
         }
-
         commandExecutor.submit(() -> {
             String result = rulebookService.searchApi(category, query);
             if (result != null) {
@@ -217,7 +297,6 @@ public class CommandService {
             speakRandomLine(LineManager.getUnrecognizedLines());
             return;
         }
-
         String ruleText = rulebookService.findRule(topic);
         if (ruleText != null) {
             LineManager.getDndRuleFoundLine().ifPresent(line ->
@@ -258,18 +337,15 @@ public class CommandService {
             LineManager.getDiceRollWrongModeLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
             return;
         }
-
         String diceNotation = analysis.entities().get("dice");
         if (diceNotation == null || diceNotation.isBlank()) {
             speakRandomLine(LineManager.getUnrecognizedLines());
             return;
         }
-
         try {
             int total = 0;
             String rollPart = diceNotation;
             int bonus = 0;
-
             if (diceNotation.contains("+")) {
                 String[] parts = diceNotation.split("\\+");
                 rollPart = parts[0].trim();
@@ -279,7 +355,6 @@ public class CommandService {
                 rollPart = parts[0].trim();
                 bonus = -Integer.parseInt(parts[1].trim());
             }
-
             int numDice = 1;
             int numSides;
             if (rollPart.toLowerCase().startsWith("d")) {
@@ -289,18 +364,15 @@ public class CommandService {
                 numDice = Integer.parseInt(diceParts[0]);
                 numSides = Integer.parseInt(diceParts[1]);
             }
-
             for (int i = 0; i < numDice; i++) {
                 int roll = random.nextInt(numSides) + 1;
                 total += roll;
             }
             int finalTotal = total + bonus;
-
             LineManager.getDiceRollResultLine().ifPresent(line -> {
                 String finalLine = line.text().replace("{result}", String.valueOf(finalTotal));
                 SpeechService.speakPreformatted(finalLine);
             });
-
         } catch (Exception e) {
             System.err.println("Ciel Error: Failed to parse dice notation: " + diceNotation);
             LineManager.getDiceRollErrorLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
@@ -309,12 +381,10 @@ public class CommandService {
 
     private void handleScanForAppsCommand() {
         LineManager.getScanAppsStartLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
-        
         int newAppsFound = appScannerService.scanAndLearnNewApps();
         if (newAppsFound > 0) {
             LineManager.getScanAppsSuccessLine().ifPresent(line ->
-                SpeechService.speakPreformatted(line.text().replace("{count}", String.valueOf(newAppsFound)))
-            );
+                SpeechService.speakPreformatted(line.text().replace("{count}", String.valueOf(newAppsFound))));
         } else {
             LineManager.getScanAppsFailLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
         }
@@ -341,12 +411,10 @@ public class CommandService {
             path -> {
                 appLauncherService.addAppPath(appName, path);
                 LineManager.getFindAppSuccessLine().ifPresent(line ->
-                    SpeechService.speakPreformatted(line.text().replace("{app_name}", appName))
-                );
+                    SpeechService.speakPreformatted(line.text().replace("{app_name}", appName)));
             },
             () -> LineManager.getFindAppFailLine().ifPresent(line ->
-                SpeechService.speakPreformatted(line.text().replace("{app_name}", appName))
-            )
+                SpeechService.speakPreformatted(line.text().replace("{app_name}", appName)))
         );
     }
 
@@ -362,36 +430,27 @@ public class CommandService {
 
     private void handleDailyReportCommand() {
         if (CielState.needsAstronomyApiFetch()) {
-            System.out.println("Ciel Debug (CommandService): Proactively fetching fresh astronomy data for daily report.");
             AstronomyService.performApiFetch();
         }
-
         AstronomyReport report = AstronomyService.getTodaysAstronomyReport();
         List<String> linesToSpeak = new ArrayList<>();
         linesToSpeak.addAll(report.sequentialEvents().values());
         linesToSpeak.addAll(report.reportAmbientLines());
-
         CielController.speakSpecialEventsSequentially(linesToSpeak, null);
     }
 
     private void handleTimeCommand() {
         LocalDateTime now = LocalDateTime.now();
-        
         if (now.getMinute() == 20 && (now.getHour() == 4 || now.getHour() == 16)) {
             LineManager.get420Line().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
             return;
         }
-
         String month = now.getMonth().getDisplayName(TextStyle.FULL, Locale.ENGLISH);
         String day = EnglishNumber.convert(String.valueOf(now.getDayOfMonth()));
         String formattedTime = now.format(DateTimeFormatter.ofPattern("h:mm a"));
         String spokenTime = EnglishNumber.convertTimeToWords(formattedTime);
         DialogueLine line = LineManager.getTimeLines().get(random.nextInt(LineManager.getTimeLines().size()));
-        
-        String finalLine = line.text()
-            .replace("{month}", month)
-            .replace("{day}", day)
-            .replace("{time}", spokenTime);
+        String finalLine = line.text().replace("{month}", month).replace("{day}", day).replace("{time}", spokenTime);
         SpeechService.speakPreformatted(finalLine);
     }
 
@@ -400,23 +459,18 @@ public class CommandService {
             LineManager.getPrivilegedCommandRequiredLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
             return;
         }
-
         CielState.setPerformingColdShutdown(true);
-
         if ("shutdown".equals(commandType)) {
             SpeechService.speakPreformatted(LineManager.getShutdownConfirmLine().text(), LineManager.getShutdownConfirmLine().key());
         } else {
             SpeechService.speakPreformatted(LineManager.getRebootConfirmLine().text(), LineManager.getRebootConfirmLine().key());
         }
-        
         shutdownScheduler = Executors.newSingleThreadScheduledExecutor();
         shutdownScheduler.schedule(() -> {
             try {
                 String osCommand = ("shutdown".equals(commandType)) ? "shutdown -s -t 0" : "shutdown -r -t 0";
                 Runtime.getRuntime().exec(osCommand);
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
+            } catch (IOException e) { e.printStackTrace(); }
         }, 30, TimeUnit.SECONDS);
     }
 
@@ -433,12 +487,9 @@ public class CommandService {
         SystemMetrics metrics = SystemMonitor.getSystemMetrics();
         List<DialogueLine> reportLines = new ArrayList<>();
         reportLines.add(LineManager.getStatusIntroLines().get(random.nextInt(LineManager.getStatusIntroLines().size())));
-        
         reportLines.add(new DialogueLine(null, LineManager.getStatusCpuLine().text().replace("{cpu_load}", EnglishNumber.convert(String.valueOf(metrics.cpuLoadPercent())))));
         reportLines.add(new DialogueLine(null, LineManager.getStatusMemLine().text().replace("{mem_usage}", EnglishNumber.convert(String.valueOf(metrics.memoryUsagePercent())))));
-        
         reportLines.add(LineManager.getStatusOutroLines().get(random.nextInt(LineManager.getStatusOutroLines().size())));
-        
         SpeechService.speakSequentially(reportLines, 1500, true, null);
     }
 
@@ -451,9 +502,7 @@ public class CommandService {
         }
         Fact factToSave = new Fact(key, value, System.currentTimeMillis(), "user_preference", "user", 1);
         MemoryService.addFact(factToSave);
-        String response = LineManager.getRememberSuccessLine().text()
-            .replace("{key}", key)
-            .replace("{value}", value);
+        String response = LineManager.getRememberSuccessLine().text().replace("{key}", key).replace("{value}", value);
         SpeechService.speakPreformatted(response);
     }
 
@@ -465,9 +514,7 @@ public class CommandService {
         }
         MemoryService.getFact(key).ifPresentOrElse(
             fact -> {
-                String response = LineManager.getRecallSuccessLine().text()
-                    .replace("{key}", fact.key())
-                    .replace("{value}", fact.value());
+                String response = LineManager.getRecallSuccessLine().text().replace("{key}", fact.key()).replace("{value}", fact.value());
                 SpeechService.speakPreformatted(response);
             },
             () -> SpeechService.speakPreformatted(LineManager.getRecallFailLine().text().replace("{key}", key))
@@ -481,10 +528,7 @@ public class CommandService {
             return;
         }
         Set<String> knownApps = appLauncherService.getKnownAppNames();
-        String matchedAppName = knownApps.stream()
-            .filter(potentialAppName::contains)
-            .findFirst()
-            .orElse(potentialAppName);
+        String matchedAppName = knownApps.stream().filter(potentialAppName::contains).findFirst().orElse(potentialAppName);
         boolean success = appLauncherService.launchApplication(matchedAppName);
         if (success) {
             String response = LineManager.getLaunchAppSuccessLine().text().replace("{app_name}", matchedAppName);
@@ -505,21 +549,12 @@ public class CommandService {
     }
 
     private void handleGetTopProcessCommand(String resourceType) {
-        Optional<ProcessInfo> processInfoOpt = "memory".equals(resourceType)
-            ? SystemMonitor.getTopProcessByMemory()
-            : SystemMonitor.getTopProcessByCpu();
+        Optional<ProcessInfo> processInfoOpt = "memory".equals(resourceType) ? SystemMonitor.getTopProcessByMemory() : SystemMonitor.getTopProcessByCpu();
         processInfoOpt.ifPresentOrElse(
             info -> {
-                String lineTemplate = "memory".equals(resourceType)
-                    ? LineManager.getTopMemoryProcessLine().text()
-                    : LineManager.getTopCpuProcessLine().text();
-
-                String usageText = "memory".equals(resourceType)
-                    ? info.usage() + " megabytes"
-                    : info.usage() + " percent";
-                String response = lineTemplate
-                    .replace("{process_name}", info.name())
-                    .replace("{usage}", usageText);
+                String lineTemplate = "memory".equals(resourceType) ? LineManager.getTopMemoryProcessLine().text() : LineManager.getTopCpuProcessLine().text();
+                String usageText = "memory".equals(resourceType) ? info.usage() + " megabytes" : info.usage() + " percent";
+                String response = lineTemplate.replace("{process_name}", info.name()).replace("{usage}", usageText);
                 SpeechService.speak(response);
             },
             () -> SpeechService.speak("I was unable to determine the top process at this time.")
@@ -537,9 +572,7 @@ public class CommandService {
             return;
         }
         boolean success = appLauncherService.terminateProcess(appName, force);
-        String template = success
-            ? LineManager.getTerminateAppSuccessLine().text()
-            : LineManager.getTerminateAppFailLine().text();
+        String template = success ? LineManager.getTerminateAppSuccessLine().text() : LineManager.getTerminateAppFailLine().text();
         SpeechService.speakPreformatted(template.replace("{app_name}", appName));
     }
 
@@ -550,10 +583,8 @@ public class CommandService {
         }
     }
 
-    // --- On-Demand Astronomy Handlers (Dynamic Calculation) ---
     private void ensureFreshAstronomyData() {
         if (CielState.needsAstronomyApiFetch()) {
-            System.out.println("Ciel Debug (CommandService): Proactively fetching fresh astronomy data for on-demand query.");
             AstronomyService.performApiFetch();
         }
     }
@@ -563,8 +594,7 @@ public class CommandService {
         Optional<CombinedAstronomyData> data = AstronomyService.getTodaysApiData();
         if (data.isPresent() && data.get().moonPhase != null) {
             String simplifiedPhase = data.get().moonPhase.toLowerCase().replace(" ", "").replace("_", "");
-            LineManager.getMoonPhaseLine(simplifiedPhase)
-                .ifPresent(line -> SpeechService.speak(line.text(), line.key())); 
+            LineManager.getMoonPhaseLine(simplifiedPhase).ifPresent(line -> SpeechService.speak(line.text(), line.key())); 
         } else {
             SpeechService.speak("I am currently unable to retrieve the moon phase information.");
         }
@@ -573,26 +603,15 @@ public class CommandService {
     private void handleGetVisiblePlanets() {
         ensureFreshAstronomyData();
         Optional<CombinedAstronomyData> data = AstronomyService.getTodaysApiData();
-        
         if (data.isPresent() && data.get().planetCoordinates != null && !data.get().planetCoordinates.isEmpty()) {
             List<String> visibleLines = new ArrayList<>();
             ZonedDateTime now = ZonedDateTime.now(ZoneId.of(com.cielcompanion.service.LocationService.getTimezone()));
-            
             for (CombinedAstronomyData.PlanetCoordinate p : data.get().planetCoordinates) {
                 double alt = AstroUtils.getAltitude(p.ra(), p.dec(), com.cielcompanion.service.LocationService.getLatitude(), com.cielcompanion.service.LocationService.getLongitude(), now);
                 if (alt > 10.0) {
                      LineManager.getPlanetLine(p.id()).ifPresent(line -> visibleLines.add(line.text()));
                 }
             }
-            
-            // Merge Jupiter/Saturn logic
-            boolean jupiter = visibleLines.stream().anyMatch(s -> s.contains("Jupiter") || s.contains("ジュピター"));
-            boolean saturn = visibleLines.stream().anyMatch(s -> s.contains("Saturn") || s.contains("サターン"));
-            if (jupiter && saturn) {
-                visibleLines.removeIf(s -> s.contains("Jupiter") || s.contains("ジュピター") || s.contains("Saturn") || s.contains("サターン"));
-                LineManager.getPlanetLine("jupitersaturn").ifPresent(line -> visibleLines.add(0, line.text()));
-            }
-
             if (!visibleLines.isEmpty()) {
                 SpeechService.speak(String.join(" ", visibleLines));
             } else {

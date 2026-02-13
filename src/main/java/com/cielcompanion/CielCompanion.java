@@ -1,6 +1,8 @@
 package com.cielcompanion;
 
+import com.cielcompanion.dnd.DndCampaignService;
 import com.cielcompanion.dnd.LoreService;
+import com.cielcompanion.dnd.MasteryService;
 import com.cielcompanion.dnd.RulebookService;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.mood.EmotionManager;
@@ -81,11 +83,21 @@ public class CielCompanion {
             AppScannerService appScannerService = new AppScannerService(appLauncherService);
             SoundService soundService = new SoundService();
             
-            // FIXED: LoreService self-initializes now, no external KnowledgeBase needed
+            // D&D Services Initialization
             LoreService loreService = new LoreService();
             RulebookService rulebookService = new RulebookService();
+            // NEW: Initialize the Campaign Tracking Services
+            MasteryService masteryService = new MasteryService();
+            DndCampaignService dndCampaignService = new DndCampaignService();
             
-            CommandService commandService = new CommandService(intentService, appLauncherService, conversationService, routineService, webService, appFinderService, appScannerService, emotionManager, soundService, loreService, rulebookService);
+            // UPDATED: CommandService now accepts the new D&D services
+            CommandService commandService = new CommandService(
+                intentService, appLauncherService, conversationService, routineService, 
+                webService, appFinderService, appScannerService, emotionManager, 
+                soundService, loreService, rulebookService, 
+                masteryService, dndCampaignService
+            );
+
             voiceListener = new VoiceListener(commandService);
             commandService.setVoiceListener(voiceListener);
             
@@ -110,7 +122,6 @@ public class CielCompanion {
                     Files.createFile(SHUTDOWN_FLAG_PATH);
                 } catch (IOException ignored) {}
             }
-            // LoreService handles its own file IO, no explicit close needed for the old KB
             if (voiceListener != null) voiceListener.close();
             if (scheduler != null) scheduler.shutdown();
             SpeechService.cleanup();
@@ -159,9 +170,7 @@ public class CielCompanion {
                 appLauncherService.initialize();
                 routineService.initialize();
                 soundService.initialize();
-                // LoreService initialized in constructor, but checking here is safe
-                // loreService.initialize(); 
-                rulebookService.initialize();
+                // Lore/Rulebook initialized in main thread, safe to use
                 voiceListener.initialize();
                 voiceListener.initializeMicrophoneAsync();
                 startTriggerListener(5555, COMMAND_TRIGGER_PASSPHRASE, () -> voiceListener.startListeningForCommand());

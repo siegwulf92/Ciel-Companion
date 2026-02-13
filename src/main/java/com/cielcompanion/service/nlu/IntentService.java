@@ -9,8 +9,7 @@ import java.util.stream.Collectors;
 
 /**
  * A simple Natural Language Understanding service to determine user intent.
- * REWORKED: Now includes robust D&D Mastery and Audit support while maintaining 
- * your extensive mishearing and easter egg library.
+ * INTEGRATED: Includes all original Easter Eggs + New D&D Campaign Logic.
  */
 public class IntentService {
 
@@ -20,8 +19,11 @@ public class IntentService {
     private static final Pattern JUNK_PREFIX_PATTERN = Pattern.compile("^(the|a|an)\\s+", Pattern.CASE_INSENSITIVE);
     private static final Set<String> STOP_WORDS = Set.of("a", "an", "the", "is", "are", "was", "were", "in", "of", "to", "and", "i", "you", "it");
 
+    // NEW: Captures "Brandon: I do X" or "Mike: says Y"
+    private static final Pattern SPEAKER_PREFIX_PATTERN = Pattern.compile("^(?<speaker>brandon|sam|jody|emilee|mike)\\s*[:\\-]?\\s*", Pattern.CASE_INSENSITIVE);
+
     public void initialize() {
-        // --- Easter Egg Mishearing Corrections ---
+        // --- Easter Egg Mishearing Corrections (PRESERVED) ---
         mishearingCorrections.put("allons-y", List.of("alone the", "along the", "on the", "hell on the"));
         mishearingCorrections.put("aschente", List.of("action bay", "a shanty", "action to", "a champagne", "has shield i", "action think", "shantae", "a shantae"));
         mishearingCorrections.put("set your heart ablaze", List.of("such your heart ablaze", "set the"));
@@ -29,7 +31,7 @@ public class IntentService {
         mishearingCorrections.put("raphael", List.of("rafael"));
         mishearingCorrections.put("kaneda", List.of("canada"));
         mishearingCorrections.put("are you my mummy", List.of("are you my mommy"));
-        mishearingCorrections.put("execute order 66", List.of("execute order systems", "execute order sixty six", "execute order significant"));
+        mishearingCorrections.put("execute order 66", List.of("execute order systems", "execute order sixty six", "execute order significant", "execute order sixty six"));
         mishearingCorrections.put("geronimo", List.of("geronimo"));
         mishearingCorrections.put("shadow clone jutsu", List.of("shadow clone do to", "shadow clone", "shadow clone do too"));
         mishearingCorrections.put("pot of greed", List.of("heart of greed", "pod of greed", "the pod of greed"));
@@ -44,16 +46,19 @@ public class IntentService {
         intentPatterns.put(Intent.SET_MODE_DND, Pattern.compile("(?i)(enter|start|begin) d and d mode"));
         intentPatterns.put(Intent.SET_MODE_INTEGRATED, Pattern.compile("(?i)(return to|enter|resume) (integrated|standard|normal) mode"));
         
-        // --- Astronomy Intents ---
+        // --- NEW On-Demand Astronomy Intents ---
         intentPatterns.put(Intent.GET_MOON_PHASE, Pattern.compile("(?i)(what is|what's) the moon phase( tonight)?"));
         intentPatterns.put(Intent.GET_VISIBLE_PLANETS, Pattern.compile("(?i)(what|which) planets are visible( tonight)?"));
         intentPatterns.put(Intent.GET_CONSTELLATIONS, Pattern.compile("(?i)(what|which) constellations are visible( tonight)?"));
         intentPatterns.put(Intent.GET_ECLIPSES, Pattern.compile("(?i)(are there|is there) any eclipses?( happening| soon| tonight)?"));
 
-        // --- D&D Specific Intents ---
+        // --- D&D Specific Intents (UPDATED) ---
         intentPatterns.put(Intent.DND_RUN_AUDIT, Pattern.compile("(?i)run (campaign|folder) audit"));
         intentPatterns.put(Intent.DND_RECORD_MASTERY, Pattern.compile("(?i)record meaningful (?<skill>.+) (use|success) for (?<player>.+)"));
-        
+        intentPatterns.put(Intent.DND_REPORT_SURGE, Pattern.compile("(?i)report surge for (?<player>.+)")); // NEW
+        intentPatterns.put(Intent.OPEN_CHEAT_SHEET, Pattern.compile("(?i)open (the )?(cheat sheet|master sheet)")); // NEW
+        intentPatterns.put(Intent.LEARN_PHONETIC, Pattern.compile("(?i)remember that (?<key>.+) is (pronounced |called )?(?<value>.+)")); // NEW
+
         intentPatterns.put(Intent.DND_GET_RULE, Pattern.compile("(?i)(what are the rules for|what's the rule for|how does) (?<topic>.+)"));
         intentPatterns.put(Intent.DND_API_SEARCH, Pattern.compile("(?i)(look up|search for the) (?<type>spell|item|monster) (?<query>.+)"));
         intentPatterns.put(Intent.DND_PLAY_SOUND, Pattern.compile("(?i)play (the sound of )?(a |an )?(?<soundName>\\w+)( sound| noise)?"));
@@ -63,14 +68,11 @@ public class IntentService {
         intentPatterns.put(Intent.DND_ADD_TO_SESSION_NOTE, Pattern.compile("(?i)add to (?<subject>.+?)(s'|'s)? session note (?<content>.+)"));
         intentPatterns.put(Intent.DND_LINK_SESSION_NOTE, Pattern.compile("(?i)link session notes (?<subjectA>.+) and (?<subjectB>.+)"));
         intentPatterns.put(Intent.DND_RECALL_SESSION_LINKS, Pattern.compile("(?i)(what is linked to|get connections for) (?<subject>.+)"));
-        intentPatterns.put(Intent.DND_RECALL_SESSION_NOTE, Pattern.compile("(?i)(what do we know about|recall the session note for|tell me about) (?<subject>.+)"));
+        intentPatterns.put(Intent.DND_RECALL_SESSION_NOTE, Pattern.compile("(?i)(what do we know about|recall the session note for) (?<subject>.+)"));
         intentPatterns.put(Intent.DND_ANALYZE_LORE, Pattern.compile("(?i)(analyze my notes on|what are my notes on) (?<subject>.+)"));
 
-        // --- Learning Mode (NEW) ---
-        // Command: "Ciel, remember that [word] is pronounced [phonetic]"
-        intentPatterns.put(Intent.LEARN_PHONETIC, Pattern.compile("(?i)remember that (?<key>.+) is (pronounced |called )?(?<value>.+)"));
 
-        // --- General Utility Intents ---
+        // --- General Intents ---
         intentPatterns.put(Intent.GET_WEATHER_FORECAST, Pattern.compile("(?i)(weather|forecast).*(tomorrow|later|tonight)"));
         intentPatterns.put(Intent.GET_WEATHER, Pattern.compile("(?i)(weather|forecast|temperature|hot|cold|outside)"));
         intentPatterns.put(Intent.GET_TIME, Pattern.compile("(?i)^what (time|date) is it$|^what's the (time|date)$|\\b(time|date)\\b"));
@@ -95,74 +97,94 @@ public class IntentService {
     }
 
     public CommandAnalysis analyze(String text) {
+        // 1. Pre-process text (Mishearing Correction)
         String cleanedText = MISHEARD_TRIGGER_PATTERN.matcher(text).replaceFirst("").trim();
         cleanedText = JUNK_PREFIX_PATTERN.matcher(cleanedText).replaceFirst("").trim();
         String lowerText = cleanedText.toLowerCase().replace("[unk]", "").trim();
 
-        // Step 1: Mishearing Corrections
+        // 2. Speaker Identification (Handling "Brandon: I do X")
+        Map<String, String> entities = new HashMap<>();
+        Matcher speakerMatcher = SPEAKER_PREFIX_PATTERN.matcher(text);
+        if (speakerMatcher.find()) {
+            entities.put("speaker", speakerMatcher.group("speaker"));
+            // Remove the speaker prefix from the text so we can match the actual intent
+            lowerText = text.substring(speakerMatcher.end()).trim().toLowerCase();
+        }
+
+        // 3. Mishearing Corrections Check
         for (Map.Entry<String, List<String>> entry : mishearingCorrections.entrySet()) {
             for (String mishearing : entry.getValue()) {
                 if (lowerText.equals(mishearing)) {
                     String correctedText = entry.getKey();
                     if (correctedText.startsWith("shut down")) return new CommandAnalysis(Intent.INITIATE_SHUTDOWN, new HashMap<>());
                     if (correctedText.startsWith("reboot")) return new CommandAnalysis(Intent.INITIATE_REBOOT, new HashMap<>());
-                    Map<String, String> entities = new HashMap<>();
                     entities.put("key", correctedText);
                     return new CommandAnalysis(Intent.EASTER_EGG, entities);
                 }
             }
         }
         
-        // Step 2: Exact Easter Egg
+        // 4. Exact Easter Egg Match
         final String finalText = lowerText;
         if (LineManager.getEasterEggKeys().stream().anyMatch(key -> key.equalsIgnoreCase(finalText))) {
-            Map<String, String> entities = new HashMap<>();
             entities.put("key", finalText);
             return new CommandAnalysis(Intent.EASTER_EGG, entities);
         }
 
-        // Step 3: Fuzzy Easter Egg
+        // 5. Fuzzy Easter Egg Match
         String bestMatch = findBestKeywordMatch(lowerText);
         if (bestMatch != null) {
-            Map<String, String> entities = new HashMap<>();
             entities.put("key", bestMatch);
             return new CommandAnalysis(Intent.EASTER_EGG, entities);
         }
 
-        // Step 4: Standard patterns
+        // 6. Standard Intent Matching
         for (Map.Entry<Intent, Pattern> entry : intentPatterns.entrySet()) {
             Matcher matcher = entry.getValue().matcher(lowerText);
             if (matcher.find()) {
-                return new CommandAnalysis(entry.getKey(), extractEntities(matcher));
+                entities.putAll(extractEntities(matcher));
+                return new CommandAnalysis(entry.getKey(), entities);
             }
         }
 
-        // Step 5: Web Fallback
-        if (lowerText.contains("?") || lowerText.startsWith("who") || lowerText.startsWith("what") || lowerText.startsWith("how")) {
-            Map<String, String> entities = new HashMap<>();
+        // 7. Web Fallback
+        if (lowerText.contains("?") || lowerText.startsWith("who") || lowerText.startsWith("what") || lowerText.startsWith("when") || lowerText.startsWith("where") || lowerText.startsWith("why") || lowerText.startsWith("how") || lowerText.startsWith("search for") || lowerText.startsWith("google")) {
             entities.put("query", cleanedText);
             return new CommandAnalysis(Intent.SEARCH_WEB, entities);
         }
 
-        return new CommandAnalysis(Intent.UNKNOWN, new HashMap<>());
+        return new CommandAnalysis(Intent.UNKNOWN, entities);
     }
 
     private String findBestKeywordMatch(String heardText) {
         Set<String> heardKeywords = Arrays.stream(heardText.split("\\s+")).filter(w -> !STOP_WORDS.contains(w)).collect(Collectors.toSet());
         if (heardKeywords.isEmpty()) return null;
+
         String bestMatch = null;
+        long bestScore = 0;
         double bestRatio = 0.0;
+
         for (String key : LineManager.getEasterEggKeys()) {
             Set<String> keyKeywords = Arrays.stream(key.toLowerCase().split("\\s+")).filter(w -> !STOP_WORDS.contains(w)).collect(Collectors.toSet());
             if (keyKeywords.isEmpty()) continue;
+            
             long currentScore = heardKeywords.stream().filter(keyKeywords::contains).count();
             double currentRatio = (double) currentScore / keyKeywords.size();
+
             if (currentRatio > bestRatio) {
                 bestRatio = currentRatio;
+                bestScore = currentScore;
+                bestMatch = key;
+            } else if (currentRatio == bestRatio && currentScore > bestScore) {
+                bestScore = currentScore;
                 bestMatch = key;
             }
         }
-        return (bestMatch != null && bestRatio >= 0.6) ? bestMatch : null;
+        
+        if (bestMatch != null && bestRatio >= 0.6 && bestScore > 0) {
+            return bestMatch;
+        }
+        return null;
     }
 
     private Map<String, String> extractEntities(Matcher matcher) {
