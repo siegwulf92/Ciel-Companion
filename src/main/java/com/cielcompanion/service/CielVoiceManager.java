@@ -1,10 +1,11 @@
 package com.cielcompanion.service;
 
+import com.cielcompanion.CielState;
 import java.util.Properties;
 import java.io.InputStream;
 
 /**
- * Handles switching between COMPANION (English translation) and WORLD (Japanese only) modes.
+ * Handles switching between COMPANION (English/Japanese hybrid) and WORLD (Japanese only) modes.
  */
 public class CielVoiceManager {
 
@@ -37,11 +38,33 @@ public class CielVoiceManager {
         return currentState == VoiceState.WORLD_VOICE;
     }
 
+    /**
+     * Determines the language Ciel should speak based on Mode and Lock state.
+     */
     public static String getActiveLanguageCode() {
-        return isLanguageLocked() ? "ja-JP" : "en-US";
+        // 1. If Tensura Puzzle is active, FORCE Japanese.
+        if (isLanguageLocked()) {
+            return "ja-JP";
+        }
+        
+        // 2. If in D&D Mode (and not locked), speak English.
+        if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
+            return "en-US";
+        }
+
+        // 3. Default App Mode is Japanese (as per user preference).
+        return "ja-JP";
     }
 
-    public static String getVoiceId() {
-        return isLanguageLocked() ? config.getProperty("voice.world.id") : config.getProperty("voice.companion.id");
+    /**
+     * Returns the specific Neural Voice ID based on the active language.
+     */
+    public static String getActiveVoiceName() {
+        String lang = getActiveLanguageCode();
+        if ("en-US".equals(lang)) {
+            return config.getProperty("voice.english.id", "en-US-JennyNeural");
+        } else {
+            return config.getProperty("voice.japanese.id", "ja-JP-NanamiNeural");
+        }
     }
 }

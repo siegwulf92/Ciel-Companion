@@ -1,9 +1,11 @@
 package com.cielcompanion;
 
+import com.cielcompanion.dnd.CombatTrackerService;
 import com.cielcompanion.dnd.DndCampaignService;
 import com.cielcompanion.dnd.LoreService;
 import com.cielcompanion.dnd.MasteryService;
 import com.cielcompanion.dnd.RulebookService;
+import com.cielcompanion.dnd.SpellMishapService;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.mood.EmotionManager;
 import com.cielcompanion.service.*;
@@ -86,16 +88,20 @@ public class CielCompanion {
             // D&D Services Initialization
             LoreService loreService = new LoreService();
             RulebookService rulebookService = new RulebookService();
-            // NEW: Initialize the Campaign Tracking Services
             MasteryService masteryService = new MasteryService();
             DndCampaignService dndCampaignService = new DndCampaignService();
             
-            // UPDATED: CommandService now accepts the new D&D services
+            // NEW SERVICES
+            CombatTrackerService combatTrackerService = new CombatTrackerService();
+            SpellMishapService spellMishapService = new SpellMishapService();
+            
+            // UPDATED: CommandService now accepts ALL D&D services
             CommandService commandService = new CommandService(
                 intentService, appLauncherService, conversationService, routineService, 
                 webService, appFinderService, appScannerService, emotionManager, 
                 soundService, loreService, rulebookService, 
-                masteryService, dndCampaignService
+                masteryService, dndCampaignService,
+                combatTrackerService, spellMishapService // Added here
             );
 
             voiceListener = new VoiceListener(commandService);
@@ -188,17 +194,31 @@ public class CielCompanion {
 
     private static void startTriggerListener(int port, String passphrase, Runnable action) {
         new Thread(() -> {
-            try (ServerSocket serverSocket = new ServerSocket(port)) {
-                while (!Thread.currentThread().isInterrupted()) {
-                    try (Socket clientSocket = serverSocket.accept();
-                         BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream(), StandardCharsets.UTF_8))) {
-                        String receivedPassphrase = reader.readLine();
-                        if (receivedPassphrase != null && passphrase.equals(receivedPassphrase.trim())) {
-                            if (action != null) action.run();
+            boolean bindSuccess = false;
+            while (!bindSuccess && !Thread.currentThread().isInterrupted()) {
+                try (ServerSocket serverSocket = new ServerSocket(port)) {
+                    System.out.println("Ciel Debug: Trigger listener started on port " + port);
+                    bindSuccess = true;
+                    
+                    while (!Thread.currentThread().isInterrupted()) {
+                        try (Socket clientSocket = serverSocket.accept();
+                             BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream(), StandardCharsets.UTF_8))) {
+                            String receivedPassphrase = reader.readLine();
+                            if (receivedPassphrase != null && passphrase.equals(receivedPassphrase.trim())) {
+                                System.out.println("Ciel Debug: Valid trigger received on port " + port);
+                                if (action != null) action.run();
+                            } else {
+                                System.out.println("Ciel Warning: Invalid trigger passphrase received.");
+                            }
+                        } catch (IOException e) {
+                            System.err.println("Ciel Warning: Trigger connection error: " + e.getMessage());
                         }
-                    } catch (IOException ignored) {}
+                    }
+                } catch (IOException e) {
+                    System.err.println("Ciel Error: Could not bind trigger port " + port + ". Retrying in 5 seconds...");
+                    try { Thread.sleep(5000); } catch (InterruptedException ie) { break; }
                 }
-            } catch (IOException ignored) {}
+            }
         }, "Ciel-Trigger-Listener-" + port).start();
     }
 }

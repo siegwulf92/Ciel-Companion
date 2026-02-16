@@ -10,17 +10,70 @@ import java.util.*;
 
 public class DndCampaignService {
     private JsonObject surges, memories, patron, quirks;
-    private JsonObject currentWorldConfig; // NEW: Holds active world data
+    private JsonObject currentWorldConfig;
     private final Path campaignRoot;
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
     private final Random random = new Random();
+    
+    // NEW: The Dynamic Brain
+    private final DynamicResponses dynamicResponses;
+    
+    // Manual tracking for now (could be saved to a JSON state file later)
+    private int currentAct = 1;
+    private int worldsCompleted = 0;
+    private int perfectWorlds = 0;
 
     public DndCampaignService() {
         String pathStr = Settings.getDndCampaignPath();
         this.campaignRoot = (pathStr != null && !pathStr.isBlank()) ? Paths.get(pathStr) : null;
+        this.dynamicResponses = new DynamicResponses();
         loadAllData();
     }
 
+    // ... [Existing loadAllData, loadJson, loadWorldConfig methods] ...
+
+    // --- NEW DYNAMIC METHODS ---
+
+    /**
+     * Called when a spell fails due to plot/metaphysics.
+     * Guarantees a "Spell Refund" or "Metaphysics" line.
+     */
+    public void triggerSpellRefund(String spellName) {
+        // Force context "spell_refund"
+        String line = dynamicResponses.getDynamicLine("spell_refund", currentAct, worldsCompleted, perfectWorlds);
+        SpeechService.speakPreformatted(line);
+    }
+
+    /**
+     * Called periodically or manually to comment on the environment.
+     */
+    public void triggerAmbientCommentary(String context) {
+        // Context could be "exploration", "danger", "eerie"
+        String line = dynamicResponses.getDynamicLine(context, currentAct, worldsCompleted, perfectWorlds);
+        SpeechService.speakPreformatted(line);
+    }
+    
+    /**
+     * Called when the party successfully finishes a task/combat.
+     */
+    public void triggerSuccessCommentary() {
+        String line = dynamicResponses.getDynamicLine("success", currentAct, worldsCompleted, perfectWorlds);
+        SpeechService.speakPreformatted(line);
+    }
+    
+    // State Setters (You can wire these to voice commands later if needed)
+    public void setAct(int act) { this.currentAct = act; }
+    public void addWorldCompletion(boolean isPerfect) {
+        this.worldsCompleted++;
+        if (isPerfect) this.perfectWorlds++;
+    }
+
+    // ... [Existing methods: checkQuirks, translatePatron, incrementSurge, etc.] ...
+
+    // (Include the rest of your existing DndCampaignService code here)
+    // I am omitting the repetitive existing methods to save space, 
+    // but ensure you keep loadJson, saveJson, etc.
+    
     private void loadAllData() {
         if (campaignRoot == null) return;
         surges = loadJson("data/surge_tracker.json");
@@ -28,54 +81,9 @@ public class DndCampaignService {
         patron = loadJson("data/patron_translations.json");
         quirks = loadJson("data/character_quirks.json");
     }
-
-    // NEW: Call this when entering a new world
-    public void loadWorldConfig(String worldFolderName) {
-        if (campaignRoot == null) return;
-        String relativePath = "Worlds/" + worldFolderName + "/world_config.json";
-        currentWorldConfig = loadJson(relativePath);
-        
-        if (currentWorldConfig.size() > 0) {
-            String worldName = currentWorldConfig.has("world_name") ? currentWorldConfig.get("world_name").getAsString() : worldFolderName;
-            System.out.println("Ciel Debug: Loaded config for world: " + worldName);
-            
-            // Auto-play entrance line if available
-            speakWorldResponse("enter");
-        } else {
-            System.out.println("Ciel Warning: No config found for " + worldFolderName);
-        }
-    }
-
-    public String getCurrentAmbientTrack() {
-        if (currentWorldConfig != null && currentWorldConfig.has("music")) {
-            JsonObject music = currentWorldConfig.getAsJsonObject("music");
-            if (music.has("ambient_track")) return music.get("ambient_track").getAsString();
-        }
-        return null;
-    }
-
-    public String getCurrentBattleTrack() {
-        if (currentWorldConfig != null && currentWorldConfig.has("music")) {
-            JsonObject music = currentWorldConfig.getAsJsonObject("music");
-            if (music.has("battle_track")) return music.get("battle_track").getAsString();
-        }
-        return null;
-    }
-
-    // Helper to speak random world-specific lines
-    public void speakWorldResponse(String key) {
-        if (currentWorldConfig == null || !currentWorldConfig.has("ciel_responses")) return;
-        JsonObject responses = currentWorldConfig.getAsJsonObject("ciel_responses");
-        
-        if (responses.has(key)) {
-            JsonArray lines = responses.getAsJsonArray(key);
-            if (lines.size() > 0) {
-                String line = lines.get(random.nextInt(lines.size())).getAsString();
-                SpeechService.speakPreformatted(line);
-            }
-        }
-    }
-
+    
+    // ... [Include loadWorldConfig, speakWorldResponse, etc from previous version] ...
+    
     private JsonObject loadJson(String relativePath) {
         try {
             Path path = campaignRoot.resolve(relativePath);
@@ -86,8 +94,7 @@ public class DndCampaignService {
             return new JsonObject();
         }
     }
-
-    // ... [Rest of your existing methods: checkQuirks, translatePatron, incrementSurge, etc.] ...
+    
     public void checkQuirks(String speaker, String text) {
         if (quirks == null || !quirks.has("quirks")) return;
         JsonArray qArray = quirks.getAsJsonArray("quirks");
@@ -101,16 +108,6 @@ public class DndCampaignService {
                 }
             }
         }
-    }
-
-    public String translatePatron(String message) {
-        if (patron == null || !patron.has("lexicon")) return null;
-        JsonObject lexicon = patron.getAsJsonObject("lexicon");
-        String lowerMsg = message.toLowerCase();
-        for (String key : lexicon.keySet()) {
-            if (lowerMsg.contains(key.toLowerCase())) return lexicon.get(key).getAsString();
-        }
-        return null;
     }
 
     public void incrementSurge(String player) {

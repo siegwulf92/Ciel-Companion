@@ -7,9 +7,13 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Optional;
 
-public record MoodConfig(Map<String, EmotionDefinition> emotions) {
+public record MoodConfig(
+    Map<String, EmotionDefinition> emotions,
+    Map<String, AttitudeDefinition> attitudes // NEW
+) {
 
     public record EmotionDefinition(String baseColor, AnimationStyle animation, String ssmlStyle, String pitch, Map<String, CauseDefinition> causes) {}
+    public record AttitudeDefinition(String styleModifier, String pitchModifier) {} // NEW
     public record CauseDefinition(String colorTint) {}
     public enum AnimationStyle { GENTLE_PULSE, SHARP_FLICKER, SLOW_BURN, SLOW_FADE, RAINBOW_CYCLE, ERRATIC_FLICKER }
 
@@ -31,5 +35,11 @@ public record MoodConfig(Map<String, EmotionDefinition> emotions) {
 
     public static Optional<EmotionDefinition> getEmotionDef(String name) {
         return Optional.ofNullable(getInstance().emotions.get(name));
+    }
+    
+    // NEW helper
+    public static Optional<AttitudeDefinition> getAttitudeDef(String name) {
+        if (getInstance().attitudes == null) return Optional.empty();
+        return Optional.ofNullable(getInstance().attitudes.get(name));
     }
 }

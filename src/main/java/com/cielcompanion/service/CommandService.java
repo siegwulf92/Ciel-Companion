@@ -1,10 +1,12 @@
 package com.cielcompanion.service;
 
 import com.cielcompanion.CielState;
+import com.cielcompanion.dnd.CombatTrackerService;
 import com.cielcompanion.dnd.DndCampaignService;
 import com.cielcompanion.dnd.LoreService;
 import com.cielcompanion.dnd.MasteryService;
 import com.cielcompanion.dnd.RulebookService;
+import com.cielcompanion.dnd.SpellMishapService;
 import com.cielcompanion.memory.Fact;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
@@ -63,16 +65,20 @@ public class CommandService {
     private final RulebookService rulebookService;
     private final MasteryService masteryService;
     private final DndCampaignService dndCampaignService;
+    private final CombatTrackerService combatTrackerService; // New
+    private final SpellMishapService spellMishapService;     // New
     
     private VoiceListener voiceListener;
 
+    // Updated Constructor
     public CommandService(IntentService intentService, AppLauncherService appLauncherService, 
                           ConversationService conversationService, RoutineService routineService, 
                           WebService webService, AppFinderService appFinderService, 
                           AppScannerService appScannerService, EmotionManager emotionManager, 
                           SoundService soundService, LoreService loreService, 
                           RulebookService rulebookService, MasteryService masteryService, 
-                          DndCampaignService dndCampaignService) {
+                          DndCampaignService dndCampaignService,
+                          CombatTrackerService combatTrackerService, SpellMishapService spellMishapService) {
         this.intentService = intentService;
         this.appLauncherService = appLauncherService;
         this.conversationService = conversationService;
@@ -86,6 +92,8 @@ public class CommandService {
         this.rulebookService = rulebookService;
         this.masteryService = masteryService;
         this.dndCampaignService = dndCampaignService;
+        this.combatTrackerService = combatTrackerService;
+        this.spellMishapService = spellMishapService;
     }
 
     public void setVoiceListener(VoiceListener voiceListener) {
@@ -115,8 +123,6 @@ public class CommandService {
                 }
 
                 // 2. Speaker & Quirk Check (Dynamic World Voice)
-                // If the IntentService identified a speaker (e.g. "Brandon: I see an asteroid")
-                // Check if that triggers a character quirk via DndCampaignService
                 String speaker = analysis.entities().get("speaker");
                 if (speaker != null) {
                     dndCampaignService.checkQuirks(speaker, text);
@@ -178,13 +184,11 @@ public class CommandService {
             case SET_MODE_DND: handleSetModeCommand(OperatingMode.DND_ASSISTANT); break;
             case SET_MODE_INTEGRATED: handleSetModeCommand(OperatingMode.INTEGRATED); break;
             
-            // --- NEW: Phonetic Learning ---
+            // --- Phonetic Learning ---
             case LEARN_PHONETIC: handleLearnPhoneticCommand(analysis); break;
 
             // --- D&D Campaign Management ---
-            case DND_RUN_AUDIT: 
-                loreService.runCampaignAudit(); 
-                break;
+            case DND_RUN_AUDIT: loreService.runCampaignAudit(); break;
             case DND_RECORD_MASTERY:
                 masteryService.recordMeaningfulUse(
                     analysis.entities().get("player"), 
@@ -198,7 +202,15 @@ public class CommandService {
                 handleOpenCheatSheet();
                 break;
 
-            // --- D&D Gameplay ---
+            // --- Tensura Puzzle ---
+            case TENSURA_ENTER_WORLD:
+                CielTriggerEngine.onEnterTensuraWorld();
+                break;
+            case TENSURA_CONFIRM_COPY:
+                CielTriggerEngine.attemptPuzzleSolution();
+                break;
+
+            // --- D&D Gameplay & Combat ---
             case DND_ROLL_DICE: handleDiceRollCommand(analysis); break;
             case DND_PLAY_SOUND: 
                 if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT || CielState.getCurrentMode() == OperatingMode.INTEGRATED) {
@@ -210,7 +222,19 @@ public class CommandService {
                       }
                 }
                 break;
+                
+            // NEW Combat Intents (Requires updating Intent.java to match, but added logic here)
+            // case DND_START_COMBAT: combatTrackerService.startCombat(); break;
+            // case DND_END_COMBAT: combatTrackerService.endCombat(); break;
+            // case DND_NEXT_TURN: combatTrackerService.nextTurn(); break;
+            // case DND_CHECK_MISHAP:
+            //     String caster = analysis.entities().get("player");
+            //     int roll = Integer.parseInt(analysis.entities().getOrDefault("roll", "0"));
+            //     int dc = Integer.parseInt(analysis.entities().getOrDefault("dc", "10"));
+            //     spellMishapService.checkMishap(caster, roll, dc);
+            //     break;
 
+            // --- Lore Management ---
             case DND_CREATE_SESSION_NOTE: loreService.createNote(analysis.entities().get("subject")); break;
             case DND_ADD_TO_SESSION_NOTE: loreService.addToNote(analysis.entities().get("subject"), analysis.entities().get("content")); break;
             case DND_RECALL_SESSION_NOTE: loreService.recallNote(analysis.entities().get("subject")); break;

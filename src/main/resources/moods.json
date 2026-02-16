@@ -64,5 +64,27 @@
       "ssmlStyle": "sad",
       "pitch": "-2%"
     }
+  },
+  "attitudes": {
+    "Professional": {
+      "styleModifier": "default",
+      "pitchModifier": "default"
+    },
+    "Concerned": {
+      "styleModifier": "whispering",
+      "pitchModifier": "-5%"
+    },
+    "Amused": {
+      "styleModifier": "cheerful",
+      "pitchModifier": "+2%"
+    },
+    "Glitched": {
+      "styleModifier": "terrified", 
+      "pitchModifier": "-10%"
+    },
+    "Judging": {
+      "styleModifier": "unfriendly",
+      "pitchModifier": "-2%"
+    }
   }
 }

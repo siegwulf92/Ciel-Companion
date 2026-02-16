@@ -68,8 +68,15 @@ public class IntentService {
         intentPatterns.put(Intent.DND_ADD_TO_SESSION_NOTE, Pattern.compile("(?i)add to (?<subject>.+?)(s'|'s)? session note (?<content>.+)"));
         intentPatterns.put(Intent.DND_LINK_SESSION_NOTE, Pattern.compile("(?i)link session notes (?<subjectA>.+) and (?<subjectB>.+)"));
         intentPatterns.put(Intent.DND_RECALL_SESSION_LINKS, Pattern.compile("(?i)(what is linked to|get connections for) (?<subject>.+)"));
-        intentPatterns.put(Intent.DND_RECALL_SESSION_NOTE, Pattern.compile("(?i)(what do we know about|recall the session note for) (?<subject>.+)"));
+        intentPatterns.put(Intent.DND_RECALL_SESSION_NOTE, Pattern.compile("(?i)(what do we know about|recall the session note for|tell me about) (?<subject>.+)"));
         intentPatterns.put(Intent.DND_ANALYZE_LORE, Pattern.compile("(?i)(analyze my notes on|what are my notes on) (?<subject>.+)"));
+
+        // --- Tensura Puzzle Triggers ---
+        // Enter the world (DM triggers this)
+        intentPatterns.put(Intent.TENSURA_ENTER_WORLD, Pattern.compile("(?i)enter (the )?tensura world|start tensura (protocol|mode)"));
+        
+        // The Solution: Players saying "Copy" or "Yes" within the timeframe
+        intentPatterns.put(Intent.TENSURA_CONFIRM_COPY, Pattern.compile("(?i)(yes )?(please )?(copy|duplicate|restore) (the )?(skill|ability|raphael)|(confirmed|approved|proceed|execute)"));
 
 
         // --- General Intents ---
