@@ -6,7 +6,7 @@ import com.cielcompanion.dnd.DndCampaignService;
 import com.cielcompanion.dnd.LoreService;
 import com.cielcompanion.dnd.MasteryService;
 import com.cielcompanion.dnd.RulebookService;
-import com.cielcompanion.dnd.SpellMishapService;
+import com.cielcompanion.dnd.SpellCheckService; // Updated import
 import com.cielcompanion.memory.Fact;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
@@ -65,12 +65,11 @@ public class CommandService {
     private final RulebookService rulebookService;
     private final MasteryService masteryService;
     private final DndCampaignService dndCampaignService;
-    private final CombatTrackerService combatTrackerService; // New
-    private final SpellMishapService spellMishapService;     // New
+    private final CombatTrackerService combatTrackerService; 
+    private final SpellCheckService spellCheckService; // Updated type
     
     private VoiceListener voiceListener;
 
-    // Updated Constructor
     public CommandService(IntentService intentService, AppLauncherService appLauncherService, 
                           ConversationService conversationService, RoutineService routineService, 
                           WebService webService, AppFinderService appFinderService, 
@@ -78,7 +77,7 @@ public class CommandService {
                           SoundService soundService, LoreService loreService, 
                           RulebookService rulebookService, MasteryService masteryService, 
                           DndCampaignService dndCampaignService,
-                          CombatTrackerService combatTrackerService, SpellMishapService spellMishapService) {
+                          CombatTrackerService combatTrackerService, SpellCheckService spellCheckService) { // Updated signature
         this.intentService = intentService;
         this.appLauncherService = appLauncherService;
         this.conversationService = conversationService;
@@ -93,7 +92,7 @@ public class CommandService {
         this.masteryService = masteryService;
         this.dndCampaignService = dndCampaignService;
         this.combatTrackerService = combatTrackerService;
-        this.spellMishapService = spellMishapService;
+        this.spellCheckService = spellCheckService;
     }
 
     public void setVoiceListener(VoiceListener voiceListener) {
@@ -222,17 +221,19 @@ public class CommandService {
                       }
                 }
                 break;
-                
-            // NEW Combat Intents (Requires updating Intent.java to match, but added logic here)
-            // case DND_START_COMBAT: combatTrackerService.startCombat(); break;
-            // case DND_END_COMBAT: combatTrackerService.endCombat(); break;
-            // case DND_NEXT_TURN: combatTrackerService.nextTurn(); break;
-            // case DND_CHECK_MISHAP:
-            //     String caster = analysis.entities().get("player");
-            //     int roll = Integer.parseInt(analysis.entities().getOrDefault("roll", "0"));
-            //     int dc = Integer.parseInt(analysis.entities().getOrDefault("dc", "10"));
-            //     spellMishapService.checkMishap(caster, roll, dc);
-            //     break;
+
+            // NEW Combat and Spell Check Intents (Add these to Intent.java if not present)
+            // Note: Ensure Intent.java has DND_START_COMBAT, DND_END_COMBAT, DND_NEXT_TURN, DND_CHECK_MISHAP
+            /*
+            case DND_START_COMBAT: combatTrackerService.startCombat(); break;
+            case DND_END_COMBAT: combatTrackerService.endCombat(); break;
+            case DND_NEXT_TURN: combatTrackerService.nextTurn(); break;
+            case DND_CHECK_MISHAP:
+                 String caster = analysis.entities().get("player");
+                 int roll = Integer.parseInt(analysis.entities().getOrDefault("roll", "0"));
+                 spellCheckService.processSpellCheck(caster, roll); // Updated call
+                 break;
+            */
 
             // --- Lore Management ---
             case DND_CREATE_SESSION_NOTE: loreService.createNote(analysis.entities().get("subject")); break;

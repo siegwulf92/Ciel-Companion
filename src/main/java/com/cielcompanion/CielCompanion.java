@@ -5,7 +5,7 @@ import com.cielcompanion.dnd.DndCampaignService;
 import com.cielcompanion.dnd.LoreService;
 import com.cielcompanion.dnd.MasteryService;
 import com.cielcompanion.dnd.RulebookService;
-import com.cielcompanion.dnd.SpellMishapService;
+import com.cielcompanion.dnd.SpellCheckService; // Changed from SpellMishapService
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.mood.EmotionManager;
 import com.cielcompanion.service.*;
@@ -93,15 +93,15 @@ public class CielCompanion {
             
             // NEW SERVICES
             CombatTrackerService combatTrackerService = new CombatTrackerService();
-            SpellMishapService spellMishapService = new SpellMishapService();
+            SpellCheckService spellCheckService = new SpellCheckService(); // Changed from SpellMishapService
             
-            // UPDATED: CommandService now accepts ALL D&D services
+            // UPDATED: CommandService now accepts ALL D&D services including spellCheckService
             CommandService commandService = new CommandService(
                 intentService, appLauncherService, conversationService, routineService, 
                 webService, appFinderService, appScannerService, emotionManager, 
                 soundService, loreService, rulebookService, 
                 masteryService, dndCampaignService,
-                combatTrackerService, spellMishapService // Added here
+                combatTrackerService, spellCheckService // Pass correct service here
             );
 
             voiceListener = new VoiceListener(commandService);
@@ -176,7 +176,6 @@ public class CielCompanion {
                 appLauncherService.initialize();
                 routineService.initialize();
                 soundService.initialize();
-                // Lore/Rulebook initialized in main thread, safe to use
                 voiceListener.initialize();
                 voiceListener.initializeMicrophoneAsync();
                 startTriggerListener(5555, COMMAND_TRIGGER_PASSPHRASE, () -> voiceListener.startListeningForCommand());
@@ -205,10 +204,7 @@ public class CielCompanion {
                              BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream(), StandardCharsets.UTF_8))) {
                             String receivedPassphrase = reader.readLine();
                             if (receivedPassphrase != null && passphrase.equals(receivedPassphrase.trim())) {
-                                System.out.println("Ciel Debug: Valid trigger received on port " + port);
                                 if (action != null) action.run();
-                            } else {
-                                System.out.println("Ciel Warning: Invalid trigger passphrase received.");
                             }
                         } catch (IOException e) {
                             System.err.println("Ciel Warning: Trigger connection error: " + e.getMessage());
