@@ -27,12 +27,11 @@ public class AIEngine {
             .build();
     private static final Gson gson = new Gson();
     
-    private static final Pattern EMOTION_TAG_PATTERN = Pattern.compile("^\\[(.*?)\\]\\s*");
+    private static final Pattern EMOTION_TAG_PATTERN = Pattern.compile("\\[([a-zA-Z]+)\\]");
     private static final Pattern THINK_TAG_PATTERN = Pattern.compile("(?s)<think>.*?</think>");
 
-    // --- NEW: Multi-turn Conversation Memory ---
     private static final LinkedList<JsonObject> conversationHistory = new LinkedList<>();
-    private static final int MAX_HISTORY = 10; // Keep the last 10 messages (5 exchanges)
+    private static final int MAX_HISTORY = 10; 
 
     private static synchronized void addHistory(String role, String content) {
         JsonObject msg = new JsonObject();
@@ -43,11 +42,7 @@ public class AIEngine {
             conversationHistory.removeFirst();
         }
     }
-    // ------------------------------------------
 
-    /**
-     * Tier 1: PERSONALITY (Fast, GPU, Streamed)
-     */
     public static void chatFast(String userMessage, String systemContext, Runnable onComplete) {
         System.out.println("Ciel Debug: Routing to Personality Core (Streamed)...");
         
@@ -73,7 +68,7 @@ public class AIEngine {
                     }
 
                     StringBuilder sentenceBuffer = new StringBuilder();
-                    StringBuilder fullResponseBuffer = new StringBuilder(); // To save to history
+                    StringBuilder fullResponseBuffer = new StringBuilder(); 
 
                     response.body().forEach(line -> {
                         if (line.startsWith("data: ") && !line.equals("data: [DONE]")) {
@@ -102,6 +97,12 @@ public class AIEngine {
                     }
                     
                     addHistory("assistant", fullResponseBuffer.toString());
+
+                    // DYNAMIC TIMER: Ensure user has 20 seconds to reply AFTER the speech finishes playing
+                    long durationMs = SpeechService.estimateSpeechDuration(fullResponseBuffer.toString());
+                    int extraSeconds = (int) (durationMs / 1000) + 20;
+                    com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
+                    
                 })
                 .exceptionally(e -> {
                     if (!isFallbackTriggered.get()) triggerFallback(userMessage, systemContext, onComplete);
@@ -112,10 +113,6 @@ public class AIEngine {
                 });
     }
 
-    /**
-     * Tier 2: EVALUATOR (Background, CPU, JSON)
-     * Does NOT use conversation history to prevent context pollution.
-     */
     public static CompletableFuture<JsonObject> evaluateBackground(String transcriptBuffer, String systemContext) {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
         JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, "TRANSCRIPT:\n" + transcriptBuffer, false);
@@ -138,9 +135,6 @@ public class AIEngine {
                 });
     }
 
-    /**
-     * Tier 3: LOGIC CORE (Deep Reasoning, LM Studio Phi-4, Non-Streamed)
-     */
     public static void reasonDeeply(String userMessage, String systemContext, Runnable onComplete) {
         System.out.println("Ciel Debug: Routing to Logic Core (Phi-4 Reasoning)...");
         SpeechService.speakPreformatted("[Focused] Initiating deep cognitive analysis. Please stand by.");
@@ -171,6 +165,10 @@ public class AIEngine {
                         }
                         
                         addHistory("assistant", cleanContent);
+
+                        long durationMs = SpeechService.estimateSpeechDuration(cleanContent);
+                        int extraSeconds = (int) (durationMs / 1000) + 20;
+                        com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
                     } else {
                         SpeechService.speakPreformatted("[Annoyed] Logic core returned an anomaly. Routing to fallback.");
                         triggerFallback(userMessage, systemContext, null);
@@ -212,7 +210,12 @@ public class AIEngine {
                                 .getAsJsonObject("message").get("content").getAsString();
                         
                         for (String s : content.split("(?<=[.!?])\\s+")) processAndSpeakChunk(s);
+                        
                         addHistory("assistant", content);
+
+                        long durationMs = SpeechService.estimateSpeechDuration(content);
+                        int extraSeconds = (int) (durationMs / 1000) + 20;
+                        com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
                     } else {
                         SpeechService.speakPreformatted("[Glitched] Fallback cognitive matrix also unavailable.");
                     }
@@ -222,9 +225,6 @@ public class AIEngine {
                 });
     }
 
-    /**
-     * Replaces the single-message payload builder for fast/logic chat to inject rolling memory.
-     */
     private static JsonObject buildPayloadWithHistory(ModelManager.ModelTier tier, String systemContext, boolean stream) {
         JsonObject payload = new JsonObject();
         
@@ -245,7 +245,6 @@ public class AIEngine {
         sysMsg.addProperty("content", systemContext);
         messages.add(sysMsg);
 
-        // Inject rolling history
         synchronized (conversationHistory) {
             for (JsonObject historicMsg : conversationHistory) {
                 messages.add(historicMsg);
@@ -258,7 +257,7 @@ public class AIEngine {
 
     private static boolean isSentenceBoundary(String text) {
         String t = text.trim();
-        return t.endsWith(".") || t.endsWith("!") || t.endsWith("?") || t.endsWith("\n");
+        return t.endsWith("。") || t.endsWith("？") || t.endsWith("！") || t.endsWith(".") || t.endsWith("!") || t.endsWith("?") || t.endsWith("\n");
     }
 
     private static void processAndSpeakChunk(String chunk) {
@@ -268,20 +267,18 @@ public class AIEngine {
         Matcher matcher = EMOTION_TAG_PATTERN.matcher(cleanText);
         String emotionToTrigger = null;
 
-        if (matcher.find()) {
+        while (matcher.find()) {
             emotionToTrigger = matcher.group(1);
-            cleanText = matcher.replaceFirst("").trim();
         }
+        
+        cleanText = matcher.replaceAll("").trim();
+        cleanText = cleanText.replaceAll("\\*.*?\\*", "").trim();
 
-        // Trigger emotion visually if found, and clear "Amused" or "Annoyed" tags to avoid TTS saying bracketed text.
         if (emotionToTrigger != null && !emotionToTrigger.isBlank()) {
             final String finalEmotion = emotionToTrigger;
             CielState.getEmotionManager().ifPresent(em -> {
                 em.triggerEmotion(finalEmotion, 0.8, "Conversational Reaction");
             });
-        } else {
-            // Also attempt to strip loose tags like [laughs] or *sighs* just in case the AI hallucinates them
-            cleanText = cleanText.replaceAll("\\[.*?\\]", "").replaceAll("\\*.*?\\*", "").trim();
         }
 
         if (!cleanText.isEmpty()) {

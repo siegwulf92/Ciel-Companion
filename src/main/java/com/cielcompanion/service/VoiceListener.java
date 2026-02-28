@@ -32,8 +32,11 @@ public class VoiceListener {
     private static final String[] MIC_PRIORITY = {"Microphone (NVIDIA Broadcast)", "Focusrite", "Default Input"};
     private static final int PRIVILEGED_MODE_DURATION_SECONDS = 10;
     private static final double MIN_CONFIDENCE = 0.50;
-    // ADDED "still" and "steel" to the wake word regex
-    private static final Pattern WAKE_WORD_PATTERN = Pattern.compile("^(ciel|cl|seal|seo|see i|hey allison|he see our|cl what|see how can you want|how can you open|he see our launch|hunter|so listen|ceo listen|still|steel)", Pattern.CASE_INSENSITIVE);
+    
+    // ADDED "feel", "fill", "she'll" to catch more STT errors
+    private static final String WAKE_WORD_REGEX = "^(?:hey\\s+|hi\\s+|uh\\s+|um\\s+|ok\\s+|okay\\s+|so\\s+|well\\s+)?(ciel|cl|seal|seo|ceo|joe|chill|tell|feel|fill|she'll|c l|see l|see el|see i|still|steel|steal|sail|sale|shell|hey allison|he see our|cl what|see how can you want|how can you open|he see our launch|hunter|so listen|ceo listen)";
+    private static final Pattern WAKE_WORD_PATTERN = Pattern.compile(WAKE_WORD_REGEX, Pattern.CASE_INSENSITIVE);
+    
     private static final Pattern SEARCH_TRIGGER_PATTERN = Pattern.compile("^(ciel search|cl search|seal search|seel search|seo search)", Pattern.CASE_INSENSITIVE);
     private static final Set<String> PHANTOM_NOISES = Set.of("huh", "the", "a", "an", "who", "what");
     
@@ -151,12 +154,13 @@ public class VoiceListener {
             double confidence = getConfidence(resultJson);
             if (confidence < MIN_CONFIDENCE) return;
 
-            // Wake word safety check - ignore if it's JUST the wake word and nothing else
-            if (WAKE_WORD_PATTERN.matcher(transcribedText).results().count() > 0 && transcribedText.split("\\s+").length <= 2) {
-                return;
+            if (hasWakeWord) {
+                String cleanedText = WAKE_WORD_PATTERN.matcher(transcribedText).replaceFirst("").trim();
+                if (cleanedText.isEmpty()) {
+                    return;
+                }
             }
             
-            // Pass the hasWakeWord flag to CommandService so IT can decide if it's an Easter egg or background noise
             commandService.handleCommand(transcribedText, hasWakeWord, () -> isProcessing.set(false));
         } finally {
             if (!commandService.isBusy()) isProcessing.set(false);

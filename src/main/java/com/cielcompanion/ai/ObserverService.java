@@ -39,7 +39,13 @@ public class ObserverService {
     private static synchronized void evaluateBuffer() {
         if (transcriptBuffer.isEmpty()) return;
 
+        // Take a snapshot of the current transcript
         String combinedTranscript = transcriptBuffer.stream().collect(Collectors.joining("\n"));
+        
+        // CRITICAL FIX: Clear the buffer IMMEDIATELY before sending to the AI.
+        // This ensures that even if she chooses NOT to speak, she won't re-evaluate the exact same audio 45 seconds later.
+        transcriptBuffer.clear();
+
         String context = ContextBuilder.buildObserverContext();
 
         AIEngine.evaluateBackground(combinedTranscript, context).thenAccept(result -> {
@@ -49,7 +55,6 @@ public class ObserverService {
                 
                 if (result.has("speech")) {
                     String speech = result.get("speech").getAsString();
-                    transcriptBuffer.clear(); // Clear so she doesn't repeat it
                     extractAndSpeak(speech);
                 }
             }
@@ -61,13 +66,20 @@ public class ObserverService {
 
     private static void extractAndSpeak(String text) {
         String cleanText = text.trim();
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("^\\[(.*?)\\]\\s*").matcher(cleanText);
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\[([a-zA-Z]+)\\]").matcher(cleanText);
         
-        if (matcher.find()) {
-            String emotion = matcher.group(1);
-            cleanText = matcher.replaceFirst("").trim();
+        String emotion = null;
+        while (matcher.find()) {
+            emotion = matcher.group(1);
+        }
+        
+        cleanText = matcher.replaceAll("").trim();
+        cleanText = cleanText.replaceAll("\\*.*?\\*", "").trim();
+        
+        if (emotion != null && !emotion.isBlank()) {
+            final String finalEmotion = emotion;
             com.cielcompanion.CielState.getEmotionManager().ifPresent(em -> 
-                em.triggerEmotion(emotion, 0.9, "Observer Interjection")
+                em.triggerEmotion(finalEmotion, 0.9, "Observer Interjection")
             );
         }
         

@@ -7,23 +7,19 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-/**
- * A simple Natural Language Understanding service to determine user intent.
- * INTEGRATED: Includes all original Easter Eggs + New D&D Campaign Logic.
- */
 public class IntentService {
 
     private final Map<Intent, Pattern> intentPatterns = new LinkedHashMap<>();
-    private static final Pattern MISHEARD_TRIGGER_PATTERN = Pattern.compile("^(ciel|cl|seal|seo|see i|hey allison|he see our|cl what|see how can you want|how can you open|he see our launch|hunter|so listen|ceo listen|still|steel)\\s+", Pattern.CASE_INSENSITIVE);
+    
+    private static final Pattern MISHEARD_TRIGGER_PATTERN = Pattern.compile("^(?:hey\\s+|hi\\s+|uh\\s+|um\\s+|ok\\s+|okay\\s+|so\\s+|well\\s+)?(ciel|cl|seal|seo|ceo|joe|chill|tell|feel|fill|she'll|c l|see l|see el|see i|still|steel|steal|sail|sale|shell|hey allison|he see our|cl what|see how can you want|how can you open|he see our launch|hunter|so listen|ceo listen)\\s+", Pattern.CASE_INSENSITIVE);
+    
     private final Map<String, List<String>> mishearingCorrections = new LinkedHashMap<>();
     private static final Pattern JUNK_PREFIX_PATTERN = Pattern.compile("^(the|a|an)\\s+", Pattern.CASE_INSENSITIVE);
     private static final Set<String> STOP_WORDS = Set.of("a", "an", "the", "is", "are", "was", "were", "in", "of", "to", "and", "i", "you", "it");
 
-    // NEW: Captures "Brandon: I do X" or "Mike: says Y"
     private static final Pattern SPEAKER_PREFIX_PATTERN = Pattern.compile("^(?<speaker>brandon|sam|jody|emilee|mike)\\s*[:\\-]?\\s*", Pattern.CASE_INSENSITIVE);
 
     public void initialize() {
-        // --- Easter Egg Mishearing Corrections (PRESERVED) ---
         mishearingCorrections.put("allons-y", List.of("alone the", "along the", "on the", "hell on the"));
         mishearingCorrections.put("aschente", List.of("action bay", "a shanty", "action to", "a champagne", "has shield i", "action think", "shantae", "a shantae"));
         mishearingCorrections.put("set your heart ablaze", List.of("such your heart ablaze", "set the"));
@@ -40,24 +36,22 @@ public class IntentService {
         mishearingCorrections.put("gomu gomu no", List.of("go more go more no", "go more go no", "go my go no", "go more go me no", "the go more go more no", "gomo gomo", "gum gum no"));
         mishearingCorrections.put("it's a trap", List.of("what is a trap"));
 
-        // --- Standard Intent Patterns (Ordered by specificity) ---
         intentPatterns.put(Intent.TOGGLE_LISTENING, Pattern.compile("(?i)toggle listening"));
         intentPatterns.put(Intent.SET_MODE_ATTENTIVE, Pattern.compile("(?i)(enter|start|begin) (recording|attentive) mode"));
         intentPatterns.put(Intent.SET_MODE_DND, Pattern.compile("(?i)(enter|start|begin) d and d mode"));
         intentPatterns.put(Intent.SET_MODE_INTEGRATED, Pattern.compile("(?i)(return to|enter|resume) (integrated|standard|normal) mode"));
         
-        // --- NEW On-Demand Astronomy Intents ---
-        intentPatterns.put(Intent.GET_MOON_PHASE, Pattern.compile("(?i)(what is|what's) the moon phase( tonight)?"));
-        intentPatterns.put(Intent.GET_VISIBLE_PLANETS, Pattern.compile("(?i)(what|which) planets are visible( tonight)?"));
-        intentPatterns.put(Intent.GET_CONSTELLATIONS, Pattern.compile("(?i)(what|which) constellations are visible( tonight)?"));
-        intentPatterns.put(Intent.GET_ECLIPSES, Pattern.compile("(?i)(are there|is there) any eclipses?( happening| soon| tonight)?"));
+        // REWORKED: Highly tolerant natural language matching for Astronomy
+        intentPatterns.put(Intent.GET_MOON_PHASE, Pattern.compile("(?i).*(what is|what's|tell me).*(moon phase).*"));
+        intentPatterns.put(Intent.GET_VISIBLE_PLANETS, Pattern.compile("(?i).*(what|which).*(planets).*(visible).*"));
+        intentPatterns.put(Intent.GET_CONSTELLATIONS, Pattern.compile("(?i).*(what|which).*(constellations).*(visible).*"));
+        intentPatterns.put(Intent.GET_ECLIPSES, Pattern.compile("(?i).*(when is|are there|is there).*(next|any)?\\s*eclipse.*"));
 
-        // --- D&D Specific Intents (UPDATED) ---
         intentPatterns.put(Intent.DND_RUN_AUDIT, Pattern.compile("(?i)run (campaign|folder) audit"));
         intentPatterns.put(Intent.DND_RECORD_MASTERY, Pattern.compile("(?i)record meaningful (?<skill>.+) (use|success) for (?<player>.+)"));
-        intentPatterns.put(Intent.DND_REPORT_SURGE, Pattern.compile("(?i)report surge for (?<player>.+)")); // NEW
-        intentPatterns.put(Intent.OPEN_CHEAT_SHEET, Pattern.compile("(?i)open (the )?(cheat sheet|master sheet)")); // NEW
-        intentPatterns.put(Intent.LEARN_PHONETIC, Pattern.compile("(?i)remember that (?<key>.+) is (pronounced |called )?(?<value>.+)")); // NEW
+        intentPatterns.put(Intent.DND_REPORT_SURGE, Pattern.compile("(?i)report surge for (?<player>.+)")); 
+        intentPatterns.put(Intent.OPEN_CHEAT_SHEET, Pattern.compile("(?i)open (the )?(cheat sheet|master sheet)")); 
+        intentPatterns.put(Intent.LEARN_PHONETIC, Pattern.compile("(?i)remember that (?<key>.+) is (pronounced |called )?(?<value>.+)")); 
 
         intentPatterns.put(Intent.DND_GET_RULE, Pattern.compile("(?i)(what are the rules for|what's the rule for|how does) (?<topic>.+)"));
         intentPatterns.put(Intent.DND_API_SEARCH, Pattern.compile("(?i)(look up|search for the) (?<type>spell|item|monster) (?<query>.+)"));
@@ -71,28 +65,23 @@ public class IntentService {
         intentPatterns.put(Intent.DND_RECALL_SESSION_NOTE, Pattern.compile("(?i)(what do we know about|recall the session note for|tell me about) (?<subject>.+)"));
         intentPatterns.put(Intent.DND_ANALYZE_LORE, Pattern.compile("(?i)(analyze my notes on|what are my notes on) (?<subject>.+)"));
 
-        // --- Tensura Puzzle Triggers ---
-        // Enter the world (DM triggers this)
         intentPatterns.put(Intent.TENSURA_ENTER_WORLD, Pattern.compile("(?i)enter (the )?tensura world|start tensura (protocol|mode)"));
-        
-        // The Solution: Players saying "Copy" or "Yes" within the timeframe
         intentPatterns.put(Intent.TENSURA_CONFIRM_COPY, Pattern.compile("(?i)(yes )?(please )?(copy|duplicate|restore) (the )?(skill|ability|raphael)|(confirmed|approved|proceed|execute)"));
 
-
-        // --- General Intents ---
-        intentPatterns.put(Intent.GET_WEATHER_FORECAST, Pattern.compile("(?i)(weather|forecast).*(tomorrow|later|tonight)"));
-        intentPatterns.put(Intent.GET_WEATHER, Pattern.compile("(?i)(weather|forecast|temperature|hot|cold|outside)"));
-        intentPatterns.put(Intent.GET_TIME, Pattern.compile("(?i)^what (time|date) is it$|^what's the (time|date)$|\\b(time|date)\\b"));
-        intentPatterns.put(Intent.GET_DAILY_REPORT, Pattern.compile("(?i)(daily report|astronomy)"));
+        intentPatterns.put(Intent.GET_WEATHER_FORECAST, Pattern.compile("(?i).*(weather|forecast).*(tomorrow|later|tonight).*"));
+        intentPatterns.put(Intent.GET_WEATHER, Pattern.compile("(?i).*(weather|temperature|hot|cold|outside).*"));
+        intentPatterns.put(Intent.GET_TIME, Pattern.compile("(?i).*(what time|what's the time|what is the time|what date|what's the date).*"));
+        intentPatterns.put(Intent.GET_DAILY_REPORT, Pattern.compile("(?i).*(daily report|astronomy).*"));
+        intentPatterns.put(Intent.GET_SYSTEM_STATUS, Pattern.compile("(?i).*(status|system report|system status).*"));
+        
         intentPatterns.put(Intent.GET_TOP_MEMORY_PROCESS, Pattern.compile("(?i)((top|which) process.*(memory|ram))|((most|highest) (memory|ram))"));
         intentPatterns.put(Intent.GET_TOP_CPU_PROCESS, Pattern.compile("(?i)((top|which) process.*cpu)|((most|highest) cpu)"));
-        intentPatterns.put(Intent.GET_SYSTEM_STATUS, Pattern.compile("(?i)(status|system report|system status)"));
         intentPatterns.put(Intent.TERMINATE_PROCESS_FORCE, Pattern.compile("(?i)(force close|force quit|force terminate|horse close) (?<appName>.+)"));
         intentPatterns.put(Intent.TERMINATE_PROCESS, Pattern.compile("(?i)(close|quit|terminate) (?<appName>.+)"));
         intentPatterns.put(Intent.INITIATE_REBOOT, Pattern.compile("(?i)(reboot|restart)( the)? (pc|computer|system)?"));
         intentPatterns.put(Intent.INITIATE_SHUTDOWN, Pattern.compile("(?i)shut ?down( the)? (pc|computer|system)?"));
         intentPatterns.put(Intent.CANCEL_SHUTDOWN, Pattern.compile("(?i)cancel (shutdown|reboot)"));
-        intentPatterns.put(Intent.SCAN_FOR_APPS, Pattern.compile("(?i)scan for new (apps|applications|games)"));
+        intentPatterns.put(Intent.SCAN_FOR_APPS, Pattern.compile("(?i).*scan for new (apps|applications|games).*"));
         intentPatterns.put(Intent.FIND_APP_PATH, Pattern.compile("(?i)(find|locate|learn|save path for) (?<appName>.+)"));
         intentPatterns.put(Intent.START_ROUTINE, Pattern.compile("(?i)(start|initiate|begin|run) (?<routineName>\\w+) routine"));
         intentPatterns.put(Intent.OPEN_APPLICATION, Pattern.compile("(?i)(open|launch|start) (?<appName>.+)"));
@@ -104,21 +93,17 @@ public class IntentService {
     }
 
     public CommandAnalysis analyze(String text) {
-        // 1. Pre-process text (Mishearing Correction)
         String cleanedText = MISHEARD_TRIGGER_PATTERN.matcher(text).replaceFirst("").trim();
         cleanedText = JUNK_PREFIX_PATTERN.matcher(cleanedText).replaceFirst("").trim();
         String lowerText = cleanedText.toLowerCase().replace("[unk]", "").trim();
 
-        // 2. Speaker Identification (Handling "Brandon: I do X")
         Map<String, String> entities = new HashMap<>();
         Matcher speakerMatcher = SPEAKER_PREFIX_PATTERN.matcher(text);
         if (speakerMatcher.find()) {
             entities.put("speaker", speakerMatcher.group("speaker"));
-            // Remove the speaker prefix from the text so we can match the actual intent
             lowerText = text.substring(speakerMatcher.end()).trim().toLowerCase();
         }
 
-        // 3. Mishearing Corrections Check
         for (Map.Entry<String, List<String>> entry : mishearingCorrections.entrySet()) {
             for (String mishearing : entry.getValue()) {
                 if (lowerText.equals(mishearing)) {
@@ -131,21 +116,18 @@ public class IntentService {
             }
         }
         
-        // 4. Exact Easter Egg Match
         final String finalText = lowerText;
         if (LineManager.getEasterEggKeys().stream().anyMatch(key -> key.equalsIgnoreCase(finalText))) {
             entities.put("key", finalText);
             return new CommandAnalysis(Intent.EASTER_EGG, entities);
         }
 
-        // 5. Fuzzy Easter Egg Match
         String bestMatch = findBestKeywordMatch(lowerText);
         if (bestMatch != null) {
             entities.put("key", bestMatch);
             return new CommandAnalysis(Intent.EASTER_EGG, entities);
         }
 
-        // 6. Standard Intent Matching
         for (Map.Entry<Intent, Pattern> entry : intentPatterns.entrySet()) {
             Matcher matcher = entry.getValue().matcher(lowerText);
             if (matcher.find()) {
@@ -154,7 +136,6 @@ public class IntentService {
             }
         }
 
-        // 7. Web Fallback
         if (lowerText.contains("?") || lowerText.startsWith("who") || lowerText.startsWith("what") || lowerText.startsWith("when") || lowerText.startsWith("where") || lowerText.startsWith("why") || lowerText.startsWith("how") || lowerText.startsWith("search for") || lowerText.startsWith("google")) {
             entities.put("query", cleanedText);
             return new CommandAnalysis(Intent.SEARCH_WEB, entities);
@@ -201,7 +182,7 @@ public class IntentService {
             try {
                 String val = matcher.group(group);
                 if (val != null) entities.put(group, val.trim());
-            } catch (IllegalArgumentException | IllegalStateException e) { /* Group not in regex */ }
+            } catch (IllegalArgumentException | IllegalStateException e) { }
         }
         return entities;
     }

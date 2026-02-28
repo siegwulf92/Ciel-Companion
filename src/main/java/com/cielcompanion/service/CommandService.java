@@ -52,7 +52,6 @@ public class CommandService {
     private final ExecutorService commandExecutor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean isBusy = new AtomicBoolean(false);
 
-    // Services
     private final IntentService intentService;
     private final AppLauncherService appLauncherService;
     private final ConversationService conversationService;
@@ -63,7 +62,6 @@ public class CommandService {
     private final EmotionManager emotionManager;
     private final SoundService soundService;
     
-    // D&D Specific Services
     private final LoreService loreService;
     private final RulebookService rulebookService;
     private final MasteryService masteryService;
@@ -106,7 +104,6 @@ public class CommandService {
         return isBusy.get();
     }
 
-    // UPDATED SIGNATURE: Accepts the hasWakeWord boolean from VoiceListener
     public void handleCommand(String text, boolean hasWakeWord, Runnable onComplete) {
         if (!isBusy.compareAndSet(false, true)) {
             if(onComplete != null) onComplete.run();
@@ -134,15 +131,16 @@ public class CommandService {
                 boolean isPrivileged = ShortTermMemoryService.getMemory().isInPrivilegedMode();
                 boolean isDirectlyAddressed = hasWakeWord || isPrivileged;
 
-                // --- AI ORCHESTRATION ROUTING ---
                 if (analysis.intent() == Intent.UNKNOWN || analysis.intent() == Intent.SEARCH_WEB) {
                     if (isDirectlyAddressed) {
-                        // User directly spoke to Ciel (e.g., "Ciel, what do you think?") -> Route to Gemma
                         System.out.println("Ciel Debug: Routing general chat to Personality Core (Gemma).");
                         String context = ContextBuilder.buildActiveContext(loreService);
+                        
+                        // NEW: Conversational Continuity. She will actively listen for 15 seconds without needing her name again!
+                        ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
+                        
                         AIEngine.chatFast(text, context, () -> isBusy.set(false));
                     } else {
-                        // Background chatter -> Silently log to Observer Buffer
                         System.out.printf("Ciel STT [Background]: \"%s\"%n", text);
                         ObserverService.appendTranscript(text);
                         isBusy.set(false);
@@ -150,16 +148,16 @@ public class CommandService {
                     if (onComplete != null) onComplete.run();
                     return; 
                 } else if (analysis.intent() == Intent.DND_ANALYZE_LORE) {
-                    // Explicit command to analyze deep lore -> Route to Phi-4
                     System.out.println("Ciel Debug: Routing deep analysis to Logic Core (Phi-4).");
                     String context = ContextBuilder.buildActiveContext(loreService);
+                    
+                    ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
                     AIEngine.reasonDeeply(text, context, () -> isBusy.set(false));
+                    
                     if (onComplete != null) onComplete.run();
                     return;
                 }
 
-                // If it reached this point, it successfully matched an explicit local command! 
-                // (e.g., EASTER_EGG, GET_TIME, INITIATE_SHUTDOWN)
                 System.out.printf("Ciel STT: Local Command Matched [%s]: \"%s\"%n", analysis.intent(), text);
                 
                 if (analysis.intent() != Intent.EASTER_EGG) {
@@ -181,7 +179,7 @@ public class CommandService {
     public void handleExplicitSearch(String query) {
        if (!isBusy.compareAndSet(false, true)) return;
        String context = ContextBuilder.buildActiveContext(loreService);
-       // Explicit searches default to the fast personality core
+       ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
        AIEngine.chatFast(query, context, () -> isBusy.set(false));
     }
 
@@ -637,7 +635,7 @@ public class CommandService {
         if (eclipseInfo != null) {
             SpeechService.speak(eclipseInfo);
         } else {
-            SpeechService.speak("My analysis shows no significant solar lunar eclipses occurring around this date.");
+            SpeechService.speak("My analysis shows no significant solar or lunar eclipses occurring around this date.");
         }
     }
 }
