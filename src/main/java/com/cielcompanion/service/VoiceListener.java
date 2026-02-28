@@ -1,6 +1,7 @@
 package com.cielcompanion.service;
 
 import com.cielcompanion.CielState;
+import com.cielcompanion.ai.ObserverService;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
 import com.cielcompanion.ui.CielGui;
 import com.google.gson.Gson;
@@ -27,12 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-/**
- * V8: Robust Logic + Memory Restoration.
- * Includes explicit refresh() capability to fix microphone lag after gaming.
- */
 public class VoiceListener {
-    // --- PRESERVED CONFIGURATION ---
     private static final String[] MIC_PRIORITY = {"Microphone (NVIDIA Broadcast)", "Focusrite", "Default Input"};
     private static final int PRIVILEGED_MODE_DURATION_SECONDS = 10;
     private static final double MIN_CONFIDENCE = 0.50;
@@ -63,12 +59,11 @@ public class VoiceListener {
         System.out.println("Ciel Debug: Initializing Voice Listener...");
         try {
             String modelPath = Paths.get(System.getProperty("user.dir"), "model").toString();
-            System.out.println("Ciel Debug: Attempting to load Vosk model from path: " + modelPath);
             voskModel = new Model(modelPath);
             isInitialized = true;
+            ObserverService.initialize(); 
         } catch (IOException e) {
             System.err.println("Ciel FATAL Error: Could not load Vosk model.");
-            e.printStackTrace();
         }
     }
 
@@ -87,56 +82,34 @@ public class VoiceListener {
                 }
             } catch (LineUnavailableException e) {
                 System.err.println("Ciel Error: Microphone line is unavailable.");
-                e.printStackTrace();
             }
         }, "Ciel-Mic-Initializer").start();
     }
 
-    /**
-     * NEW: Call this to fully reset the audio subsystem.
-     * Useful after gaming when memory pages might have been swapped out.
-     */
     public void refresh() {
         System.out.println("Ciel Debug: Refreshing Voice Listener state...");
-        
-        // 1. Signal loop to stop
         needsMicReinitialization.set(true); 
-        
-        // 2. Force close mic to break any blocking reads
         if (microphone != null) {
             microphone.close();
         }
-        
-        // 3. Restart initialization logic is handled by the loop detecting the 'needsMicReinitialization' flag,
-        // OR we can trigger async init if the thread died.
         if (listeningThread == null || !listeningThread.isAlive()) {
             initializeMicrophoneAsync();
         }
-        System.out.println("Ciel Debug: Voice Listener refresh signal sent.");
     }
 
-    // ... (getTargetDataLine kept exactly as you had it) ...
     private TargetDataLine getTargetDataLine() throws LineUnavailableException {
         for (int i = 0; i < 8; i++) { 
-            System.out.println("Ciel Debug: Checking for NVIDIA Broadcast microphone... (Attempt " + (i + 1) + "/8)");
             for (Mixer.Info mixerInfo : AudioSystem.getMixerInfo()) {
                 if (mixerInfo.getName().toLowerCase().contains(MIC_PRIORITY[0].toLowerCase())) {
                     Mixer mixer = AudioSystem.getMixer(mixerInfo);
                     DataLine.Info info = new DataLine.Info(TargetDataLine.class, new AudioFormat(16000, 16, 1, true, false));
-                    if (mixer.isLineSupported(info)) {
-                        System.out.println("Ciel Debug: Found NVIDIA Broadcast microphone successfully.");
-                        return (TargetDataLine) mixer.getLine(info);
-                    }
+                    if (mixer.isLineSupported(info)) return (TargetDataLine) mixer.getLine(info);
                 }
             }
             if (i < 7) {
-                System.out.println("Ciel Debug: NVIDIA Broadcast microphone not yet available. Waiting 30 seconds...");
                 try { Thread.sleep(30000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             }
         }
-        System.out.println("Ciel Warning: Could not find NVIDIA Broadcast mic. Checking fallbacks.");
-        LineManager.getNvidiaMicFallbackLine().ifPresent(line -> SpeechService.speakPreformatted(line.text()));
-
         for (int i = 1; i < MIC_PRIORITY.length; i++) {
             String micName = MIC_PRIORITY[i];
              for (Mixer.Info mixerInfo : AudioSystem.getMixerInfo()) {
@@ -152,7 +125,6 @@ public class VoiceListener {
         return null;
     }
     
-    // ... (processRecognitionResult kept exactly as you had it) ...
     private void processRecognitionResult(String result) {
         if (!isProcessing.compareAndSet(false, true)) return; 
         try {
@@ -164,12 +136,11 @@ public class VoiceListener {
 
             if (transcribedText.isBlank() || PHANTOM_NOISES.contains(transcribedText)) return;
 
+            boolean hasWakeWord = WAKE_WORD_PATTERN.matcher(transcribedText).find();
+
             if (ShortTermMemoryService.getMemory().isSearchModeActive()) {
                 String[] words = transcribedText.split("\\s+");
-                if (words.length < 3) {
-                    System.out.printf("Ciel STT: Heard search query: \"%s\" -> REJECTED (Too short).%n", transcribedText);
-                    return;
-                }
+                if (words.length < 3) return;
                 System.out.printf("Ciel STT: Heard search query: \"%s\"%n", transcribedText);
                 commandService.handleExplicitSearch(transcribedText);
                 ShortTermMemoryService.getMemory().setSearchQueryEndTime(0);
@@ -177,22 +148,15 @@ public class VoiceListener {
             }
 
             double confidence = getConfidence(resultJson);
-            if (confidence < MIN_CONFIDENCE) {
-                System.out.printf("Ciel STT: Heard: \"%s\" (Conf: %.2f) -> REJECTED%n", transcribedText, confidence);
-                return;
-            }
+            if (confidence < MIN_CONFIDENCE) return;
 
-            OperatingMode currentMode = CielState.getCurrentMode();
-            boolean hasWakeWord = WAKE_WORD_PATTERN.matcher(transcribedText).find();
-
+            // Wake word safety check - ignore if it's JUST the wake word and nothing else
             if (WAKE_WORD_PATTERN.matcher(transcribedText).results().count() > 0 && transcribedText.split("\\s+").length <= 2) {
                 return;
             }
-
-            if (currentMode == OperatingMode.ATTENTIVE && !hasWakeWord && !isPrivileged) return;
             
-            System.out.printf("Ciel STT: Heard final phrase: \"%s\" -> ACCEPTED%n", transcribedText);
-            commandService.handleCommand(transcribedText, () -> isProcessing.set(false));
+            // Pass the hasWakeWord flag to CommandService so IT can decide if it's an Easter egg or background noise
+            commandService.handleCommand(transcribedText, hasWakeWord, () -> isProcessing.set(false));
         } finally {
             if (!commandService.isBusy()) isProcessing.set(false);
         }
@@ -207,28 +171,22 @@ public class VoiceListener {
         } while (!isMuted.compareAndSet(currentMuteState, newMuteState));
 
         String lineKey = newMuteState ? "command.toggle_listening.off" : "command.toggle_listening.on";
-        System.out.println("Ciel Debug: Toggled listening. Mic is " + (newMuteState ? "MUTED" : "ACTIVE"));
         LineManager.getDialogueLine(lineKey).ifPresent(line -> SpeechService.speakPreformatted(line.text()));
         CielState.setManuallyMuted(newMuteState);
     }
 
     public void setInternalMute(boolean isMuted) { isInternallyMuted.set(isMuted); }
-    
-    // Updated to public for Controller access
     public void forceMicReinitialization() { refresh(); }
 
     public void startListeningForCommand() {
-        System.out.println("Ciel Debug: Privileged mode activated by external trigger.");
         LineManager.getWakeWordAckLine().ifPresent(line -> {
             long speechDuration = SpeechService.estimateSpeechDuration(line.text());
             ShortTermMemoryService.getMemory().setPrivilegedMode(true, PRIVILEGED_MODE_DURATION_SECONDS + (int)(speechDuration/1000));
-            System.out.printf("Ciel Debug: Privileged mode ends in %.1fs%n", (PRIVILEGED_MODE_DURATION_SECONDS*1000 + speechDuration)/1000.0);
             SpeechService.speakPreformatted(line.text());
         });
     }
 
     public void startListeningForSearchQuery() {
-        System.out.println("Ciel Debug: Search mode activated by external trigger.");
         LineManager.getDialogueLine("command.search_ack.0").ifPresent(line -> {
             long speechDuration = SpeechService.estimateSpeechDuration(line.text());
             long listenStartTime = System.currentTimeMillis() + speechDuration;
@@ -275,14 +233,11 @@ public class VoiceListener {
                             if (recognizer.acceptWaveForm(buffer, bytesRead)) processRecognitionResult(recognizer.getResult());
                         }
                         if (System.currentTimeMillis() - lastAudioTime > DEAD_STREAM_THRESHOLD_MS) {
-                            System.err.println("Ciel Error: Dead audio stream detected. Triggering re-initialization.");
                             needsMicReinitialization.set(true);
                             break;
                         }
                     }
                 } catch (Exception e) {
-                    System.err.println("Ciel FATAL Error: Listening loop crashed. Retrying...");
-                    e.printStackTrace();
                     try { Thread.sleep(5000); } catch (InterruptedException ie) {}
                 }
             }
@@ -293,16 +248,14 @@ public class VoiceListener {
     }
 
     private synchronized void reinitializeMicrophone() {
-        System.out.println("Ciel Debug: Re-initializing microphone...");
         if (microphone != null) { try { microphone.stop(); microphone.close(); } catch (Exception e) {} }
         try {
             microphone = getTargetDataLine();
             if (microphone != null) {
                 microphone.open(new AudioFormat(16000, 16, 1, true, false));
                 microphone.start();
-                System.out.println("Ciel Debug: Microphone re-initialized.");
             }
-        } catch (Exception e) { e.printStackTrace(); }
+        } catch (Exception e) {}
     }
     
     private double getConfidence(JsonObject resultJson) {

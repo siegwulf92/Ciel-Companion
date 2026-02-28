@@ -1,12 +1,15 @@
 package com.cielcompanion.service;
 
 import com.cielcompanion.CielState;
+import com.cielcompanion.ai.AIEngine;
+import com.cielcompanion.ai.ContextBuilder;
+import com.cielcompanion.ai.ObserverService;
 import com.cielcompanion.dnd.CombatTrackerService;
 import com.cielcompanion.dnd.DndCampaignService;
 import com.cielcompanion.dnd.LoreService;
 import com.cielcompanion.dnd.MasteryService;
 import com.cielcompanion.dnd.RulebookService;
-import com.cielcompanion.dnd.SpellCheckService; // Updated import
+import com.cielcompanion.dnd.SpellCheckService;
 import com.cielcompanion.memory.Fact;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
@@ -66,7 +69,7 @@ public class CommandService {
     private final MasteryService masteryService;
     private final DndCampaignService dndCampaignService;
     private final CombatTrackerService combatTrackerService; 
-    private final SpellCheckService spellCheckService; // Updated type
+    private final SpellCheckService spellCheckService; 
     
     private VoiceListener voiceListener;
 
@@ -77,7 +80,7 @@ public class CommandService {
                           SoundService soundService, LoreService loreService, 
                           RulebookService rulebookService, MasteryService masteryService, 
                           DndCampaignService dndCampaignService,
-                          CombatTrackerService combatTrackerService, SpellCheckService spellCheckService) { // Updated signature
+                          CombatTrackerService combatTrackerService, SpellCheckService spellCheckService) {
         this.intentService = intentService;
         this.appLauncherService = appLauncherService;
         this.conversationService = conversationService;
@@ -103,7 +106,8 @@ public class CommandService {
         return isBusy.get();
     }
 
-    public void handleCommand(String text, Runnable onComplete) {
+    // UPDATED SIGNATURE: Accepts the hasWakeWord boolean from VoiceListener
+    public void handleCommand(String text, boolean hasWakeWord, Runnable onComplete) {
         if (!isBusy.compareAndSet(false, true)) {
             if(onComplete != null) onComplete.run();
             return;
@@ -115,13 +119,11 @@ public class CommandService {
 
                 emotionManager.recordUserInteraction();
 
-                // 1. Analyze Intent
                 CommandAnalysis analysis = conversationService.checkForFollowUp(text);
                 if (analysis == null) {
                     analysis = intentService.analyze(text);
                 }
 
-                // 2. Speaker & Quirk Check (Dynamic World Voice)
                 String speaker = analysis.entities().get("speaker");
                 if (speaker != null) {
                     dndCampaignService.checkQuirks(speaker, text);
@@ -129,12 +131,43 @@ public class CommandService {
 
                 conversationService.updateConversationTopic(analysis);
 
-                // 3. Command Confirmation
-                if (analysis.intent() != Intent.UNKNOWN && analysis.intent() != Intent.SEARCH_WEB && analysis.intent() != Intent.EASTER_EGG) {
+                boolean isPrivileged = ShortTermMemoryService.getMemory().isInPrivilegedMode();
+                boolean isDirectlyAddressed = hasWakeWord || isPrivileged;
+
+                // --- AI ORCHESTRATION ROUTING ---
+                if (analysis.intent() == Intent.UNKNOWN || analysis.intent() == Intent.SEARCH_WEB) {
+                    if (isDirectlyAddressed) {
+                        // User directly spoke to Ciel (e.g., "Ciel, what do you think?") -> Route to Gemma
+                        System.out.println("Ciel Debug: Routing general chat to Personality Core (Gemma).");
+                        String context = ContextBuilder.buildActiveContext(loreService);
+                        AIEngine.chatFast(text, context, () -> isBusy.set(false));
+                    } else {
+                        // Background chatter -> Silently log to Observer Buffer
+                        System.out.printf("Ciel STT [Background]: \"%s\"%n", text);
+                        ObserverService.appendTranscript(text);
+                        isBusy.set(false);
+                    }
+                    if (onComplete != null) onComplete.run();
+                    return; 
+                } else if (analysis.intent() == Intent.DND_ANALYZE_LORE) {
+                    // Explicit command to analyze deep lore -> Route to Phi-4
+                    System.out.println("Ciel Debug: Routing deep analysis to Logic Core (Phi-4).");
+                    String context = ContextBuilder.buildActiveContext(loreService);
+                    AIEngine.reasonDeeply(text, context, () -> isBusy.set(false));
+                    if (onComplete != null) onComplete.run();
+                    return;
+                }
+
+                // If it reached this point, it successfully matched an explicit local command! 
+                // (e.g., EASTER_EGG, GET_TIME, INITIATE_SHUTDOWN)
+                System.out.printf("Ciel STT: Local Command Matched [%s]: \"%s\"%n", analysis.intent(), text);
+                
+                if (analysis.intent() != Intent.EASTER_EGG) {
                     LineManager.getCommandConfirmationLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
                 }
 
                 processCommand(analysis);
+                
             } catch (Exception e) {
                 System.err.println("Ciel FATAL Error: Uncaught exception in CommandService.");
                 e.printStackTrace();
@@ -147,24 +180,17 @@ public class CommandService {
 
     public void handleExplicitSearch(String query) {
        if (!isBusy.compareAndSet(false, true)) return;
-        commandExecutor.submit(() -> {
-            try {
-                emotionManager.recordUserInteraction();
-                webService.answerQuestion(query);
-            } finally {
-                isBusy.set(false);
-            }
-        });
+       String context = ContextBuilder.buildActiveContext(loreService);
+       // Explicit searches default to the fast personality core
+       AIEngine.chatFast(query, context, () -> isBusy.set(false));
     }
 
     private void processCommand(CommandAnalysis analysis) {
         switch (analysis.intent()) {
-            // --- Core System Commands ---
             case GET_TIME: handleTimeCommand(); break;
             case GET_DAILY_REPORT: handleDailyReportCommand(); break;
             case GET_WEATHER: handleWeatherCommand(); break;
             case GET_WEATHER_FORECAST: handleWeatherForecastCommand(); break;
-            case SEARCH_WEB: handleWebSearchCommand(analysis); break;
             case FIND_APP_PATH: handleFindAppPathCommand(analysis); break;
             case SCAN_FOR_APPS: handleScanForAppsCommand(); break;
             case GET_SYSTEM_STATUS: handleSystemStatusCommand(); break;
@@ -182,34 +208,13 @@ public class CommandService {
             case SET_MODE_ATTENTIVE: handleSetModeCommand(OperatingMode.ATTENTIVE); break;
             case SET_MODE_DND: handleSetModeCommand(OperatingMode.DND_ASSISTANT); break;
             case SET_MODE_INTEGRATED: handleSetModeCommand(OperatingMode.INTEGRATED); break;
-            
-            // --- Phonetic Learning ---
             case LEARN_PHONETIC: handleLearnPhoneticCommand(analysis); break;
-
-            // --- D&D Campaign Management ---
             case DND_RUN_AUDIT: loreService.runCampaignAudit(); break;
-            case DND_RECORD_MASTERY:
-                masteryService.recordMeaningfulUse(
-                    analysis.entities().get("player"), 
-                    analysis.entities().get("skill")
-                );
-                break;
-            case DND_REPORT_SURGE:
-                dndCampaignService.incrementSurge(analysis.entities().get("player"));
-                break;
-            case OPEN_CHEAT_SHEET:
-                handleOpenCheatSheet();
-                break;
-
-            // --- Tensura Puzzle ---
-            case TENSURA_ENTER_WORLD:
-                CielTriggerEngine.onEnterTensuraWorld();
-                break;
-            case TENSURA_CONFIRM_COPY:
-                CielTriggerEngine.attemptPuzzleSolution();
-                break;
-
-            // --- D&D Gameplay & Combat ---
+            case DND_RECORD_MASTERY: masteryService.recordMeaningfulUse(analysis.entities().get("player"), analysis.entities().get("skill")); break;
+            case DND_REPORT_SURGE: dndCampaignService.incrementSurge(analysis.entities().get("player")); break;
+            case OPEN_CHEAT_SHEET: handleOpenCheatSheet(); break;
+            case TENSURA_ENTER_WORLD: CielTriggerEngine.onEnterTensuraWorld(); break;
+            case TENSURA_CONFIRM_COPY: CielTriggerEngine.attemptPuzzleSolution(); break;
             case DND_ROLL_DICE: handleDiceRollCommand(analysis); break;
             case DND_PLAY_SOUND: 
                 if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT || CielState.getCurrentMode() == OperatingMode.INTEGRATED) {
@@ -221,49 +226,28 @@ public class CommandService {
                       }
                 }
                 break;
-
-            // NEW Combat and Spell Check Intents (Add these to Intent.java if not present)
-            // Note: Ensure Intent.java has DND_START_COMBAT, DND_END_COMBAT, DND_NEXT_TURN, DND_CHECK_MISHAP
-            /*
-            case DND_START_COMBAT: combatTrackerService.startCombat(); break;
-            case DND_END_COMBAT: combatTrackerService.endCombat(); break;
-            case DND_NEXT_TURN: combatTrackerService.nextTurn(); break;
-            case DND_CHECK_MISHAP:
-                 String caster = analysis.entities().get("player");
-                 int roll = Integer.parseInt(analysis.entities().getOrDefault("roll", "0"));
-                 spellCheckService.processSpellCheck(caster, roll); // Updated call
-                 break;
-            */
-
-            // --- Lore Management ---
             case DND_CREATE_SESSION_NOTE: loreService.createNote(analysis.entities().get("subject")); break;
             case DND_ADD_TO_SESSION_NOTE: loreService.addToNote(analysis.entities().get("subject"), analysis.entities().get("content")); break;
             case DND_RECALL_SESSION_NOTE: loreService.recallNote(analysis.entities().get("subject")); break;
             case DND_LINK_SESSION_NOTE: loreService.linkNote(analysis.entities().get("subjectA"), analysis.entities().get("subjectB")); break;
             case DND_RECALL_SESSION_LINKS: loreService.getConnections(analysis.entities().get("subject")); break;
             case DND_REVEAL_LORE: loreService.revealLore(analysis.entities().get("subject")); break;
-            case DND_ANALYZE_LORE: loreService.analyzeLore(analysis.entities().get("subject")); break;
             case DND_GET_RULE: handleGetRule(analysis); break;
             case DND_API_SEARCH: handleApiSearch(analysis); break;
-
-            // --- Astronomy ---
             case GET_MOON_PHASE: handleGetMoonPhase(); break;
             case GET_VISIBLE_PLANETS: handleGetVisiblePlanets(); break;
             case GET_CONSTELLATIONS: handleGetConstellations(); break;
             case GET_ECLIPSES: handleGetEclipses(); break;
-
             case TOGGLE_LISTENING: 
                 if (voiceListener != null) {
                     voiceListener.toggleListening();
                 }
                 break;
             case EASTER_EGG: handleEasterEggCommand(analysis); break;
-            case UNKNOWN: default: speakRandomLine(LineManager.getUnrecognizedLines()); break;
+            default: break; 
         }
     }
     
-    // ... [Helpers] ...
-
     private void handleOpenCheatSheet() {
         String pathStr = Settings.getDndCampaignPath();
         if (pathStr == null || pathStr.isBlank()) {
@@ -293,8 +277,6 @@ public class CommandService {
             SpeechService.speak("I didn't catch the word you wanted me to learn.");
         }
     }
-
-    // --- (Keeping your existing methods below for stability) ---
 
     private void handleApiSearch(CommandAnalysis analysis) {
         if (CielState.getCurrentMode() != OperatingMode.DND_ASSISTANT) return;
@@ -413,15 +395,6 @@ public class CommandService {
         } else {
             LineManager.getScanAppsFailLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
         }
-    }
-
-    private void handleWebSearchCommand(CommandAnalysis analysis) {
-        String query = analysis.entities().get("query");
-        if (query == null || query.isBlank()) {
-            speakRandomLine(LineManager.getUnrecognizedLines());
-            return;
-        }
-        webService.answerQuestion(query);
     }
 
     private void handleFindAppPathCommand(CommandAnalysis analysis) {
@@ -664,7 +637,7 @@ public class CommandService {
         if (eclipseInfo != null) {
             SpeechService.speak(eclipseInfo);
         } else {
-            SpeechService.speak("My analysis shows no significant solar or lunar eclipses occurring around this date.");
+            SpeechService.speak("My analysis shows no significant solar lunar eclipses occurring around this date.");
         }
     }
 }

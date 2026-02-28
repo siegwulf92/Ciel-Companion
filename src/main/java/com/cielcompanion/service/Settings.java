@@ -9,7 +9,6 @@ import java.util.Properties;
 
 public class Settings {
 
-    // Existing fields
     private static String VOICE_NAME_HINT;
     private static String VOICE_LANGUAGE_CODE;
     private static int TTS_RATE;
@@ -20,7 +19,6 @@ public class Settings {
     private static long LOGIN_GREETING_DELAY_SECONDS;
     private static int MIN_GLOBAL_GAP_SEC;
     
-    // Idle Phases
     private static int PHASE1_THRESHOLD_MIN;
     private static int PHASE2_THRESHOLD_MIN;
     private static int PHASE3_THRESHOLD_MIN;
@@ -58,16 +56,25 @@ public class Settings {
     private static String ASTRONOMY_API_APPLICATION_SECRET;
     private static String IPGEOLOCATION_API_KEY;
 
-    // --- AZURE SETTINGS ---
     private static String AZURE_SPEECH_KEY;
     private static String AZURE_SPEECH_REGION;
     private static String AZURE_VOICE_NAME;
     private static long AZURE_MONTHLY_LIMIT_HOURS; 
 
+    // --- NEW: AI ORCHESTRATION SETTINGS ---
+    private static String LLM_PERSONALITY_URL; 
+    private static String LLM_PERSONALITY_MODEL; 
+    private static String LLM_EVALUATOR_URL; 
+    private static String LLM_EVALUATOR_MODEL; 
+    private static String LLM_LOGIC_URL; 
+    private static String LLM_LOGIC_MODEL; 
+    private static String LLM_ONLINE_FALLBACK_URL; 
+    private static String LLM_ONLINE_FALLBACK_KEY;
+    private static boolean AI_OBSERVER_ENABLED;
+
     public static void initialize() {
         Properties props = new Properties();
         
-        // 1. Load Main Settings
         try (InputStream is = Settings.class.getResourceAsStream("/ciel_settings.properties")) {
             if (is == null) throw new RuntimeException("ciel_settings.properties not found on classpath");
             try (InputStreamReader isr = new InputStreamReader(is, StandardCharsets.UTF_8)) {
@@ -78,11 +85,10 @@ public class Settings {
             throw new RuntimeException(e);
         }
 
-        // 2. Load Secrets (Overlay)
         try (InputStream isSecrets = Settings.class.getResourceAsStream("/ciel_secrets.properties")) {
             if (isSecrets != null) {
                 try (InputStreamReader isrSecrets = new InputStreamReader(isSecrets, StandardCharsets.UTF_8)) {
-                    props.load(isrSecrets); // Overwrites duplicates, adds new keys
+                    props.load(isrSecrets); 
                     System.out.println("Ciel Debug: Secrets file loaded successfully.");
                 }
             } else {
@@ -141,14 +147,30 @@ public class Settings {
             ASTRONOMY_API_APPLICATION_SECRET = props.getProperty("astronomy.api.applicationSecret", "");
             IPGEOLOCATION_API_KEY = props.getProperty("api.ipgeolocation.key", ""); 
 
-            // --- AZURE LOAD ---
             AZURE_SPEECH_KEY = props.getProperty("azure.speech.key", "");
             AZURE_SPEECH_REGION = props.getProperty("azure.speech.region", "");
             AZURE_VOICE_NAME = props.getProperty("azure.speech.voiceName", "ja-JP-NanamiNeural");
             AZURE_MONTHLY_LIMIT_HOURS = Long.parseLong(props.getProperty("azure.speech.limitHours", "5"));
 
-            // Initialize tracker limit (Convert hours to seconds)
             AzureUsageTracker.setLimit(AZURE_MONTHLY_LIMIT_HOURS * 3600);
+
+            // --- AI ORCHESTRATION ---
+            // Fast Chat (GPU)
+            LLM_PERSONALITY_URL = props.getProperty("ciel.ai.personalityUrl", "http://localhost:11434/v1"); 
+            LLM_PERSONALITY_MODEL = props.getProperty("ciel.ai.personalityModel", "gemma2"); 
+            
+            // Background Observer (CPU)
+            LLM_EVALUATOR_URL = props.getProperty("ciel.ai.evaluatorUrl", "http://localhost:11434/v1"); 
+            LLM_EVALUATOR_MODEL = props.getProperty("ciel.ai.evaluatorModel", "qwen2.5:3b");
+            
+            // Deep Logic (CPU/LM Studio)
+            LLM_LOGIC_URL = props.getProperty("ciel.ai.logicUrl", "http://localhost:1234/v1");
+            LLM_LOGIC_MODEL = props.getProperty("ciel.ai.logicModel", "phi-4");
+            
+            // Fallback
+            LLM_ONLINE_FALLBACK_URL = props.getProperty("ciel.ai.fallbackUrl", "https://api.openai.com/v1");
+            LLM_ONLINE_FALLBACK_KEY = props.getProperty("ciel.ai.fallbackKey", "");
+            AI_OBSERVER_ENABLED = Boolean.parseBoolean(props.getProperty("ciel.ai.observerEnabled", "true"));
 
             System.out.println("Ciel Debug: Settings loaded successfully.");
 
@@ -158,7 +180,6 @@ public class Settings {
         }
     }
 
-    // Getters for existing
     public static String getVoiceNameHint() { return VOICE_NAME_HINT; }
     public static String getVoiceLanguageCode() { return VOICE_LANGUAGE_CODE; }
     public static int getTtsRate() { return TTS_RATE; }
@@ -198,9 +219,17 @@ public class Settings {
     public static String getAstronomyApiApplicationId() { return ASTRONOMY_API_APPLICATION_ID; }
     public static String getAstronomyApiApplicationSecret() { return ASTRONOMY_API_APPLICATION_SECRET; }
     public static String getIpGeolocationApiKey() { return IPGEOLOCATION_API_KEY; }
-    
-    // --- NEW AZURE GETTERS ---
     public static String getAzureSpeechKey() { return AZURE_SPEECH_KEY; }
     public static String getAzureSpeechRegion() { return AZURE_SPEECH_REGION; }
     public static String getAzureVoiceName() { return AZURE_VOICE_NAME; }
+
+    public static String getLlmPersonalityUrl() { return LLM_PERSONALITY_URL; }
+    public static String getLlmPersonalityModel() { return LLM_PERSONALITY_MODEL; }
+    public static String getLlmEvaluatorUrl() { return LLM_EVALUATOR_URL; }
+    public static String getLlmEvaluatorModel() { return LLM_EVALUATOR_MODEL; }
+    public static String getLlmLogicUrl() { return LLM_LOGIC_URL; }
+    public static String getLlmLogicModel() { return LLM_LOGIC_MODEL; }
+    public static String getLlmOnlineFallbackUrl() { return LLM_ONLINE_FALLBACK_URL; }
+    public static String getLlmOnlineFallbackKey() { return LLM_ONLINE_FALLBACK_KEY; }
+    public static boolean isAiObserverEnabled() { return AI_OBSERVER_ENABLED; }
 }
