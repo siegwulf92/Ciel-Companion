@@ -111,6 +111,7 @@ public class CommandService {
         }
 
         commandExecutor.submit(() -> {
+            boolean releaseBusySynchronously = true;
             try {
                 if (text == null || text.isBlank()) return;
 
@@ -136,16 +137,13 @@ public class CommandService {
                         System.out.println("Ciel Debug: Routing general chat to Personality Core (Gemma).");
                         String context = ContextBuilder.buildActiveContext(loreService);
                         
-                        // NEW: Conversational Continuity. She will actively listen for 15 seconds without needing her name again!
                         ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
-                        
                         AIEngine.chatFast(text, context, () -> isBusy.set(false));
+                        releaseBusySynchronously = false;
                     } else {
                         System.out.printf("Ciel STT [Background]: \"%s\"%n", text);
                         ObserverService.appendTranscript(text);
-                        isBusy.set(false);
                     }
-                    if (onComplete != null) onComplete.run();
                     return; 
                 } else if (analysis.intent() == Intent.DND_ANALYZE_LORE) {
                     System.out.println("Ciel Debug: Routing deep analysis to Logic Core (Phi-4).");
@@ -153,24 +151,27 @@ public class CommandService {
                     
                     ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
                     AIEngine.reasonDeeply(text, context, () -> isBusy.set(false));
-                    
-                    if (onComplete != null) onComplete.run();
+                    releaseBusySynchronously = false;
                     return;
                 }
 
                 System.out.printf("Ciel STT: Local Command Matched [%s]: \"%s\"%n", analysis.intent(), text);
                 
                 if (analysis.intent() != Intent.EASTER_EGG) {
+                    // Play the "As you wish" sound locally before generation starts
                     LineManager.getCommandConfirmationLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
                 }
 
-                processCommand(analysis);
+                // processCommand now returns false if it routed to the AI asynchronously
+                releaseBusySynchronously = processCommand(analysis, text);
                 
             } catch (Exception e) {
                 System.err.println("Ciel FATAL Error: Uncaught exception in CommandService.");
                 e.printStackTrace();
             } finally {
-                isBusy.set(false);
+                if (releaseBusySynchronously) {
+                    isBusy.set(false);
+                }
                 if (onComplete != null) onComplete.run();
             }
         });
@@ -183,37 +184,57 @@ public class CommandService {
        AIEngine.chatFast(query, context, () -> isBusy.set(false));
     }
 
-    private void processCommand(CommandAnalysis analysis) {
+    // NEW RAG HELPER: Injects local Java data into the AI for dynamic formatting
+    private boolean sendToAiWithData(String userQuery, String systemData) {
+        String context = ContextBuilder.buildActiveContext(loreService) + 
+            "\n\n[SYSTEM DATA REPOSITORY]\n" + systemData + 
+            "\n\nINSTRUCTION: Formulate a natural, conversational answer to the user's query using the SYSTEM DATA provided above.";
+        
+        ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
+        AIEngine.chatFast(userQuery, context, () -> isBusy.set(false));
+        return false; // Tells the caller it's handled asynchronously
+    }
+
+    private boolean processCommand(CommandAnalysis analysis, String userText) {
         switch (analysis.intent()) {
-            case GET_TIME: handleTimeCommand(); break;
-            case GET_DAILY_REPORT: handleDailyReportCommand(); break;
-            case GET_WEATHER: handleWeatherCommand(); break;
-            case GET_WEATHER_FORECAST: handleWeatherForecastCommand(); break;
-            case FIND_APP_PATH: handleFindAppPathCommand(analysis); break;
-            case SCAN_FOR_APPS: handleScanForAppsCommand(); break;
-            case GET_SYSTEM_STATUS: handleSystemStatusCommand(); break;
-            case GET_TOP_MEMORY_PROCESS: handleGetTopProcessCommand("memory"); break;
-            case GET_TOP_CPU_PROCESS: handleGetTopProcessCommand("cpu"); break;
-            case TERMINATE_PROCESS: handleTerminateProcessCommand(analysis, false); break;
-            case TERMINATE_PROCESS_FORCE: handleTerminateProcessCommand(analysis, true); break;
-            case INITIATE_SHUTDOWN: handleShutdownRebootCommand("shutdown"); break;
-            case INITIATE_REBOOT: handleShutdownRebootCommand("reboot"); break;
-            case CANCEL_SHUTDOWN: handleCancelShutdownCommand(); break;
-            case REMEMBER_FACT: case REMEMBER_FACT_SIMPLE: handleRememberCommand(analysis); break;
-            case RECALL_FACT: handleRecallCommand(analysis); break;
-            case OPEN_APPLICATION: handleOpenApplicationCommand(analysis); break;
-            case START_ROUTINE: handleStartRoutineCommand(analysis); break;
-            case SET_MODE_ATTENTIVE: handleSetModeCommand(OperatingMode.ATTENTIVE); break;
-            case SET_MODE_DND: handleSetModeCommand(OperatingMode.DND_ASSISTANT); break;
-            case SET_MODE_INTEGRATED: handleSetModeCommand(OperatingMode.INTEGRATED); break;
-            case LEARN_PHONETIC: handleLearnPhoneticCommand(analysis); break;
-            case DND_RUN_AUDIT: loreService.runCampaignAudit(); break;
-            case DND_RECORD_MASTERY: masteryService.recordMeaningfulUse(analysis.entities().get("player"), analysis.entities().get("skill")); break;
-            case DND_REPORT_SURGE: dndCampaignService.incrementSurge(analysis.entities().get("player")); break;
-            case OPEN_CHEAT_SHEET: handleOpenCheatSheet(); break;
-            case TENSURA_ENTER_WORLD: CielTriggerEngine.onEnterTensuraWorld(); break;
-            case TENSURA_CONFIRM_COPY: CielTriggerEngine.attemptPuzzleSolution(); break;
-            case DND_ROLL_DICE: handleDiceRollCommand(analysis); break;
+            // --- Commands routed to AI with local data injection ---
+            case GET_TIME: return handleTimeCommand(userText);
+            case GET_DAILY_REPORT: return handleDailyReportCommand(userText);
+            case GET_WEATHER: return handleWeatherCommand(userText);
+            case GET_WEATHER_FORECAST: return handleWeatherForecastCommand(userText);
+            case GET_SYSTEM_STATUS: return handleSystemStatusCommand(userText);
+            case GET_TOP_MEMORY_PROCESS: return handleGetTopProcessCommand("memory", userText);
+            case GET_TOP_CPU_PROCESS: return handleGetTopProcessCommand("cpu", userText);
+            case RECALL_FACT: return handleRecallCommand(analysis, userText);
+            case DND_GET_RULE: return handleGetRule(analysis, userText);
+            case DND_API_SEARCH: return handleApiSearch(analysis, userText);
+            case GET_MOON_PHASE: return handleGetMoonPhase(userText);
+            case GET_VISIBLE_PLANETS: return handleGetVisiblePlanets(userText);
+            case GET_CONSTELLATIONS: return handleGetConstellations(userText);
+            case GET_ECLIPSES: return handleGetEclipses(userText);
+            
+            // --- Commands handled strictly locally (Instant actions) ---
+            case FIND_APP_PATH: handleFindAppPathCommand(analysis); return true;
+            case SCAN_FOR_APPS: handleScanForAppsCommand(); return true;
+            case TERMINATE_PROCESS: handleTerminateProcessCommand(analysis, false); return true;
+            case TERMINATE_PROCESS_FORCE: handleTerminateProcessCommand(analysis, true); return true;
+            case INITIATE_SHUTDOWN: handleShutdownRebootCommand("shutdown"); return true;
+            case INITIATE_REBOOT: handleShutdownRebootCommand("reboot"); return true;
+            case CANCEL_SHUTDOWN: handleCancelShutdownCommand(); return true;
+            case REMEMBER_FACT: case REMEMBER_FACT_SIMPLE: handleRememberCommand(analysis); return true;
+            case OPEN_APPLICATION: handleOpenApplicationCommand(analysis); return true;
+            case START_ROUTINE: handleStartRoutineCommand(analysis); return true;
+            case SET_MODE_ATTENTIVE: handleSetModeCommand(OperatingMode.ATTENTIVE); return true;
+            case SET_MODE_DND: handleSetModeCommand(OperatingMode.DND_ASSISTANT); return true;
+            case SET_MODE_INTEGRATED: handleSetModeCommand(OperatingMode.INTEGRATED); return true;
+            case LEARN_PHONETIC: handleLearnPhoneticCommand(analysis); return true;
+            case DND_RUN_AUDIT: loreService.runCampaignAudit(); return true;
+            case DND_RECORD_MASTERY: masteryService.recordMeaningfulUse(analysis.entities().get("player"), analysis.entities().get("skill")); return true;
+            case DND_REPORT_SURGE: dndCampaignService.incrementSurge(analysis.entities().get("player")); return true;
+            case OPEN_CHEAT_SHEET: handleOpenCheatSheet(); return true;
+            case TENSURA_ENTER_WORLD: CielTriggerEngine.onEnterTensuraWorld(); return true;
+            case TENSURA_CONFIRM_COPY: CielTriggerEngine.attemptPuzzleSolution(); return true;
+            case DND_ROLL_DICE: handleDiceRollCommand(analysis); return true;
             case DND_PLAY_SOUND: 
                 if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT || CielState.getCurrentMode() == OperatingMode.INTEGRATED) {
                       String soundName = analysis.entities().get("soundName");
@@ -223,29 +244,180 @@ public class CommandService {
                           soundService.playSound(soundName);
                       }
                 }
-                break;
-            case DND_CREATE_SESSION_NOTE: loreService.createNote(analysis.entities().get("subject")); break;
-            case DND_ADD_TO_SESSION_NOTE: loreService.addToNote(analysis.entities().get("subject"), analysis.entities().get("content")); break;
-            case DND_RECALL_SESSION_NOTE: loreService.recallNote(analysis.entities().get("subject")); break;
-            case DND_LINK_SESSION_NOTE: loreService.linkNote(analysis.entities().get("subjectA"), analysis.entities().get("subjectB")); break;
-            case DND_RECALL_SESSION_LINKS: loreService.getConnections(analysis.entities().get("subject")); break;
-            case DND_REVEAL_LORE: loreService.revealLore(analysis.entities().get("subject")); break;
-            case DND_GET_RULE: handleGetRule(analysis); break;
-            case DND_API_SEARCH: handleApiSearch(analysis); break;
-            case GET_MOON_PHASE: handleGetMoonPhase(); break;
-            case GET_VISIBLE_PLANETS: handleGetVisiblePlanets(); break;
-            case GET_CONSTELLATIONS: handleGetConstellations(); break;
-            case GET_ECLIPSES: handleGetEclipses(); break;
+                return true;
+            case DND_CREATE_SESSION_NOTE: loreService.createNote(analysis.entities().get("subject")); return true;
+            case DND_ADD_TO_SESSION_NOTE: loreService.addToNote(analysis.entities().get("subject"), analysis.entities().get("content")); return true;
+            case DND_RECALL_SESSION_NOTE: loreService.recallNote(analysis.entities().get("subject")); return true;
+            case DND_LINK_SESSION_NOTE: loreService.linkNote(analysis.entities().get("subjectA"), analysis.entities().get("subjectB")); return true;
+            case DND_RECALL_SESSION_LINKS: loreService.getConnections(analysis.entities().get("subject")); return true;
+            case DND_REVEAL_LORE: loreService.revealLore(analysis.entities().get("subject")); return true;
             case TOGGLE_LISTENING: 
                 if (voiceListener != null) {
                     voiceListener.toggleListening();
                 }
-                break;
-            case EASTER_EGG: handleEasterEggCommand(analysis); break;
-            default: break; 
+                return true;
+            case EASTER_EGG: handleEasterEggCommand(analysis); return true;
+            default: return true; 
         }
     }
     
+    // ==========================================
+    // RAG AI HANDLERS (Returns False)
+    // ==========================================
+
+    private boolean handleWeatherCommand(String userText) {
+        String weatherReport = WeatherService.getCurrentWeather();
+        return sendToAiWithData(userText, weatherReport);
+    }
+    
+    private boolean handleWeatherForecastCommand(String userText) {
+        String forecastReport = WeatherService.getWeatherForecast();
+        return sendToAiWithData(userText, forecastReport);
+    }
+
+    private boolean handleTimeCommand(String userText) {
+        LocalDateTime now = LocalDateTime.now();
+        // Easter egg preservation for 4:20
+        if (now.getMinute() == 20 && (now.getHour() == 4 || now.getHour() == 16)) {
+            LineManager.get420Line().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
+            return true;
+        }
+        String data = "The current date and time is: " + now.format(DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy 'at' h:mm a"));
+        return sendToAiWithData(userText, data);
+    }
+
+    private boolean handleSystemStatusCommand(String userText) {
+        SystemMetrics metrics = SystemMonitor.getSystemMetrics();
+        String data = String.format("CPU Load: %.1f%%. Memory Usage: %.1f%%. Active App: %s.", 
+            metrics.cpuLoadPercent(), metrics.memoryUsagePercent(), metrics.activeProcessName());
+        return sendToAiWithData(userText, data);
+    }
+
+    private boolean handleGetTopProcessCommand(String resourceType, String userText) {
+        Optional<ProcessInfo> processInfoOpt = "memory".equals(resourceType) ? SystemMonitor.getTopProcessByMemory() : SystemMonitor.getTopProcessByCpu();
+        if (processInfoOpt.isPresent()) {
+            ProcessInfo info = processInfoOpt.get();
+            String usageText = "memory".equals(resourceType) ? info.usage() + " MB" : info.usage() + "%";
+            String data = "The top process consuming " + resourceType + " is " + info.name() + " at " + usageText + ".";
+            return sendToAiWithData(userText, data);
+        } else {
+            return sendToAiWithData(userText, "I could not determine the top process for " + resourceType + " at this time.");
+        }
+    }
+
+    private boolean handleDailyReportCommand(String userText) {
+        if (CielState.needsAstronomyApiFetch()) {
+            AstronomyService.performApiFetch();
+        }
+        AstronomyReport report = AstronomyService.getTodaysAstronomyReport();
+        List<String> linesToSpeak = new ArrayList<>();
+        linesToSpeak.addAll(report.sequentialEvents().values());
+        linesToSpeak.addAll(report.reportAmbientLines());
+        
+        String data = String.join(" ", linesToSpeak);
+        if (data.isBlank()) data = "No significant daily events detected.";
+        
+        return sendToAiWithData(userText, "Daily Astronomy Report Data: " + data);
+    }
+
+    private boolean handleGetMoonPhase(String userText) {
+        ensureFreshAstronomyData();
+        Optional<CombinedAstronomyData> dataOpt = AstronomyService.getTodaysApiData();
+        String data = dataOpt.map(d -> "Current Moon Phase: " + d.moonPhase).orElse("Moon phase data is currently unavailable.");
+        return sendToAiWithData(userText, data);
+    }
+
+    private boolean handleGetVisiblePlanets(String userText) {
+        ensureFreshAstronomyData();
+        Optional<CombinedAstronomyData> dataOpt = AstronomyService.getTodaysApiData();
+        if (dataOpt.isPresent() && dataOpt.get().planetCoordinates != null) {
+            List<String> visible = new ArrayList<>();
+            ZonedDateTime now = ZonedDateTime.now(ZoneId.of(com.cielcompanion.service.LocationService.getTimezone()));
+            for (CombinedAstronomyData.PlanetCoordinate p : dataOpt.get().planetCoordinates) {
+                double alt = AstroUtils.getAltitude(p.ra(), p.dec(), com.cielcompanion.service.LocationService.getLatitude(), com.cielcompanion.service.LocationService.getLongitude(), now);
+                if (alt > 10.0) visible.add(p.id());
+            }
+            String data = visible.isEmpty() ? "No major planets are currently visible." : "Currently visible planets: " + String.join(", ", visible);
+            return sendToAiWithData(userText, data);
+        }
+        return sendToAiWithData(userText, "Planet visibility data is unavailable.");
+    }
+
+    private boolean handleGetConstellations(String userText) {
+        ensureFreshAstronomyData();
+        Optional<CombinedAstronomyData> dataOpt = AstronomyService.getTodaysApiData();
+        if (dataOpt.isPresent() && dataOpt.get().prominentConstellationLines != null && !dataOpt.get().prominentConstellationLines.isEmpty()) {
+            return sendToAiWithData(userText, dataOpt.get().prominentConstellationLines.get(0));
+        }
+        return sendToAiWithData(userText, "Constellation data is unavailable.");
+    }
+
+    private boolean handleGetEclipses(String userText) {
+        ensureFreshAstronomyData();
+        AstronomyReport report = AstronomyService.getTodaysAstronomyReport();
+        String eclipseInfo = report.sequentialEvents().get("eclipse");
+        String data = eclipseInfo != null ? eclipseInfo : "No significant solar or lunar eclipses occurring around this date.";
+        return sendToAiWithData(userText, data);
+    }
+
+    private boolean handleRecallCommand(CommandAnalysis analysis, String userText) {
+        final String key = analysis.entities().get("key");
+        if (key == null) {
+            speakRandomLine(LineManager.getUnrecognizedLines());
+            return true;
+        }
+        Optional<Fact> factOpt = MemoryService.getFact(key);
+        String data = factOpt.map(fact -> "Fact retrieved from memory core regarding '" + fact.key() + "': " + fact.value())
+            .orElse("No data found in memory core for '" + key + "'.");
+        return sendToAiWithData(userText, data);
+    }
+
+    private boolean handleApiSearch(CommandAnalysis analysis, String userText) {
+        if (CielState.getCurrentMode() != OperatingMode.DND_ASSISTANT) return true;
+        String category = analysis.entities().get("type"); 
+        String query = analysis.entities().get("query");
+        if (category == null || query == null || query.isBlank()) {
+            speakRandomLine(LineManager.getUnrecognizedLines());
+            return true;
+        }
+        
+        String result = rulebookService.searchApi(category, query);
+        if (result != null) {
+            return sendToAiWithData(userText, "D&D 5e API Data for " + query + ":\n" + result);
+        } else {
+            LineManager.getDndRuleNotFoundLine().ifPresent(line ->
+                SpeechService.speak(line.text().replace("{topic}", query)));
+            return true;
+        }
+    }
+
+    private boolean handleGetRule(CommandAnalysis analysis, String userText) {
+        if (CielState.getCurrentMode() != OperatingMode.DND_ASSISTANT) return true;
+        String topic = analysis.entities().get("topic");
+        if (topic == null || topic.isBlank()) {
+            speakRandomLine(LineManager.getUnrecognizedLines());
+            return true;
+        }
+        String ruleText = rulebookService.findRule(topic);
+        if (ruleText != null) {
+            return sendToAiWithData(userText, "D&D Rulebook Text for '" + topic + "':\n" + ruleText);
+        } else {
+            LineManager.getDndRuleNotFoundLine().ifPresent(line ->
+                SpeechService.speak(line.text().replace("{topic}", topic)));
+            return true;
+        }
+    }
+
+    // ==========================================
+    // INSTANT LOCAL ACTIONS (Returns True)
+    // ==========================================
+
+    private void ensureFreshAstronomyData() {
+        if (CielState.needsAstronomyApiFetch()) {
+            AstronomyService.performApiFetch();
+        }
+    }
+
     private void handleOpenCheatSheet() {
         String pathStr = Settings.getDndCampaignPath();
         if (pathStr == null || pathStr.isBlank()) {
@@ -273,42 +445,6 @@ public class CommandService {
             SpeechService.speakPreformatted("Understood. I will pronounce " + key + " as " + value + " from now on.");
         } else {
             SpeechService.speak("I didn't catch the word you wanted me to learn.");
-        }
-    }
-
-    private void handleApiSearch(CommandAnalysis analysis) {
-        if (CielState.getCurrentMode() != OperatingMode.DND_ASSISTANT) return;
-        String category = analysis.entities().get("type"); 
-        String query = analysis.entities().get("query");
-        if (category == null || query == null || query.isBlank()) {
-            speakRandomLine(LineManager.getUnrecognizedLines());
-            return;
-        }
-        commandExecutor.submit(() -> {
-            String result = rulebookService.searchApi(category, query);
-            if (result != null) {
-                SpeechService.speak("Analysis of external databanks complete. " + result);
-            } else {
-                LineManager.getDndRuleNotFoundLine().ifPresent(line ->
-                    SpeechService.speak(line.text().replace("{topic}", query)));
-            }
-        });
-    }
-
-    private void handleGetRule(CommandAnalysis analysis) {
-        if (CielState.getCurrentMode() != OperatingMode.DND_ASSISTANT) return;
-        String topic = analysis.entities().get("topic");
-        if (topic == null || topic.isBlank()) {
-            speakRandomLine(LineManager.getUnrecognizedLines());
-            return;
-        }
-        String ruleText = rulebookService.findRule(topic);
-        if (ruleText != null) {
-            LineManager.getDndRuleFoundLine().ifPresent(line ->
-                SpeechService.speak(line.text().replace("{topic}", topic) + " " + ruleText));
-        } else {
-            LineManager.getDndRuleNotFoundLine().ifPresent(line ->
-                SpeechService.speak(line.text().replace("{topic}", topic)));
         }
     }
 
@@ -414,42 +550,6 @@ public class CommandService {
         );
     }
 
-    private void handleWeatherCommand() {
-        String weatherReport = WeatherService.getCurrentWeather();
-        SpeechService.speak(weatherReport);
-    }
-    
-    private void handleWeatherForecastCommand() {
-        String forecastReport = WeatherService.getWeatherForecast();
-        SpeechService.speak(forecastReport);
-    }
-
-    private void handleDailyReportCommand() {
-        if (CielState.needsAstronomyApiFetch()) {
-            AstronomyService.performApiFetch();
-        }
-        AstronomyReport report = AstronomyService.getTodaysAstronomyReport();
-        List<String> linesToSpeak = new ArrayList<>();
-        linesToSpeak.addAll(report.sequentialEvents().values());
-        linesToSpeak.addAll(report.reportAmbientLines());
-        CielController.speakSpecialEventsSequentially(linesToSpeak, null);
-    }
-
-    private void handleTimeCommand() {
-        LocalDateTime now = LocalDateTime.now();
-        if (now.getMinute() == 20 && (now.getHour() == 4 || now.getHour() == 16)) {
-            LineManager.get420Line().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
-            return;
-        }
-        String month = now.getMonth().getDisplayName(TextStyle.FULL, Locale.ENGLISH);
-        String day = EnglishNumber.convert(String.valueOf(now.getDayOfMonth()));
-        String formattedTime = now.format(DateTimeFormatter.ofPattern("h:mm a"));
-        String spokenTime = EnglishNumber.convertTimeToWords(formattedTime);
-        DialogueLine line = LineManager.getTimeLines().get(random.nextInt(LineManager.getTimeLines().size()));
-        String finalLine = line.text().replace("{month}", month).replace("{day}", day).replace("{time}", spokenTime);
-        SpeechService.speakPreformatted(finalLine);
-    }
-
     private void handleShutdownRebootCommand(String commandType) {
         if (!ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
             LineManager.getPrivilegedCommandRequiredLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
@@ -479,16 +579,6 @@ public class CommandService {
         }
     }
 
-    private void handleSystemStatusCommand() {
-        SystemMetrics metrics = SystemMonitor.getSystemMetrics();
-        List<DialogueLine> reportLines = new ArrayList<>();
-        reportLines.add(LineManager.getStatusIntroLines().get(random.nextInt(LineManager.getStatusIntroLines().size())));
-        reportLines.add(new DialogueLine(null, LineManager.getStatusCpuLine().text().replace("{cpu_load}", EnglishNumber.convert(String.valueOf(metrics.cpuLoadPercent())))));
-        reportLines.add(new DialogueLine(null, LineManager.getStatusMemLine().text().replace("{mem_usage}", EnglishNumber.convert(String.valueOf(metrics.memoryUsagePercent())))));
-        reportLines.add(LineManager.getStatusOutroLines().get(random.nextInt(LineManager.getStatusOutroLines().size())));
-        SpeechService.speakSequentially(reportLines, 1500, true, null);
-    }
-
     private void handleRememberCommand(CommandAnalysis analysis) {
         String key = analysis.entities().get("key");
         String value = analysis.entities().get("value");
@@ -500,21 +590,6 @@ public class CommandService {
         MemoryService.addFact(factToSave);
         String response = LineManager.getRememberSuccessLine().text().replace("{key}", key).replace("{value}", value);
         SpeechService.speakPreformatted(response);
-    }
-
-    private void handleRecallCommand(CommandAnalysis analysis) {
-        final String key = analysis.entities().get("key");
-        if (key == null) {
-            speakRandomLine(LineManager.getUnrecognizedLines());
-            return;
-        }
-        MemoryService.getFact(key).ifPresentOrElse(
-            fact -> {
-                String response = LineManager.getRecallSuccessLine().text().replace("{key}", fact.key()).replace("{value}", fact.value());
-                SpeechService.speakPreformatted(response);
-            },
-            () -> SpeechService.speakPreformatted(LineManager.getRecallFailLine().text().replace("{key}", key))
-        );
     }
 
     private void handleOpenApplicationCommand(CommandAnalysis analysis) {
@@ -544,19 +619,6 @@ public class CommandService {
         routineService.executeRoutine(routineName);
     }
 
-    private void handleGetTopProcessCommand(String resourceType) {
-        Optional<ProcessInfo> processInfoOpt = "memory".equals(resourceType) ? SystemMonitor.getTopProcessByMemory() : SystemMonitor.getTopProcessByCpu();
-        processInfoOpt.ifPresentOrElse(
-            info -> {
-                String lineTemplate = "memory".equals(resourceType) ? LineManager.getTopMemoryProcessLine().text() : LineManager.getTopCpuProcessLine().text();
-                String usageText = "memory".equals(resourceType) ? info.usage() + " megabytes" : info.usage() + " percent";
-                String response = lineTemplate.replace("{process_name}", info.name()).replace("{usage}", usageText);
-                SpeechService.speak(response);
-            },
-            () -> SpeechService.speak("I was unable to determine the top process at this time.")
-        );
-    }
-
     private void handleTerminateProcessCommand(CommandAnalysis analysis, boolean force) {
         if (!ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
             LineManager.getPrivilegedCommandRequiredLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
@@ -576,66 +638,6 @@ public class CommandService {
         if (pool != null && !pool.isEmpty()) {
             DialogueLine line = pool.get(random.nextInt(pool.size()));
             SpeechService.speakPreformatted(line.text(), line.key());
-        }
-    }
-
-    private void ensureFreshAstronomyData() {
-        if (CielState.needsAstronomyApiFetch()) {
-            AstronomyService.performApiFetch();
-        }
-    }
-    
-    private void handleGetMoonPhase() {
-        ensureFreshAstronomyData();
-        Optional<CombinedAstronomyData> data = AstronomyService.getTodaysApiData();
-        if (data.isPresent() && data.get().moonPhase != null) {
-            String simplifiedPhase = data.get().moonPhase.toLowerCase().replace(" ", "").replace("_", "");
-            LineManager.getMoonPhaseLine(simplifiedPhase).ifPresent(line -> SpeechService.speak(line.text(), line.key())); 
-        } else {
-            SpeechService.speak("I am currently unable to retrieve the moon phase information.");
-        }
-    }
-
-    private void handleGetVisiblePlanets() {
-        ensureFreshAstronomyData();
-        Optional<CombinedAstronomyData> data = AstronomyService.getTodaysApiData();
-        if (data.isPresent() && data.get().planetCoordinates != null && !data.get().planetCoordinates.isEmpty()) {
-            List<String> visibleLines = new ArrayList<>();
-            ZonedDateTime now = ZonedDateTime.now(ZoneId.of(com.cielcompanion.service.LocationService.getTimezone()));
-            for (CombinedAstronomyData.PlanetCoordinate p : data.get().planetCoordinates) {
-                double alt = AstroUtils.getAltitude(p.ra(), p.dec(), com.cielcompanion.service.LocationService.getLatitude(), com.cielcompanion.service.LocationService.getLongitude(), now);
-                if (alt > 10.0) {
-                     LineManager.getPlanetLine(p.id()).ifPresent(line -> visibleLines.add(line.text()));
-                }
-            }
-            if (!visibleLines.isEmpty()) {
-                SpeechService.speak(String.join(" ", visibleLines));
-            } else {
-                SpeechService.speak("I could not detect any major planets visible in the sky at this time.");
-            }
-        } else {
-            SpeechService.speak("I could not detect any major planets visible in the sky at this time.");
-        }
-    }
-
-    private void handleGetConstellations() {
-        ensureFreshAstronomyData();
-        Optional<CombinedAstronomyData> data = AstronomyService.getTodaysApiData();
-        if (data.isPresent() && data.get().prominentConstellationLines != null && !data.get().prominentConstellationLines.isEmpty()) {
-            SpeechService.speak(data.get().prominentConstellationLines.get(0));
-        } else {
-            SpeechService.speak("I am unable to determine the visible constellations at this moment.");
-        }
-    }
-
-    private void handleGetEclipses() {
-        ensureFreshAstronomyData();
-        AstronomyReport report = AstronomyService.getTodaysAstronomyReport();
-        String eclipseInfo = report.sequentialEvents().get("eclipse");
-        if (eclipseInfo != null) {
-            SpeechService.speak(eclipseInfo);
-        } else {
-            SpeechService.speak("My analysis shows no significant solar or lunar eclipses occurring around this date.");
         }
     }
 }
