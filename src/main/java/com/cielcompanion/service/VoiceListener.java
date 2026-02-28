@@ -32,7 +32,8 @@ public class VoiceListener {
     private static final String[] MIC_PRIORITY = {"Microphone (NVIDIA Broadcast)", "Focusrite", "Default Input"};
     private static final int PRIVILEGED_MODE_DURATION_SECONDS = 10;
     private static final double MIN_CONFIDENCE = 0.50;
-    private static final Pattern WAKE_WORD_PATTERN = Pattern.compile("^(ciel|cl|seal|seo|see i|hey allison|he see our|cl what|see how can you want|how can you open|he see our launch|hunter|so listen|ceo listen)", Pattern.CASE_INSENSITIVE);
+    // ADDED "still" and "steel" to the wake word regex
+    private static final Pattern WAKE_WORD_PATTERN = Pattern.compile("^(ciel|cl|seal|seo|see i|hey allison|he see our|cl what|see how can you want|how can you open|he see our launch|hunter|so listen|ceo listen|still|steel)", Pattern.CASE_INSENSITIVE);
     private static final Pattern SEARCH_TRIGGER_PATTERN = Pattern.compile("^(ciel search|cl search|seal search|seel search|seo search)", Pattern.CASE_INSENSITIVE);
     private static final Set<String> PHANTOM_NOISES = Set.of("huh", "the", "a", "an", "who", "what");
     

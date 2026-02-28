@@ -29,10 +29,10 @@ public class EmotionManager {
 
     private void detectSystemStress() {
         SystemMetrics metrics = SystemMonitor.getSystemMetrics();
-        if (metrics.cpuLoadPercent() > 90) {
+        if (metrics.cpuLoadPercent() > 95) {
             emotionalState.triggerEmotion("Pain", 0.5, "Overload");
         }
-        if (metrics.memoryUsagePercent() > 95) {
+        if (metrics.memoryUsagePercent() > 98) {
             emotionalState.triggerEmotion("Pain", 0.6, "Overload");
         }
     }

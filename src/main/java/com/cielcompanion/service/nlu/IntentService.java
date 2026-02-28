@@ -14,7 +14,7 @@ import java.util.stream.Collectors;
 public class IntentService {
 
     private final Map<Intent, Pattern> intentPatterns = new LinkedHashMap<>();
-    private static final Pattern MISHEARD_TRIGGER_PATTERN = Pattern.compile("^(ciel|cl|seal|seo|see i|hey allison|he see our|cl what|see how can you want|how can you open|he see our launch|hunter|so listen|ceo listen)\\s+", Pattern.CASE_INSENSITIVE);
+    private static final Pattern MISHEARD_TRIGGER_PATTERN = Pattern.compile("^(ciel|cl|seal|seo|see i|hey allison|he see our|cl what|see how can you want|how can you open|he see our launch|hunter|so listen|ceo listen|still|steel)\\s+", Pattern.CASE_INSENSITIVE);
     private final Map<String, List<String>> mishearingCorrections = new LinkedHashMap<>();
     private static final Pattern JUNK_PREFIX_PATTERN = Pattern.compile("^(the|a|an)\\s+", Pattern.CASE_INSENSITIVE);
     private static final Set<String> STOP_WORDS = Set.of("a", "an", "the", "is", "are", "was", "were", "in", "of", "to", "and", "i", "you", "it");
