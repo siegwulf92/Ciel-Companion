@@ -1,9 +1,11 @@
 package com.cielcompanion.dnd;
 
+import com.cielcompanion.CielState;
+import com.cielcompanion.ai.AIEngine;
+import com.cielcompanion.ai.ContextBuilder;
 import com.cielcompanion.service.CielTriggerEngine;
 import com.cielcompanion.service.SpeechService;
 import java.util.*;
-import java.util.stream.Collectors;
 
 public class CombatTrackerService {
     private final List<Combatant> combatants = new ArrayList<>();
@@ -33,17 +35,31 @@ public class CombatTrackerService {
         findCombatant(name).ifPresentOrElse(c -> {
             c.takeDamage(amount);
             
-            // Status Checks
+            // NEW: Analytical Appraisal / World Voice Triggers
+            // Automatically prompts Gemma to generate tactical advice and visceral descriptions when HP thresholds are crossed.
             if (c.isDown()) {
-                CielTriggerEngine.announce("Target " + c.getName() + " neutralized.", CielTriggerEngine.Urgency.CRITICAL);
+                String prompt = "SYSTEM EVENT: Combatant '" + c.getName() + "' (Is Player: " + c.isPc() + ") has just been killed or destroyed. Their HP is 0. " +
+                                "As the World Voice, vividly describe their visceral defeat or death in 1 sentence. Then, provide 1 sentence of urgent tactical direction for the remaining party.";
+                triggerWorldVoiceAnalysis(prompt);
             } else if (c.checkCritical()) {
-                CielTriggerEngine.announce("Target " + c.getName() + " is critical. Vital signs failing.", CielTriggerEngine.Urgency.URGENT);
+                String prompt = "SYSTEM EVENT: Combatant '" + c.getName() + "' (Is Player: " + c.isPc() + ") is critically wounded (HP under 25%). " +
+                                "As the World Voice, vividly describe their severe physical wounds (e.g., deep cuts, heavy bleeding) in 1 sentence. Then, suggest 1 immediate tactical action to save them or exploit the weakness.";
+                triggerWorldVoiceAnalysis(prompt);
             } else if (c.checkBloodied()) {
-                CielTriggerEngine.announce("Target " + c.getName() + " is bloodied.", CielTriggerEngine.Urgency.NORMAL);
+                String prompt = "SYSTEM EVENT: Combatant '" + c.getName() + "' (Is Player: " + c.isPc() + ") is bloodied (HP under 50%). " +
+                                "As the World Voice, describe their visible fatigue and injuries in 1 sentence. Then, suggest an offensive push or defensive shift.";
+                triggerWorldVoiceAnalysis(prompt);
             } else {
                 SpeechService.speakPreformatted(c.getName() + " HP: " + c.getCurrentHp());
             }
         }, () -> SpeechService.speak("Combatant not found."));
+    }
+
+    private void triggerWorldVoiceAnalysis(String prompt) {
+        // Fetch the standard World Voice persona rules
+        String context = ContextBuilder.buildActiveContext(null);
+        // Feed the battle prompt directly to the fast chat LLM (Gemma) for instant tactical advice
+        AIEngine.chatFast(prompt, context, null);
     }
 
     public void nextTurn() {
@@ -51,7 +67,6 @@ public class CombatTrackerService {
         currentTurnIndex = (currentTurnIndex + 1) % combatants.size();
         Combatant active = combatants.get(currentTurnIndex);
         
-        // Skip dead enemies (optional, keeps flow faster)
         if (!active.isPc() && active.isDown()) {
             nextTurn();
             return;

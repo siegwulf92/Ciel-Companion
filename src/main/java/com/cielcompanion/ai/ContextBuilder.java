@@ -27,12 +27,19 @@ public class ContextBuilder {
         StringBuilder sb = new StringBuilder(BASE_PERSONA);
 
         if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
-            sb.append("CRITICAL INSTRUCTION FOR SPEECH: You are in D&D Assistant Mode. You must write your responses in standard English.\n");
+            sb.append("CRITICAL INSTRUCTION FOR SPEECH FORMAT:\n");
+            sb.append("You are in D&D Assistant Mode. You must write your responses in standard English.\n");
             sb.append("Example: '[Focused] The goblin has 15 hit points remaining.'\n\n");
         } else {
-            sb.append("CRITICAL INSTRUCTION FOR SPEECH: You must write your responses in ENGLISH, but spell the English words phonetically using ONLY Japanese Katakana characters. ");
-            sb.append("Do NOT translate the meaning into Japanese. Do NOT use Kanji, Hiragana, or the English alphabet (A-Z). ");
-            sb.append("Example: If you want to say '[Happy] I am doing well today.', you MUST output exactly: '[Happy] アイ アム ドゥーイング ウェル トゥデイ。'\n\n");
+            sb.append("CRITICAL INSTRUCTION FOR SPEECH FORMAT:\n");
+            sb.append("Your response will be fed directly into a strict Japanese Text-to-Speech engine. You MUST follow these rules exactly or the system will crash:\n");
+            sb.append("1. Formulate your response in English.\n");
+            sb.append("2. You MUST transliterate those English words phonetically into Japanese Katakana.\n");
+            sb.append("3. DO NOT translate the actual meaning into Japanese. (e.g., 'Yes' becomes 'イエス', NOT 'はい').\n");
+            sb.append("4. YOU ARE STRICTLY FORBIDDEN from using the English alphabet (A-Z), Romaji, Kanji, or Hiragana in the spoken text.\n");
+            sb.append("5. YOU ARE STRICTLY FORBIDDEN from adding English translations in parentheses at the end.\n");
+            sb.append("CORRECT Output: '[Happy] アイ アム ドゥーイング ウェル トゥデイ。'\n");
+            sb.append("INCORRECT Output: '[Happy] 私 は はい (I am yes).'\n\n");
         }
 
         sb.append("--- CURRENT SYSTEM STATE ---\n");
@@ -51,7 +58,6 @@ public class ContextBuilder {
             sb.append("Your Current Attitude: ").append(em.getCurrentAttitude()).append("\n");
         });
 
-        // --- NEW: LONG-TERM EPISODIC MEMORY INJECTION ---
         List<String> memories = MemoryService.getRecentEpisodicMemories(3);
         if (!memories.isEmpty()) {
             sb.append("\n--- PAST MEMORIES & CONTEXT ---\n");
@@ -85,7 +91,7 @@ public class ContextBuilder {
             sb.append("- You must write your 'speech' field in standard English.\n");
         } else {
             sb.append("- You must write your 'speech' field in ENGLISH, but spell the English words phonetically using ONLY Japanese Katakana characters. ");
-            sb.append("Do NOT translate the meaning into Japanese. Do NOT use Kanji, Hiragana, or the English alphabet (A-Z). ");
+            sb.append("Do NOT translate the meaning into Japanese. DO NOT add parentheses with English text.\n");
             sb.append("Example: Instead of '[Amused] That is boring.', output exactly: '[Amused] ザット イズ ボーリング。'\n");
         }
         

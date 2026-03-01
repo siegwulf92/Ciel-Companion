@@ -1,10 +1,6 @@
 package com.cielcompanion.service.nlu;
 
-/**
- * All possible user intents the NLU can recognize.
- */
 public enum Intent {
-    // ... [Previous Intents] ...
     GET_TIME,
     GET_DAILY_REPORT,
     GET_WEATHER,
@@ -30,8 +26,6 @@ public enum Intent {
     SET_MODE_INTEGRATED,
     TOGGLE_LISTENING,
     LEARN_PHONETIC,
-
-    // D&D Specific Intents
     DND_ROLL_DICE,
     DND_PLAY_SOUND,
     DND_CREATE_SESSION_NOTE,
@@ -47,17 +41,13 @@ public enum Intent {
     DND_RECORD_MASTERY,
     DND_REPORT_SURGE,
     OPEN_CHEAT_SHEET,
-
-    // NEW: Tensura Puzzle Intents
-    TENSURA_ENTER_WORLD,      // Triggers the language lock
-    TENSURA_CONFIRM_COPY,     // The solution: "Copy skill", "Yes do it", etc.
-
-    // NEW On-Demand Astronomy Intents
+    TENSURA_ENTER_WORLD,
+    TENSURA_CONFIRM_COPY,
     GET_MOON_PHASE,
     GET_VISIBLE_PLANETS,
     GET_CONSTELLATIONS,
     GET_ECLIPSES,
-
+    DYNAMIC_PC_CONTROL, // NEW: Chant Annulment trigger
     EASTER_EGG,
     UNKNOWN
 }

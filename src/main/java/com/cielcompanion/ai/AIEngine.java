@@ -59,6 +59,48 @@ public class AIEngine {
         }
     }
 
+    // --- NEW: Silent Logic Generator for Scripts ---
+    // Fetches raw data from the Logic Core without triggering TTS or visual avatars
+    public static CompletableFuture<String> generateSilentLogic(String userMessage, String systemContext) {
+        String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOGIC);
+        JsonObject payload = new JsonObject();
+        payload.addProperty("model", Settings.getLlmLogicModel());
+        payload.addProperty("stream", false);
+        payload.addProperty("temperature", 0.1); // Extremely low temp to prevent coding hallucinations
+
+        JsonArray messages = new JsonArray();
+        JsonObject sysMsg = new JsonObject();
+        sysMsg.addProperty("role", "system");
+        sysMsg.addProperty("content", systemContext);
+        messages.add(sysMsg);
+
+        JsonObject usrMsg = new JsonObject();
+        usrMsg.addProperty("role", "user");
+        usrMsg.addProperty("content", userMessage);
+        messages.add(usrMsg);
+
+        payload.add("messages", messages);
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
+                .build();
+
+        return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                .thenApply(response -> {
+                    if (response.statusCode() == 200) {
+                        JsonObject jsonResponse = JsonParser.parseString(response.body()).getAsJsonObject();
+                        String rawContent = jsonResponse.getAsJsonArray("choices").get(0).getAsJsonObject()
+                                .getAsJsonObject("message").get("content").getAsString();
+                        // Strip out DeepSeek/Phi-4 <think> tags to extract only the raw code
+                        return THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim();
+                    }
+                    return null;
+                });
+    }
+    // ----------------------------------------------
+
     private static synchronized void checkIdleMemoryDigestion() {
         if (conversationHistory.isEmpty()) return;
         

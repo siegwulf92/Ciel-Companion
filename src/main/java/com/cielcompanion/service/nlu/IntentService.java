@@ -41,7 +41,6 @@ public class IntentService {
         intentPatterns.put(Intent.SET_MODE_DND, Pattern.compile("(?i)(enter|start|begin) d and d mode"));
         intentPatterns.put(Intent.SET_MODE_INTEGRATED, Pattern.compile("(?i)(return to|enter|resume) (integrated|standard|normal) mode"));
         
-        // REWORKED: Highly tolerant natural language matching for Astronomy
         intentPatterns.put(Intent.GET_MOON_PHASE, Pattern.compile("(?i).*(what is|what's|tell me).*(moon phase).*"));
         intentPatterns.put(Intent.GET_VISIBLE_PLANETS, Pattern.compile("(?i).*(what|which).*(planets).*(visible).*"));
         intentPatterns.put(Intent.GET_CONSTELLATIONS, Pattern.compile("(?i).*(what|which).*(constellations).*(visible).*"));
@@ -68,6 +67,9 @@ public class IntentService {
         intentPatterns.put(Intent.TENSURA_ENTER_WORLD, Pattern.compile("(?i)enter (the )?tensura world|start tensura (protocol|mode)"));
         intentPatterns.put(Intent.TENSURA_CONFIRM_COPY, Pattern.compile("(?i)(yes )?(please )?(copy|duplicate|restore) (the )?(skill|ability|raphael)|(confirmed|approved|proceed|execute)"));
 
+        // NEW: Catch phrases meant for dynamic script generation
+        intentPatterns.put(Intent.DYNAMIC_PC_CONTROL, Pattern.compile("(?i).*(chant annulment|dynamic script|automate this|run a script to|organize my|script to).*"));
+
         intentPatterns.put(Intent.GET_WEATHER_FORECAST, Pattern.compile("(?i).*(weather|forecast).*(tomorrow|later|tonight).*"));
         intentPatterns.put(Intent.GET_WEATHER, Pattern.compile("(?i).*(weather|temperature|hot|cold|outside).*"));
         intentPatterns.put(Intent.GET_TIME, Pattern.compile("(?i).*(what time|what's the time|what is the time|what date|what's the date).*"));
@@ -78,8 +80,11 @@ public class IntentService {
         intentPatterns.put(Intent.GET_TOP_CPU_PROCESS, Pattern.compile("(?i)((top|which) process.*cpu)|((most|highest) cpu)"));
         intentPatterns.put(Intent.TERMINATE_PROCESS_FORCE, Pattern.compile("(?i)(force close|force quit|force terminate|horse close) (?<appName>.+)"));
         intentPatterns.put(Intent.TERMINATE_PROCESS, Pattern.compile("(?i)(close|quit|terminate) (?<appName>.+)"));
-        intentPatterns.put(Intent.INITIATE_REBOOT, Pattern.compile("(?i)(reboot|restart)( the)? (pc|computer|system)?"));
-        intentPatterns.put(Intent.INITIATE_SHUTDOWN, Pattern.compile("(?i)shut ?down( the)? (pc|computer|system)?"));
+        
+        // REWORKED: Extremely wide nets for shutdown/reboot so natural phrasing doesn't accidentally trigger the LLM to roleplay
+        intentPatterns.put(Intent.INITIATE_REBOOT, Pattern.compile("(?i).*(reboot|restart).*(pc|computer|system).*"));
+        intentPatterns.put(Intent.INITIATE_SHUTDOWN, Pattern.compile("(?i).*(shut\\s*down|turn\\s*off|power\\s*off).*(pc|computer|system|peace).*"));
+        
         intentPatterns.put(Intent.CANCEL_SHUTDOWN, Pattern.compile("(?i)cancel (shutdown|reboot)"));
         intentPatterns.put(Intent.SCAN_FOR_APPS, Pattern.compile("(?i).*scan for new (apps|applications|games).*"));
         intentPatterns.put(Intent.FIND_APP_PATH, Pattern.compile("(?i)(find|locate|learn|save path for) (?<appName>.+)"));

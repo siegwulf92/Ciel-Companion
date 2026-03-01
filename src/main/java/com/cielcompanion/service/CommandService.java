@@ -199,10 +199,11 @@ public class CommandService {
         switch (analysis.intent()) {
             // --- Commands routed to AI with local data injection ---
             case GET_TIME: return handleTimeCommand(userText);
-            case GET_DAILY_REPORT: return handleDailyReportCommand(userText);
             case GET_WEATHER: return handleWeatherCommand(userText);
             case GET_WEATHER_FORECAST: return handleWeatherForecastCommand(userText);
             case GET_SYSTEM_STATUS: return handleSystemStatusCommand(userText);
+            
+            case GET_DAILY_REPORT: return handleDailyReportCommand(userText);
             case GET_TOP_MEMORY_PROCESS: return handleGetTopProcessCommand("memory", userText);
             case GET_TOP_CPU_PROCESS: return handleGetTopProcessCommand("cpu", userText);
             case RECALL_FACT: return handleRecallCommand(analysis, userText);
@@ -214,6 +215,10 @@ public class CommandService {
             case GET_ECLIPSES: return handleGetEclipses(userText);
             
             // --- Commands handled strictly locally (Instant actions) ---
+            case DYNAMIC_PC_CONTROL: 
+                com.cielcompanion.ai.DynamicScriptEngine.executeChantAnnulment(userText, () -> isBusy.set(false));
+                return false; // Tells the thread we are handling it asynchronously
+            
             case FIND_APP_PATH: handleFindAppPathCommand(analysis); return true;
             case SCAN_FOR_APPS: handleScanForAppsCommand(); return true;
             case TERMINATE_PROCESS: handleTerminateProcessCommand(analysis, false); return true;
@@ -266,27 +271,42 @@ public class CommandService {
     // ==========================================
 
     private boolean handleWeatherCommand(String userText) {
+        if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
+            String prompt = "The party is asking about the current weather. Invent a highly thematic, atmospheric description of the fantasy weather based on recent context.";
+            return sendToAiWithData(userText, prompt);
+        }
         String weatherReport = WeatherService.getCurrentWeather();
         return sendToAiWithData(userText, weatherReport);
     }
     
     private boolean handleWeatherForecastCommand(String userText) {
+        if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
+            String prompt = "The party is asking for a weather forecast. Invent a thematic, slightly ominous or mystical prediction of the upcoming fantasy weather.";
+            return sendToAiWithData(userText, prompt);
+        }
         String forecastReport = WeatherService.getWeatherForecast();
         return sendToAiWithData(userText, forecastReport);
     }
 
     private boolean handleTimeCommand(String userText) {
         LocalDateTime now = LocalDateTime.now();
-        // Easter egg preservation for 4:20
         if (now.getMinute() == 20 && (now.getHour() == 4 || now.getHour() == 16)) {
             LineManager.get420Line().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
             return true;
+        }
+        if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
+            String prompt = "The party is asking for the current time. Do not give them a digital clock time. Describe the position of the sun, moons, or shadows to indicate the passage of time.";
+            return sendToAiWithData(userText, prompt);
         }
         String data = "The current date and time is: " + now.format(DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy 'at' h:mm a"));
         return sendToAiWithData(userText, data);
     }
 
     private boolean handleSystemStatusCommand(String userText) {
+        if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
+            String prompt = "The party is asking for a 'System Status'. Interpret this as them asking for a status report on their physical health, magical reserves, or party morale.";
+            return sendToAiWithData(userText, prompt);
+        }
         SystemMetrics metrics = SystemMonitor.getSystemMetrics();
         String data = String.format("CPU Load: %.1f%%. Memory Usage: %.1f%%. Active App: %s.", 
             metrics.cpuLoadPercent(), metrics.memoryUsagePercent(), metrics.activeProcessName());
