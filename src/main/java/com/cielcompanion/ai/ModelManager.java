@@ -13,7 +13,8 @@ public class ModelManager {
     public enum ModelTier {
         PERSONALITY, // Fast chat (GPU)
         EVALUATOR,   // Background observer (CPU)
-        LOGIC        // Deep D&D reasoning (CPU/LM Studio)
+        LOGIC,       // Deep D&D reasoning (Primary: DeepSeek Cloud)
+        LOCAL_LOGIC_FALLBACK // Deep reasoning (Fallback: Local Phi-4)
     }
 
     public static JsonObject buildPayload(ModelTier tier, String systemContext, String userMessage, boolean stream) {
@@ -23,13 +24,14 @@ public class ModelManager {
             case PERSONALITY -> Settings.getLlmPersonalityModel();
             case EVALUATOR -> Settings.getLlmEvaluatorModel();
             case LOGIC -> Settings.getLlmLogicModel();
+            case LOCAL_LOGIC_FALLBACK -> Settings.getLlmLocalLogicFallbackModel();
         };
 
         payload.addProperty("model", modelName);
         payload.addProperty("stream", stream);
         
         // Adjust creativity based on task
-        if (tier == ModelTier.LOGIC) {
+        if (tier == ModelTier.LOGIC || tier == ModelTier.LOCAL_LOGIC_FALLBACK) {
             payload.addProperty("temperature", 0.3); // High logic, low hallucination
         } else {
             payload.addProperty("temperature", 0.7); // Personality
@@ -69,6 +71,7 @@ public class ModelManager {
             case PERSONALITY -> Settings.getLlmPersonalityUrl() + "/chat/completions";
             case EVALUATOR -> Settings.getLlmEvaluatorUrl() + "/chat/completions";
             case LOGIC -> Settings.getLlmLogicUrl() + "/chat/completions";
+            case LOCAL_LOGIC_FALLBACK -> Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
         };
     }
 }

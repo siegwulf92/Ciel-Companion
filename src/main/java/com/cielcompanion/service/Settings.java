@@ -68,6 +68,10 @@ public class Settings {
     private static String LLM_EVALUATOR_MODEL; 
     private static String LLM_LOGIC_URL; 
     private static String LLM_LOGIC_MODEL; 
+    
+    private static String LLM_LOCAL_LOGIC_FALLBACK_URL; 
+    private static String LLM_LOCAL_LOGIC_FALLBACK_MODEL; 
+    
     private static String LLM_ONLINE_FALLBACK_URL; 
     private static String LLM_ONLINE_FALLBACK_KEY;
     private static boolean AI_OBSERVER_ENABLED;
@@ -155,19 +159,18 @@ public class Settings {
             AzureUsageTracker.setLimit(AZURE_MONTHLY_LIMIT_HOURS * 3600);
 
             // --- AI ORCHESTRATION ---
-            // Fast Chat (GPU)
             LLM_PERSONALITY_URL = props.getProperty("ciel.ai.personalityUrl", "http://localhost:11434/v1"); 
-            LLM_PERSONALITY_MODEL = props.getProperty("ciel.ai.personalityModel", "gemma2"); 
+            LLM_PERSONALITY_MODEL = props.getProperty("ciel.ai.personalityModel", "gemma3:12b"); 
             
-            // Background Observer (CPU)
             LLM_EVALUATOR_URL = props.getProperty("ciel.ai.evaluatorUrl", "http://localhost:11434/v1"); 
-            LLM_EVALUATOR_MODEL = props.getProperty("ciel.ai.evaluatorModel", "qwen2.5:3b");
+            LLM_EVALUATOR_MODEL = props.getProperty("ciel.ai.evaluatorModel", "qwen3:8b");
             
-            // Deep Logic (CPU/LM Studio)
-            LLM_LOGIC_URL = props.getProperty("ciel.ai.logicUrl", "http://localhost:1234/v1");
-            LLM_LOGIC_MODEL = props.getProperty("ciel.ai.logicModel", "phi-4");
+            LLM_LOGIC_URL = props.getProperty("ciel.ai.logicUrl", "http://localhost:11434/v1");
+            LLM_LOGIC_MODEL = props.getProperty("ciel.ai.logicModel", "deepseek-v3.1:671b-cloud");
             
-            // Fallback
+            LLM_LOCAL_LOGIC_FALLBACK_URL = props.getProperty("ciel.ai.localLogicFallbackUrl", "http://localhost:1234/v1");
+            LLM_LOCAL_LOGIC_FALLBACK_MODEL = props.getProperty("ciel.ai.localLogicFallbackModel", "phi-4-reasoning-plus");
+            
             LLM_ONLINE_FALLBACK_URL = props.getProperty("ciel.ai.fallbackUrl", "https://api.openai.com/v1");
             LLM_ONLINE_FALLBACK_KEY = props.getProperty("ciel.ai.fallbackKey", "");
             AI_OBSERVER_ENABLED = Boolean.parseBoolean(props.getProperty("ciel.ai.observerEnabled", "true"));
@@ -229,6 +232,10 @@ public class Settings {
     public static String getLlmEvaluatorModel() { return LLM_EVALUATOR_MODEL; }
     public static String getLlmLogicUrl() { return LLM_LOGIC_URL; }
     public static String getLlmLogicModel() { return LLM_LOGIC_MODEL; }
+    
+    public static String getLlmLocalLogicFallbackUrl() { return LLM_LOCAL_LOGIC_FALLBACK_URL; }
+    public static String getLlmLocalLogicFallbackModel() { return LLM_LOCAL_LOGIC_FALLBACK_MODEL; }
+    
     public static String getLlmOnlineFallbackUrl() { return LLM_ONLINE_FALLBACK_URL; }
     public static String getLlmOnlineFallbackKey() { return LLM_ONLINE_FALLBACK_KEY; }
     public static boolean isAiObserverEnabled() { return AI_OBSERVER_ENABLED; }

@@ -1,6 +1,8 @@
 package com.cielcompanion.ai;
 
 import com.cielcompanion.CielState;
+import com.cielcompanion.memory.Fact;
+import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.service.Settings;
 import com.cielcompanion.service.SpeechService;
 import com.google.gson.Gson;
@@ -16,6 +18,9 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.LinkedList;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -32,8 +37,19 @@ public class AIEngine {
 
     private static final LinkedList<JsonObject> conversationHistory = new LinkedList<>();
     private static final int MAX_HISTORY = 10; 
+    
+    // --- NEW: Idle Memory Digestion ---
+    private static long lastInteractionTime = System.currentTimeMillis();
+    private static ScheduledExecutorService memoryScheduler;
+
+    static {
+        // Run a check every 60 seconds to see if the conversation has been idle for 5 minutes
+        memoryScheduler = Executors.newSingleThreadScheduledExecutor();
+        memoryScheduler.scheduleWithFixedDelay(AIEngine::checkIdleMemoryDigestion, 60, 60, TimeUnit.SECONDS);
+    }
 
     private static synchronized void addHistory(String role, String content) {
+        lastInteractionTime = System.currentTimeMillis();
         JsonObject msg = new JsonObject();
         msg.addProperty("role", role);
         msg.addProperty("content", content);
@@ -42,6 +58,35 @@ public class AIEngine {
             conversationHistory.removeFirst();
         }
     }
+
+    private static synchronized void checkIdleMemoryDigestion() {
+        if (conversationHistory.isEmpty()) return;
+        
+        long idleTimeMs = System.currentTimeMillis() - lastInteractionTime;
+        if (idleTimeMs > 5 * 60 * 1000) { // 5 minutes idle
+            System.out.println("Ciel Debug: Conversation idle. Digesting short-term buffer into Long-Term Episodic Memory...");
+            
+            JsonArray historyArray = new JsonArray();
+            for (JsonObject obj : conversationHistory) historyArray.add(obj);
+            
+            String prompt = "You are the memory core of Ciel. Review this conversation history array:\n" + 
+                            gson.toJson(historyArray) + 
+                            "\nExtract any meaningful facts, user preferences, or narrative conclusions into a concise 1-sentence summary. " +
+                            "Reply strictly in JSON: { \"actionable\": true/false, \"summary\": \"the extracted fact\" }. " +
+                            "If it was just casual greetings or small talk, set actionable to false.";
+                            
+            evaluateBackground(prompt, "You are a memory extraction sub-process.").thenAccept(result -> {
+                if (result != null && result.has("actionable") && result.get("actionable").getAsBoolean()) {
+                    String summary = result.get("summary").getAsString();
+                    System.out.println("Ciel Debug: Memory Digested -> " + summary);
+                    String memoryKey = "Memory_" + System.currentTimeMillis();
+                    MemoryService.addFact(new Fact(memoryKey, summary, System.currentTimeMillis(), "episodic_memory", "auto-digestion", 1));
+                }
+                conversationHistory.clear(); // Clear the short term buffer
+            });
+        }
+    }
+    // ----------------------------------
 
     public static void chatFast(String userMessage, String systemContext, Runnable onComplete) {
         System.out.println("Ciel Debug: Routing to Personality Core (Streamed)...");
@@ -98,7 +143,6 @@ public class AIEngine {
                     
                     addHistory("assistant", fullResponseBuffer.toString());
 
-                    // DYNAMIC TIMER: Ensure user has 20 seconds to reply AFTER the speech finishes playing
                     long durationMs = SpeechService.estimateSpeechDuration(fullResponseBuffer.toString());
                     int extraSeconds = (int) (durationMs / 1000) + 20;
                     com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
@@ -115,7 +159,7 @@ public class AIEngine {
 
     public static CompletableFuture<JsonObject> evaluateBackground(String transcriptBuffer, String systemContext) {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
-        JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, "TRANSCRIPT:\n" + transcriptBuffer, false);
+        JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, "TRANSCRIPT / DATA:\n" + transcriptBuffer, false);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -136,7 +180,7 @@ public class AIEngine {
     }
 
     public static void reasonDeeply(String userMessage, String systemContext, Runnable onComplete) {
-        System.out.println("Ciel Debug: Routing to Logic Core (Phi-4 Reasoning)...");
+        System.out.println("Ciel Debug: Routing to Primary Logic Core (DeepSeek Cloud)...");
         SpeechService.speakPreformatted("[Focused] Initiating deep cognitive analysis. Please stand by.");
 
         addHistory("user", userMessage);
@@ -153,35 +197,66 @@ public class AIEngine {
         httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
                 .thenAccept(response -> {
                     if (response.statusCode() == 200) {
-                        JsonObject jsonResponse = JsonParser.parseString(response.body()).getAsJsonObject();
-                        String rawContent = jsonResponse.getAsJsonArray("choices").get(0).getAsJsonObject()
-                                .getAsJsonObject("message").get("content").getAsString();
-                        
-                        String cleanContent = THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim();
-                        
-                        String[] sentences = cleanContent.split("(?<=[.!?])\\s+");
-                        for (String s : sentences) {
-                            processAndSpeakChunk(s);
-                        }
-                        
-                        addHistory("assistant", cleanContent);
-
-                        long durationMs = SpeechService.estimateSpeechDuration(cleanContent);
-                        int extraSeconds = (int) (durationMs / 1000) + 20;
-                        com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
+                        processLogicResponse(response.body(), onComplete);
                     } else {
-                        SpeechService.speakPreformatted("[Annoyed] Logic core returned an anomaly. Routing to fallback.");
-                        triggerFallback(userMessage, systemContext, null);
+                        System.err.println("Ciel AI Error: Primary Logic Core returned " + response.statusCode() + ". Falling back to Local Phi-4.");
+                        reasonDeeplyLocalFallback(userMessage, systemContext, onComplete);
                     }
                 })
                 .exceptionally(e -> {
-                    System.err.println("Ciel AI Error: Logic core timeout. Ensure LM Studio is running.");
-                    triggerFallback(userMessage, systemContext, null);
+                    System.err.println("Ciel AI Error: Primary Logic Core unreachable. Falling back to Local Phi-4.");
+                    reasonDeeplyLocalFallback(userMessage, systemContext, onComplete);
                     return null;
-                })
-                .thenRun(() -> {
-                    if (onComplete != null) onComplete.run();
                 });
+    }
+
+    private static void reasonDeeplyLocalFallback(String userMessage, String systemContext, Runnable onComplete) {
+        System.out.println("Ciel Debug: Routing to Local Fallback Logic Core (Phi-4)...");
+        
+        String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOCAL_LOGIC_FALLBACK);
+        JsonObject payload = buildPayloadWithHistory(ModelManager.ModelTier.LOCAL_LOGIC_FALLBACK, systemContext, false);
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
+                .build();
+
+        httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                .thenAccept(response -> {
+                    if (response.statusCode() == 200) {
+                        processLogicResponse(response.body(), onComplete);
+                    } else {
+                        SpeechService.speakPreformatted("[Annoyed] Both Logic cores returned an anomaly. Routing to online fallback.");
+                        triggerFallback(userMessage, systemContext, onComplete);
+                    }
+                })
+                .exceptionally(e -> {
+                    System.err.println("Ciel AI Error: Local Logic core timeout. Ensure LM Studio is running.");
+                    triggerFallback(userMessage, systemContext, onComplete);
+                    return null;
+                });
+    }
+
+    private static void processLogicResponse(String responseBody, Runnable onComplete) {
+        JsonObject jsonResponse = JsonParser.parseString(responseBody).getAsJsonObject();
+        String rawContent = jsonResponse.getAsJsonArray("choices").get(0).getAsJsonObject()
+                .getAsJsonObject("message").get("content").getAsString();
+        
+        String cleanContent = THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim();
+        
+        String[] sentences = cleanContent.split("(?<=[.!?])\\s+");
+        for (String s : sentences) {
+            processAndSpeakChunk(s);
+        }
+        
+        addHistory("assistant", cleanContent);
+
+        long durationMs = SpeechService.estimateSpeechDuration(cleanContent);
+        int extraSeconds = (int) (durationMs / 1000) + 20;
+        com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
+        
+        if (onComplete != null) onComplete.run();
     }
 
     private static void triggerFallback(String userMessage, String systemContext, Runnable onComplete) {
@@ -232,11 +307,12 @@ public class AIEngine {
             case PERSONALITY -> Settings.getLlmPersonalityModel();
             case EVALUATOR -> Settings.getLlmEvaluatorModel();
             case LOGIC -> Settings.getLlmLogicModel();
+            case LOCAL_LOGIC_FALLBACK -> Settings.getLlmLocalLogicFallbackModel();
         };
 
         payload.addProperty("model", modelName);
         payload.addProperty("stream", stream);
-        payload.addProperty("temperature", tier == ModelManager.ModelTier.LOGIC ? 0.3 : 0.7);
+        payload.addProperty("temperature", (tier == ModelManager.ModelTier.LOGIC || tier == ModelManager.ModelTier.LOCAL_LOGIC_FALLBACK) ? 0.3 : 0.7);
 
         JsonArray messages = new JsonArray();
         

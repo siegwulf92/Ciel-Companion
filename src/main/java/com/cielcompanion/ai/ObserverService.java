@@ -1,9 +1,22 @@
 package com.cielcompanion.ai;
 
+import com.cielcompanion.CielState;
+import com.cielcompanion.service.OperatingMode;
 import com.cielcompanion.service.Settings;
 import com.cielcompanion.service.SpeechService;
+import com.cielcompanion.service.SystemMonitor;
+import com.cielcompanion.service.SystemMonitor.SystemMetrics;
+import com.cielcompanion.service.SystemMonitor.ProcessInfo;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.time.LocalDate;
 import java.util.LinkedList;
+import java.util.Optional;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -14,6 +27,7 @@ public class ObserverService {
     private static final int MAX_BUFFER_LINES = 15;
     private static final LinkedList<String> transcriptBuffer = new LinkedList<>();
     private static ScheduledExecutorService observerScheduler;
+    private static long lastSystemWarningTime = 0; // Prevent warning spam
 
     public static void initialize() {
         if (!Settings.isAiObserverEnabled()) {
@@ -22,7 +36,6 @@ public class ObserverService {
         }
 
         observerScheduler = Executors.newSingleThreadScheduledExecutor();
-        // Check the buffer every 45 seconds to simulate her "thinking" before interrupting
         observerScheduler.scheduleWithFixedDelay(ObserverService::evaluateBuffer, 45, 45, TimeUnit.SECONDS);
         System.out.println("Ciel Debug: AI Observer Service started (Evaluator Core).");
     }
@@ -36,14 +49,53 @@ public class ObserverService {
         }
     }
 
+    public static void logToPermanentTranscript(String text) {
+        if (CielState.getCurrentMode() != OperatingMode.DND_ASSISTANT) return;
+
+        String campaignPathStr = Settings.getDndCampaignPath();
+        if (campaignPathStr == null || campaignPathStr.isBlank()) return;
+
+        try {
+            Path transcriptsDir = Paths.get(campaignPathStr, "Transcripts");
+            Files.createDirectories(transcriptsDir);
+            
+            String dateStr = LocalDate.now().toString();
+            Path file = transcriptsDir.resolve("Session_" + dateStr + ".txt");
+            
+            String logEntry = text + System.lineSeparator();
+            Files.writeString(file, logEntry, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException e) {
+            System.err.println("Ciel Warning: Failed to write to session transcript.");
+        }
+    }
+
     private static synchronized void evaluateBuffer() {
+        // --- NEW: Proactive System Guardian ---
+        SystemMetrics metrics = SystemMonitor.getSystemMetrics();
+        if ((metrics.memoryUsagePercent() > 95 || metrics.cpuLoadPercent() > 95) 
+            && (System.currentTimeMillis() - lastSystemWarningTime > 5 * 60 * 1000)) { // Warn max once every 5 mins
+            
+            lastSystemWarningTime = System.currentTimeMillis();
+            Optional<ProcessInfo> topProc = metrics.memoryUsagePercent() > 95 ? SystemMonitor.getTopProcessByMemory() : SystemMonitor.getTopProcessByCpu();
+            
+            if (topProc.isPresent()) {
+                String warningData = "SYSTEM ALERT: PC is under heavy load. CPU: " + metrics.cpuLoadPercent() + "%, RAM: " + metrics.memoryUsagePercent() + "%. The culprit process is " + topProc.get().name() + ".";
+                String context = ContextBuilder.buildObserverContext();
+                
+                AIEngine.evaluateBackground(warningData, context).thenAccept(result -> {
+                    if (result != null && result.has("speech")) {
+                        System.out.println("Ciel Debug: Proactive System Guardian triggered!");
+                        extractAndSpeak(result.get("speech").getAsString());
+                    }
+                });
+                return; // Prioritize system warnings over casual background chat
+            }
+        }
+
+        // --- Standard Observer Logic ---
         if (transcriptBuffer.isEmpty()) return;
 
-        // Take a snapshot of the current transcript
         String combinedTranscript = transcriptBuffer.stream().collect(Collectors.joining("\n"));
-        
-        // CRITICAL FIX: Clear the buffer IMMEDIATELY before sending to the AI.
-        // This ensures that even if she chooses NOT to speak, she won't re-evaluate the exact same audio 45 seconds later.
         transcriptBuffer.clear();
 
         String context = ContextBuilder.buildObserverContext();

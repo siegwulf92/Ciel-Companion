@@ -3,7 +3,6 @@ package com.cielcompanion.service;
 import com.cielcompanion.CielState;
 import com.cielcompanion.ai.ObserverService;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
-import com.cielcompanion.ui.CielGui;
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
@@ -33,7 +32,7 @@ public class VoiceListener {
     private static final int PRIVILEGED_MODE_DURATION_SECONDS = 10;
     private static final double MIN_CONFIDENCE = 0.50;
     
-    // ADDED "feel", "fill", "she'll" to catch more STT errors
+    // EXTREME TOLERANCE REGEX: Captures almost all known Vosk large-model autocorrects for "Ciel"
     private static final String WAKE_WORD_REGEX = "^(?:hey\\s+|hi\\s+|uh\\s+|um\\s+|ok\\s+|okay\\s+|so\\s+|well\\s+)?(ciel|cl|seal|seo|ceo|joe|chill|tell|feel|fill|she'll|c l|see l|see el|see i|still|steel|steal|sail|sale|shell|hey allison|he see our|cl what|see how can you want|how can you open|he see our launch|hunter|so listen|ceo listen)";
     private static final Pattern WAKE_WORD_PATTERN = Pattern.compile(WAKE_WORD_REGEX, Pattern.CASE_INSENSITIVE);
     
@@ -65,9 +64,10 @@ public class VoiceListener {
             String modelPath = Paths.get(System.getProperty("user.dir"), "model").toString();
             voskModel = new Model(modelPath);
             isInitialized = true;
+            System.out.println("Ciel Debug: Vosk model loaded successfully from " + modelPath);
             ObserverService.initialize(); 
         } catch (IOException e) {
-            System.err.println("Ciel FATAL Error: Could not load Vosk model.");
+            System.err.println("Ciel FATAL Error: Could not load Vosk model at " + Paths.get(System.getProperty("user.dir"), "model").toString());
         }
     }
 
@@ -86,6 +86,7 @@ public class VoiceListener {
                 }
             } catch (LineUnavailableException e) {
                 System.err.println("Ciel Error: Microphone line is unavailable.");
+                e.printStackTrace();
             }
         }, "Ciel-Mic-Initializer").start();
     }
@@ -102,30 +103,45 @@ public class VoiceListener {
     }
 
     private TargetDataLine getTargetDataLine() throws LineUnavailableException {
+        // RESTORED: Diagnostic logging to show why the mic is taking so long to open
         for (int i = 0; i < 8; i++) { 
+            System.out.println("Ciel Debug: Checking for " + MIC_PRIORITY[0] + "... (Attempt " + (i + 1) + "/8)");
             for (Mixer.Info mixerInfo : AudioSystem.getMixerInfo()) {
                 if (mixerInfo.getName().toLowerCase().contains(MIC_PRIORITY[0].toLowerCase())) {
                     Mixer mixer = AudioSystem.getMixer(mixerInfo);
                     DataLine.Info info = new DataLine.Info(TargetDataLine.class, new AudioFormat(16000, 16, 1, true, false));
-                    if (mixer.isLineSupported(info)) return (TargetDataLine) mixer.getLine(info);
+                    if (mixer.isLineSupported(info)) {
+                        System.out.println("Ciel Debug: Found " + MIC_PRIORITY[0] + " successfully.");
+                        return (TargetDataLine) mixer.getLine(info);
+                    }
                 }
             }
             if (i < 7) {
+                System.out.println("Ciel Debug: " + MIC_PRIORITY[0] + " not available. Waiting 30 seconds...");
                 try { Thread.sleep(30000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             }
         }
+        
+        System.out.println("Ciel Warning: Could not find primary mic. Checking fallbacks.");
         for (int i = 1; i < MIC_PRIORITY.length; i++) {
             String micName = MIC_PRIORITY[i];
              for (Mixer.Info mixerInfo : AudioSystem.getMixerInfo()) {
                 if (mixerInfo.getName().toLowerCase().contains(micName.toLowerCase())) {
                     Mixer mixer = AudioSystem.getMixer(mixerInfo);
                     DataLine.Info info = new DataLine.Info(TargetDataLine.class, new AudioFormat(16000, 16, 1, true, false));
-                    if (mixer.isLineSupported(info)) return (TargetDataLine) mixer.getLine(info);
+                    if (mixer.isLineSupported(info)) {
+                        System.out.println("Ciel Debug: Found fallback mic: " + micName);
+                        return (TargetDataLine) mixer.getLine(info);
+                    }
                 }
             }
         }
+        
         DataLine.Info info = new DataLine.Info(TargetDataLine.class, new AudioFormat(16000, 16, 1, true, false));
-        if (AudioSystem.isLineSupported(info)) return (TargetDataLine) AudioSystem.getLine(info);
+        if (AudioSystem.isLineSupported(info)) {
+            System.out.println("Ciel Debug: Found System Default mic.");
+            return (TargetDataLine) AudioSystem.getLine(info);
+        }
         return null;
     }
     

@@ -3,7 +3,9 @@ package com.cielcompanion.memory;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
@@ -59,9 +61,23 @@ public class MemoryService {
         return Optional.empty();
     }
 
-    /**
-     * REWORKED: Now saves the phase number along with the spoken line.
-     */
+    // --- NEW: Retrieve Long-Term Episodic Memories ---
+    public static List<String> getRecentEpisodicMemories(int limit) {
+        List<String> memories = new ArrayList<>();
+        String sql = "SELECT value FROM facts WHERE tags = 'episodic_memory' ORDER BY created_at_ms DESC LIMIT ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setInt(1, limit);
+            ResultSet rs = pstmt.executeQuery();
+            while (rs.next()) {
+                memories.add(rs.getString("value"));
+            }
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Failed to retrieve episodic memories.");
+        }
+        return memories;
+    }
+
     public static void recordSpokenLine(SpokenLine line) {
         String sql = "INSERT OR REPLACE INTO speech_history(line_key, line_text, spoken_at_ms, phase) VALUES(?,?,?,?)";
         try (Connection conn = DatabaseManager.getConnection();
@@ -77,9 +93,6 @@ public class MemoryService {
         }
     }
 
-    /**
-     * REWORKED: Retrieves the keys of the 5 most recently spoken lines for a specific phase.
-     */
     public static Set<String> getRecentlySpokenLineKeysForPhase(int phase) {
         Set<String> recentKeys = new HashSet<>();
         String sql = "SELECT line_key FROM speech_history WHERE phase = ? ORDER BY spoken_at_ms DESC LIMIT 5";
