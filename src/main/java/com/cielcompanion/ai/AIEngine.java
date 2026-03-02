@@ -5,6 +5,8 @@ import com.cielcompanion.memory.Fact;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.service.Settings;
 import com.cielcompanion.service.SpeechService;
+import com.cielcompanion.service.nlu.CommandAnalysis;
+import com.cielcompanion.service.nlu.Intent;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -16,7 +18,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.LinkedList;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -38,12 +42,10 @@ public class AIEngine {
     private static final LinkedList<JsonObject> conversationHistory = new LinkedList<>();
     private static final int MAX_HISTORY = 10; 
     
-    // --- NEW: Idle Memory Digestion ---
     private static long lastInteractionTime = System.currentTimeMillis();
     private static ScheduledExecutorService memoryScheduler;
 
     static {
-        // Run a check every 60 seconds to see if the conversation has been idle for 5 minutes
         memoryScheduler = Executors.newSingleThreadScheduledExecutor();
         memoryScheduler.scheduleWithFixedDelay(AIEngine::checkIdleMemoryDigestion, 60, 60, TimeUnit.SECONDS);
     }
@@ -59,14 +61,73 @@ public class AIEngine {
         }
     }
 
-    // --- NEW: Silent Logic Generator for Scripts ---
-    // Fetches raw data from the Logic Core without triggering TTS or visual avatars
+    // --- NEW: THE SEMANTIC ROUTER (PRE-FRONTAL CORTEX) ---
+    // Synchronously evaluates fuzzy user inputs to determine their true intent and clean up STT typos.
+    public static CommandAnalysis determineIntentSynchronously(String userMessage) {
+        String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
+        
+        String systemContext = "You are the NLU intent router for Ciel. Analyze the user's STT text, correct phonetic typos, and map it to an intent.\n" +
+            "Available Intents:\n" +
+            "GET_WEATHER : Ask about current weather\n" +
+            "GET_WEATHER_FORECAST : Ask about future weather\n" +
+            "GET_TIME : Ask for time or date\n" +
+            "GET_SYSTEM_STATUS : Ask for PC CPU/RAM status\n" +
+            "DYNAMIC_PC_CONTROL : User asks to write a script, automate a task, create folders, or manipulate PC files.\n" +
+            "DND_ANALYZE_LORE : Deep D&D lore analysis\n" +
+            "GET_MOON_PHASE : Moon phase\n" +
+            "GET_VISIBLE_PLANETS : Visible planets\n" +
+            "GET_ECLIPSES : Eclipses\n" +
+            "UNKNOWN : General chat, questions, conversation, or anything else not listed above.\n\n" +
+            "Return strictly JSON: { \"intent\": \"THE_INTENT\", \"cleaned_text\": \"Corrected user query without filler words\" }";
+
+        JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, userMessage, false);
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
+                .build();
+
+        try {
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                JsonObject jsonResponse = JsonParser.parseString(response.body()).getAsJsonObject();
+                String content = jsonResponse.getAsJsonArray("choices").get(0).getAsJsonObject()
+                        .getAsJsonObject("message").get("content").getAsString();
+                JsonObject parsed = JsonParser.parseString(content).getAsJsonObject();
+                
+                String intentStr = parsed.get("intent").getAsString();
+                String cleanedText = parsed.has("cleaned_text") ? parsed.get("cleaned_text").getAsString() : userMessage;
+                
+                Intent mappedIntent;
+                try {
+                    mappedIntent = Intent.valueOf(intentStr);
+                } catch (Exception e) {
+                    mappedIntent = Intent.UNKNOWN;
+                }
+                
+                Map<String, String> entities = new HashMap<>();
+                entities.put("query", cleanedText); 
+                
+                System.out.println("Ciel Debug: Semantic Router classified intent as [" + mappedIntent + "] (Cleaned: '" + cleanedText + "')");
+                return new CommandAnalysis(mappedIntent, entities);
+            }
+        } catch (Exception e) {
+            System.err.println("Ciel Warning: Semantic routing failed. Falling back to UNKNOWN.");
+        }
+        
+        Map<String, String> entities = new HashMap<>();
+        entities.put("query", userMessage);
+        return new CommandAnalysis(Intent.UNKNOWN, entities);
+    }
+    // -----------------------------------------------------
+
     public static CompletableFuture<String> generateSilentLogic(String userMessage, String systemContext) {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOGIC);
         JsonObject payload = new JsonObject();
         payload.addProperty("model", Settings.getLlmLogicModel());
         payload.addProperty("stream", false);
-        payload.addProperty("temperature", 0.1); // Extremely low temp to prevent coding hallucinations
+        payload.addProperty("temperature", 0.1); 
 
         JsonArray messages = new JsonArray();
         JsonObject sysMsg = new JsonObject();
@@ -93,19 +154,17 @@ public class AIEngine {
                         JsonObject jsonResponse = JsonParser.parseString(response.body()).getAsJsonObject();
                         String rawContent = jsonResponse.getAsJsonArray("choices").get(0).getAsJsonObject()
                                 .getAsJsonObject("message").get("content").getAsString();
-                        // Strip out DeepSeek/Phi-4 <think> tags to extract only the raw code
                         return THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim();
                     }
                     return null;
                 });
     }
-    // ----------------------------------------------
 
     private static synchronized void checkIdleMemoryDigestion() {
         if (conversationHistory.isEmpty()) return;
         
         long idleTimeMs = System.currentTimeMillis() - lastInteractionTime;
-        if (idleTimeMs > 5 * 60 * 1000) { // 5 minutes idle
+        if (idleTimeMs > 5 * 60 * 1000) { 
             System.out.println("Ciel Debug: Conversation idle. Digesting short-term buffer into Long-Term Episodic Memory...");
             
             JsonArray historyArray = new JsonArray();
@@ -124,11 +183,10 @@ public class AIEngine {
                     String memoryKey = "Memory_" + System.currentTimeMillis();
                     MemoryService.addFact(new Fact(memoryKey, summary, System.currentTimeMillis(), "episodic_memory", "auto-digestion", 1));
                 }
-                conversationHistory.clear(); // Clear the short term buffer
+                conversationHistory.clear(); 
             });
         }
     }
-    // ----------------------------------
 
     public static void chatFast(String userMessage, String systemContext, Runnable onComplete) {
         System.out.println("Ciel Debug: Routing to Personality Core (Streamed)...");
@@ -201,7 +259,7 @@ public class AIEngine {
 
     public static CompletableFuture<JsonObject> evaluateBackground(String transcriptBuffer, String systemContext) {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
-        JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, "TRANSCRIPT / DATA:\n" + transcriptBuffer, false);
+        JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, "TRANSCRIPT:\n" + transcriptBuffer, false);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -222,7 +280,7 @@ public class AIEngine {
     }
 
     public static void reasonDeeply(String userMessage, String systemContext, Runnable onComplete) {
-        System.out.println("Ciel Debug: Routing to Primary Logic Core (DeepSeek Cloud)...");
+        System.out.println("Ciel Debug: Routing to Primary Logic Core (DeepSeek)...");
         SpeechService.speakPreformatted("[Focused] Initiating deep cognitive analysis. Please stand by.");
 
         addHistory("user", userMessage);

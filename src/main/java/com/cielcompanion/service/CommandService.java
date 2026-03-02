@@ -104,7 +104,7 @@ public class CommandService {
         return isBusy.get();
     }
 
-    public void handleCommand(String text, boolean hasWakeWord, Runnable onComplete) {
+    public void handleCommand(String originalText, boolean hasWakeWord, Runnable onComplete) {
         if (!isBusy.compareAndSet(false, true)) {
             if(onComplete != null) onComplete.run();
             return;
@@ -113,18 +113,23 @@ public class CommandService {
         commandExecutor.submit(() -> {
             boolean releaseBusySynchronously = true;
             try {
-                if (text == null || text.isBlank()) return;
+                if (originalText == null || originalText.isBlank()) return;
+                
+                // NEW: Always print exactly what Vosk heard immediately, so we don't have to guess.
+                System.out.printf("Ciel STT [Raw]: \"%s\"%n", originalText);
+                
+                String activeText = originalText;
 
                 emotionManager.recordUserInteraction();
 
-                CommandAnalysis analysis = conversationService.checkForFollowUp(text);
+                CommandAnalysis analysis = conversationService.checkForFollowUp(activeText);
                 if (analysis == null) {
-                    analysis = intentService.analyze(text);
+                    analysis = intentService.analyze(activeText);
                 }
 
                 String speaker = analysis.entities().get("speaker");
                 if (speaker != null) {
-                    dndCampaignService.checkQuirks(speaker, text);
+                    dndCampaignService.checkQuirks(speaker, activeText);
                 }
 
                 conversationService.updateConversationTopic(analysis);
@@ -132,38 +137,52 @@ public class CommandService {
                 boolean isPrivileged = ShortTermMemoryService.getMemory().isInPrivilegedMode();
                 boolean isDirectlyAddressed = hasWakeWord || isPrivileged;
 
-                if (analysis.intent() == Intent.UNKNOWN || analysis.intent() == Intent.SEARCH_WEB) {
-                    if (isDirectlyAddressed) {
+                // --- THE SEMANTIC ROUTER ---
+                if (analysis.intent() == Intent.UNKNOWN || analysis.intent() == Intent.SEARCH_WEB || analysis.intent() == Intent.DYNAMIC_PC_CONTROL) {
+                    
+                    if (!isDirectlyAddressed) {
+                        System.out.printf("Ciel STT [Background]: \"%s\"%n", activeText);
+                        ObserverService.appendTranscript(activeText);
+                        isBusy.set(false);
+                        if (onComplete != null) onComplete.run();
+                        return;
+                    }
+
+                    System.out.println("Ciel Debug: Triggering AI Semantic Router for intent clarification...");
+                    CommandAnalysis semanticAnalysis = AIEngine.determineIntentSynchronously(activeText);
+                    
+                    if (semanticAnalysis.intent() == Intent.UNKNOWN) {
                         System.out.println("Ciel Debug: Routing general chat to Personality Core (Gemma).");
                         String context = ContextBuilder.buildActiveContext(loreService);
                         
                         ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
-                        AIEngine.chatFast(text, context, () -> isBusy.set(false));
+                        AIEngine.chatFast(semanticAnalysis.entities().get("query"), context, () -> isBusy.set(false));
                         releaseBusySynchronously = false;
+                        if (onComplete != null) onComplete.run();
+                        return; 
+                    } else if (semanticAnalysis.intent() == Intent.DND_ANALYZE_LORE) {
+                        System.out.println("Ciel Debug: Routing deep analysis to Logic Core (Phi-4).");
+                        String context = ContextBuilder.buildActiveContext(loreService);
+                        
+                        ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
+                        AIEngine.reasonDeeply(semanticAnalysis.entities().get("query"), context, () -> isBusy.set(false));
+                        releaseBusySynchronously = false;
+                        if (onComplete != null) onComplete.run();
+                        return;
                     } else {
-                        System.out.printf("Ciel STT [Background]: \"%s\"%n", text);
-                        ObserverService.appendTranscript(text);
+                        // The AI successfully mapped it to a distinct command
+                        analysis = semanticAnalysis;
+                        activeText = semanticAnalysis.entities().get("query"); // Use the grammatically corrected text
                     }
-                    return; 
-                } else if (analysis.intent() == Intent.DND_ANALYZE_LORE) {
-                    System.out.println("Ciel Debug: Routing deep analysis to Logic Core (Phi-4).");
-                    String context = ContextBuilder.buildActiveContext(loreService);
-                    
-                    ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
-                    AIEngine.reasonDeeply(text, context, () -> isBusy.set(false));
-                    releaseBusySynchronously = false;
-                    return;
                 }
 
-                System.out.printf("Ciel STT: Local Command Matched [%s]: \"%s\"%n", analysis.intent(), text);
+                System.out.printf("Ciel STT: Command Matched [%s]: \"%s\"%n", analysis.intent(), activeText);
                 
                 if (analysis.intent() != Intent.EASTER_EGG) {
-                    // Play the "As you wish" sound locally before generation starts
                     LineManager.getCommandConfirmationLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
                 }
 
-                // processCommand now returns false if it routed to the AI asynchronously
-                releaseBusySynchronously = processCommand(analysis, text);
+                releaseBusySynchronously = processCommand(analysis, activeText);
                 
             } catch (Exception e) {
                 System.err.println("Ciel FATAL Error: Uncaught exception in CommandService.");
@@ -184,7 +203,6 @@ public class CommandService {
        AIEngine.chatFast(query, context, () -> isBusy.set(false));
     }
 
-    // NEW RAG HELPER: Injects local Java data into the AI for dynamic formatting
     private boolean sendToAiWithData(String userQuery, String systemData) {
         String context = ContextBuilder.buildActiveContext(loreService) + 
             "\n\n[SYSTEM DATA REPOSITORY]\n" + systemData + 
@@ -192,12 +210,11 @@ public class CommandService {
         
         ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
         AIEngine.chatFast(userQuery, context, () -> isBusy.set(false));
-        return false; // Tells the caller it's handled asynchronously
+        return false; 
     }
 
     private boolean processCommand(CommandAnalysis analysis, String userText) {
         switch (analysis.intent()) {
-            // --- Commands routed to AI with local data injection ---
             case GET_TIME: return handleTimeCommand(userText);
             case GET_WEATHER: return handleWeatherCommand(userText);
             case GET_WEATHER_FORECAST: return handleWeatherForecastCommand(userText);
@@ -214,10 +231,9 @@ public class CommandService {
             case GET_CONSTELLATIONS: return handleGetConstellations(userText);
             case GET_ECLIPSES: return handleGetEclipses(userText);
             
-            // --- Commands handled strictly locally (Instant actions) ---
             case DYNAMIC_PC_CONTROL: 
                 com.cielcompanion.ai.DynamicScriptEngine.executeChantAnnulment(userText, () -> isBusy.set(false));
-                return false; // Tells the thread we are handling it asynchronously
+                return false;
             
             case FIND_APP_PATH: handleFindAppPathCommand(analysis); return true;
             case SCAN_FOR_APPS: handleScanForAppsCommand(); return true;
@@ -427,10 +443,6 @@ public class CommandService {
             return true;
         }
     }
-
-    // ==========================================
-    // INSTANT LOCAL ACTIONS (Returns True)
-    // ==========================================
 
     private void ensureFreshAstronomyData() {
         if (CielState.needsAstronomyApiFetch()) {

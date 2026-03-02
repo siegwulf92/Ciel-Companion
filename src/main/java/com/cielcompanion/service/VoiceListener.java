@@ -32,8 +32,8 @@ public class VoiceListener {
     private static final int PRIVILEGED_MODE_DURATION_SECONDS = 10;
     private static final double MIN_CONFIDENCE = 0.50;
     
-    // EXTREME TOLERANCE REGEX: Captures almost all known Vosk large-model autocorrects for "Ciel"
-    private static final String WAKE_WORD_REGEX = "^(?:hey\\s+|hi\\s+|uh\\s+|um\\s+|ok\\s+|okay\\s+|so\\s+|well\\s+)?(ciel|cl|seal|seo|ceo|joe|chill|tell|feel|fill|she'll|c l|see l|see el|see i|still|steel|steal|sail|sale|shell|hey allison|he see our|cl what|see how can you want|how can you open|he see our launch|hunter|so listen|ceo listen)";
+    // REWORKED: Multi-word phrases are now first so they aren't cannibalized by single-word matches
+    private static final String WAKE_WORD_REGEX = "^(?:hey\\s+|hi\\s+|uh\\s+|um\\s+|ok\\s+|okay\\s+|so\\s+|well\\s+)?(he see our launch|see how can you want|how can you open|he see our|so listen|ceo listen|hey allison|c l|see l|see el|see i|ciel|cl|seal|seo|ceo|joe|chill|tell|feel|fill|she'll|still|steel|steal|sail|sale|shell|hunter)(?:\\s+|$)";
     private static final Pattern WAKE_WORD_PATTERN = Pattern.compile(WAKE_WORD_REGEX, Pattern.CASE_INSENSITIVE);
     
     private static final Pattern SEARCH_TRIGGER_PATTERN = Pattern.compile("^(ciel search|cl search|seal search|seel search|seo search)", Pattern.CASE_INSENSITIVE);
@@ -42,7 +42,8 @@ public class VoiceListener {
     private final AtomicBoolean isMuted = new AtomicBoolean(false);
     private final AtomicBoolean isInternallyMuted = new AtomicBoolean(false); 
 
-    private static final long DEAD_STREAM_THRESHOLD_MS = 5000;
+    // INCREASED to 15 seconds to allow for natural silence before assuming the mic is frozen
+    private static final long DEAD_STREAM_THRESHOLD_MS = 15000;
     private final AtomicBoolean needsMicReinitialization = new AtomicBoolean(false);
 
     private Model voskModel;
@@ -103,7 +104,6 @@ public class VoiceListener {
     }
 
     private TargetDataLine getTargetDataLine() throws LineUnavailableException {
-        // RESTORED: Diagnostic logging to show why the mic is taking so long to open
         for (int i = 0; i < 8; i++) { 
             System.out.println("Ciel Debug: Checking for " + MIC_PRIORITY[0] + "... (Attempt " + (i + 1) + "/8)");
             for (Mixer.Info mixerInfo : AudioSystem.getMixerInfo()) {
@@ -156,13 +156,32 @@ public class VoiceListener {
 
             if (transcribedText.isBlank() || PHANTOM_NOISES.contains(transcribedText)) return;
 
+            // NEW: Log exactly what Vosk heard before any logic or regex touches it
+            System.out.printf("Vosk STT [Absolute Raw]: \"%s\"%n", transcribedText);
+
+            ObserverService.logToPermanentTranscript(transcribedText);
+
             boolean hasWakeWord = WAKE_WORD_PATTERN.matcher(transcribedText).find();
+            
+            // CRITICAL FIX: Create a new variable to hold the cleaned text
+            String textToProcess = transcribedText;
+
+            if (hasWakeWord) {
+                // Strip the wake word/VoiceAttack trigger out of the sentence
+                textToProcess = WAKE_WORD_PATTERN.matcher(transcribedText).replaceFirst("").trim();
+                
+                if (textToProcess.isEmpty()) {
+                    // The user ONLY said the VoiceAttack trigger phrase (e.g., "Ciel listen").
+                    // Safely throw it in the trash so it doesn't get sent to the AI.
+                    return;
+                }
+            }
 
             if (ShortTermMemoryService.getMemory().isSearchModeActive()) {
-                String[] words = transcribedText.split("\\s+");
-                if (words.length < 3) return;
-                System.out.printf("Ciel STT: Heard search query: \"%s\"%n", transcribedText);
-                commandService.handleExplicitSearch(transcribedText);
+                String[] words = textToProcess.split("\\s+");
+                if (words.length < 2 && !textToProcess.isEmpty()) return;
+                System.out.printf("Ciel STT: Heard search query: \"%s\"%n", textToProcess);
+                commandService.handleExplicitSearch(textToProcess);
                 ShortTermMemoryService.getMemory().setSearchQueryEndTime(0);
                 return;
             }
@@ -170,14 +189,8 @@ public class VoiceListener {
             double confidence = getConfidence(resultJson);
             if (confidence < MIN_CONFIDENCE) return;
 
-            if (hasWakeWord) {
-                String cleanedText = WAKE_WORD_PATTERN.matcher(transcribedText).replaceFirst("").trim();
-                if (cleanedText.isEmpty()) {
-                    return;
-                }
-            }
-            
-            commandService.handleCommand(transcribedText, hasWakeWord, () -> isProcessing.set(false));
+            // Pass the STRIPPED text to the Command Service, not the raw text
+            commandService.handleCommand(textToProcess, hasWakeWord, () -> isProcessing.set(false));
         } finally {
             if (!commandService.isBusy()) isProcessing.set(false);
         }
@@ -241,19 +254,31 @@ public class VoiceListener {
                 }
                 try (Recognizer recognizer = new Recognizer(voskModel, 16000, buildGrammar())) {
                     recognizer.setWords(true);
+                    byte[] buffer = new byte[4096];
                     while (isRunning && microphone != null && microphone.isOpen() && !needsMicReinitialization.get()) {
                         if (isMuted.get() || isInternallyMuted.get()) { 
                             try { Thread.sleep(100); } catch (InterruptedException e) { break; }
                             lastAudioTime = System.currentTimeMillis();
                             continue;
                         }
-                        byte[] buffer = new byte[4096];
-                        int bytesRead = microphone.read(buffer, 0, buffer.length);
-                        if (bytesRead > 0) {
-                            lastAudioTime = System.currentTimeMillis();
-                            if (recognizer.acceptWaveForm(buffer, bytesRead)) processRecognitionResult(recognizer.getResult());
+                        
+                        // NON-BLOCKING READ: Prevents NVIDIA Broadcast from freezing the thread
+                        int available = microphone.available();
+                        if (available > 0) {
+                            int bytesToRead = Math.min(buffer.length, available);
+                            int bytesRead = microphone.read(buffer, 0, bytesToRead);
+                            if (bytesRead > 0) {
+                                lastAudioTime = System.currentTimeMillis();
+                                if (recognizer.acceptWaveForm(buffer, bytesRead)) {
+                                    processRecognitionResult(recognizer.getResult());
+                                }
+                            }
+                        } else {
+                            try { Thread.sleep(10); } catch (InterruptedException e) { break; }
                         }
+                        
                         if (System.currentTimeMillis() - lastAudioTime > DEAD_STREAM_THRESHOLD_MS) {
+                            System.out.println("Ciel Warning: Audio stream died (NVIDIA Broadcast freeze detected). Reinitializing mic...");
                             needsMicReinitialization.set(true);
                             break;
                         }

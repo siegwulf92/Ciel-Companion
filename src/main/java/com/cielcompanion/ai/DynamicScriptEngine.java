@@ -1,10 +1,13 @@
 package com.cielcompanion.ai;
 
+import com.cielcompanion.CielState;
 import com.cielcompanion.service.SpeechService;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Handles "Chant Annulment" by generating and executing secure PowerShell scripts on the fly.
@@ -16,29 +19,58 @@ public class DynamicScriptEngine {
         "remove-item", "rm ", "del ", "format ", "reg add", "reg delete", "netsh", "stop-process", "kill "
     );
 
+    // Helper to strip emotion tags and speak Katakana naturally
+    private static void speakStatus(String textWithEmotion) {
+        String cleanText = textWithEmotion.trim();
+        Matcher matcher = Pattern.compile("\\[([a-zA-Z]+)\\]").matcher(cleanText);
+        String emotionToTrigger = null;
+
+        while (matcher.find()) {
+            emotionToTrigger = matcher.group(1);
+        }
+        
+        cleanText = matcher.replaceAll("").trim();
+
+        if (emotionToTrigger != null && !emotionToTrigger.isBlank()) {
+            final String finalEmotion = emotionToTrigger;
+            CielState.getEmotionManager().ifPresent(em -> {
+                em.triggerEmotion(finalEmotion, 0.8, "Chant Annulment");
+            });
+        }
+
+        if (!cleanText.isEmpty()) {
+            SpeechService.speakPreformatted(cleanText);
+        }
+    }
+
     public static void executeChantAnnulment(String userRequest, Runnable onComplete) {
-        SpeechService.speakPreformatted("[Focused] Chant Annulment protocol initiated. Formulating script sequence.");
+        // "Chant Annulment protocol initiated. Formulating script sequence."
+        speakStatus("[Focused] チャント アナルメント プロトコル イニシエイテッド。フォーミュレイティング スクリプト シーケンス。");
         
         String systemContext = "You are a master Windows PowerShell scripter. " +
             "The user will give you a natural language task. Write a safe, efficient PowerShell script to accomplish it. " +
             "CRITICAL: Output ONLY the raw PowerShell code. Do not include markdown blocks (like ```powershell). Do not explain the code. " +
+            "The script must execute immediately without requiring user input. " +
             "If the task implies deleting files, use Move-Item to a 'C:\\Temp_Recycle' folder instead to be safe.";
             
         AIEngine.generateSilentLogic(userRequest, systemContext).thenAccept(script -> {
             if (script == null || script.isBlank()) {
-                SpeechService.speakPreformatted("[Annoyed] Script generation failed. Logic matrix unstable.");
+                // "Script generation failed. Logic matrix unstable."
+                speakStatus("[Annoyed] スクリプト ジェネレーション フェイルド。ロジック マトリックス アンステイブル。");
                 if (onComplete != null) onComplete.run();
                 return;
             }
             
             // Clean up rogue markdown just in case the LLM ignores instructions
             script = script.replace("```powershell", "").replace("```ps1", "").replace("```", "").trim();
+            System.out.println("\n--- CIEL GENERATED SCRIPT ---\n" + script + "\n-----------------------------\n");
             
             // Security Check
             String lowerScript = script.toLowerCase();
             for (String banned : BANNED_KEYWORDS) {
                 if (lowerScript.contains(banned)) {
-                    SpeechService.speakPreformatted("[Pain] Security violation detected. The generated script contained banned operations. Execution aborted.");
+                    // "Security violation detected. Execution aborted."
+                    speakStatus("[Pain] セキュリティ ヴァイオレーション ディテクテッド。エクセキューション アボーテッド。");
                     if (onComplete != null) onComplete.run();
                     return;
                 }
@@ -49,16 +81,29 @@ public class DynamicScriptEngine {
                 Files.createDirectories(scriptPath.getParent());
                 Files.writeString(scriptPath, script);
                 
-                SpeechService.speakPreformatted("[Observing] Executing dynamic sequence.");
+                // "Executing dynamic sequence."
+                speakStatus("[Observing] エクセキューティング ダイナミック シーケンス。");
                 
                 ProcessBuilder pb = new ProcessBuilder("powershell.exe", "-ExecutionPolicy", "Bypass", "-File", scriptPath.toString());
-                Process process = pb.start();
-                process.waitFor();
+                pb.redirectErrorStream(true); 
                 
-                SpeechService.speakPreformatted("[Happy] Chant Annulment successful. Task completed.");
+                Process process = pb.start();
+                String output = new String(process.getInputStream().readAllBytes());
+                int exitCode = process.waitFor();
+                
+                System.out.println("Ciel Debug: PowerShell Execution Output:\n" + output);
+                
+                if (exitCode == 0 && !output.toLowerCase().contains("exception") && !output.toLowerCase().contains("error")) {
+                    // "Chant Annulment successful. Task completed."
+                    speakStatus("[Happy] チャント アナルメント サクセスフル。タスク コンプリート。");
+                } else {
+                    // "Execution encountered an anomaly. The script failed."
+                    speakStatus("[Annoyed] エクセキューション エンカウンタード アン アノマリー。スクリプト フェイルド。");
+                }
                 
             } catch (Exception e) {
-                SpeechService.speakPreformatted("[Annoyed] Execution failed due to a system anomaly.");
+                // "Execution failed due to a system anomaly."
+                speakStatus("[Annoyed] エクセキューション フェイルド デュー トゥ ア システム アノマリー。");
                 e.printStackTrace();
             } finally {
                 if (onComplete != null) onComplete.run();
