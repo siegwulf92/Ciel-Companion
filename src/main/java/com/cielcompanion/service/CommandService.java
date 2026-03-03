@@ -234,6 +234,10 @@ public class CommandService {
             case DYNAMIC_PC_CONTROL: 
                 com.cielcompanion.ai.DynamicScriptEngine.executeChantAnnulment(userText, () -> isBusy.set(false));
                 return false;
+                
+            case EXECUTE_SKILL: 
+                com.cielcompanion.ai.SkillManager.executeSkill(userText, () -> isBusy.set(false));
+                return false;
             
             case FIND_APP_PATH: handleFindAppPathCommand(analysis); return true;
             case SCAN_FOR_APPS: handleScanForAppsCommand(); return true;

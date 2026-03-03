@@ -47,7 +47,8 @@ public enum Intent {
     GET_VISIBLE_PLANETS,
     GET_CONSTELLATIONS,
     GET_ECLIPSES,
-    DYNAMIC_PC_CONTROL, // NEW: Chant Annulment trigger
+    DYNAMIC_PC_CONTROL, 
+    EXECUTE_SKILL, // NEW: Run a saved script
     EASTER_EGG,
     UNKNOWN
 }

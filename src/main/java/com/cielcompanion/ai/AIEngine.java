@@ -62,23 +62,23 @@ public class AIEngine {
     }
 
     // --- NEW: THE SEMANTIC ROUTER (PRE-FRONTAL CORTEX) ---
-    // Synchronously evaluates fuzzy user inputs to determine their true intent and clean up STT typos.
+    // --- THE SEMANTIC ROUTER (PRE-FRONTAL CORTEX) ---
     public static CommandAnalysis determineIntentSynchronously(String userMessage) {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
+        
+        // Feed the router the list of permanent skills she has learned so far
+        String knownSkills = SkillManager.getAvailableSkillsString();
         
         String systemContext = "You are the NLU intent router for Ciel. Analyze the user's STT text, correct phonetic typos, and map it to an intent.\n" +
             "Available Intents:\n" +
             "GET_WEATHER : Ask about current weather\n" +
-            "GET_WEATHER_FORECAST : Ask about future weather\n" +
             "GET_TIME : Ask for time or date\n" +
             "GET_SYSTEM_STATUS : Ask for PC CPU/RAM status\n" +
-            "DYNAMIC_PC_CONTROL : User asks to write a script, automate a task, create folders, or manipulate PC files.\n" +
+            "EXECUTE_SKILL : The user is explicitly asking to use one of these previously learned skills: [" + knownSkills + "]. The cleaned_text MUST be the name of the skill.\n" +
+            "DYNAMIC_PC_CONTROL : User asks to write a NEW script, automate a task, create folders, or manipulate PC files that is NOT in the skills list.\n" +
             "DND_ANALYZE_LORE : Deep D&D lore analysis\n" +
-            "GET_MOON_PHASE : Moon phase\n" +
-            "GET_VISIBLE_PLANETS : Visible planets\n" +
-            "GET_ECLIPSES : Eclipses\n" +
             "UNKNOWN : General chat, questions, conversation, or anything else not listed above.\n\n" +
-            "Return strictly JSON: { \"intent\": \"THE_INTENT\", \"cleaned_text\": \"Corrected user query without filler words\" }";
+            "Return strictly JSON: { \"intent\": \"THE_INTENT\", \"cleaned_text\": \"Corrected user query or skill name\" }";
 
         JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, userMessage, false);
 
