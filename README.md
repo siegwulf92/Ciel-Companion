@@ -1,2 +1,2 @@
 # Ciel-Companion
-Ciel Companion is a customizable desktop assistant project designed to react to apps, games, and user activity. This repository stores the logic, data, and tools used to build, update, and troubleshoot Ciel’s features.
+Ciel Companion is an advanced, Tensura-inspired AI desktop assistant. Powered by local LLMs, she features dynamic PC automation ("Chant Annulment"), context-aware system monitoring, seamless voice interaction, and specialized modules like D&D campaign management.
