@@ -27,7 +27,14 @@ public class ObserverService {
     private static final int MAX_BUFFER_LINES = 15;
     private static final LinkedList<String> transcriptBuffer = new LinkedList<>();
     private static ScheduledExecutorService observerScheduler;
-    private static long lastSystemWarningTime = 0; // Prevent warning spam
+    
+    private static long lastSystemWarningTime = 0; 
+    private static String currentForegroundApp = "";
+    private static long appFocusStartTime = System.currentTimeMillis();
+    private static boolean hasWarnedForFatigue = false;
+
+    // Fatigue threshold set to 2 hours
+    private static final long FATIGUE_THRESHOLD_MS = 2 * 60 * 60 * 1000L;
 
     public static void initialize() {
         if (!Settings.isAiObserverEnabled()) {
@@ -70,10 +77,11 @@ public class ObserverService {
     }
 
     private static synchronized void evaluateBuffer() {
-        // --- NEW: Proactive System Guardian ---
         SystemMetrics metrics = SystemMonitor.getSystemMetrics();
+        
+        // --- 1. Proactive System Guardian (RAM/CPU Overload) ---
         if ((metrics.memoryUsagePercent() > 95 || metrics.cpuLoadPercent() > 95) 
-            && (System.currentTimeMillis() - lastSystemWarningTime > 5 * 60 * 1000)) { // Warn max once every 5 mins
+            && (System.currentTimeMillis() - lastSystemWarningTime > 5 * 60 * 1000)) { 
             
             lastSystemWarningTime = System.currentTimeMillis();
             Optional<ProcessInfo> topProc = metrics.memoryUsagePercent() > 95 ? SystemMonitor.getTopProcessByMemory() : SystemMonitor.getTopProcessByCpu();
@@ -88,11 +96,36 @@ public class ObserverService {
                         extractAndSpeak(result.get("speech").getAsString());
                     }
                 });
-                return; // Prioritize system warnings over casual background chat
+                return; 
             }
         }
 
-        // --- Standard Observer Logic ---
+        // --- 2. Universal Perception (User Fatigue Monitor) ---
+        String activeApp = metrics.activeProcessName().toLowerCase();
+        if (!activeApp.equals("explorer.exe") && !activeApp.isBlank()) {
+            if (!activeApp.equals(currentForegroundApp)) {
+                currentForegroundApp = activeApp;
+                appFocusStartTime = System.currentTimeMillis();
+                hasWarnedForFatigue = false;
+            } else {
+                long elapsedMs = System.currentTimeMillis() - appFocusStartTime;
+                if (elapsedMs > FATIGUE_THRESHOLD_MS && !hasWarnedForFatigue) { 
+                    hasWarnedForFatigue = true;
+                    String warningData = "SYSTEM ALERT: The Master has been actively focused on the application '" + metrics.activeWindowTitle() + "' (" + activeApp + ") for over 2 hours straight without changing windows. Proactively suggest they take a brief break, hydrate, or check their posture.";
+                    String context = ContextBuilder.buildObserverContext();
+
+                    AIEngine.evaluateBackground(warningData, context).thenAccept(result -> {
+                        if (result != null && result.has("speech")) {
+                            System.out.println("Ciel Debug: Universal Perception (Fatigue) triggered!");
+                            extractAndSpeak(result.get("speech").getAsString());
+                        }
+                    });
+                    return; 
+                }
+            }
+        }
+
+        // --- 3. Standard Observer Logic (Transcript analysis) ---
         if (transcriptBuffer.isEmpty()) return;
 
         String combinedTranscript = transcriptBuffer.stream().collect(Collectors.joining("\n"));

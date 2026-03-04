@@ -11,7 +11,7 @@ public class IntentService {
 
     private final Map<Intent, Pattern> intentPatterns = new LinkedHashMap<>();
     
-    private static final Pattern MISHEARD_TRIGGER_PATTERN = Pattern.compile("^(?:hey\\s+|hi\\s+|uh\\s+|um\\s+|ok\\s+|okay\\s+|so\\s+|well\\s+)?(ciel|cl|seal|seo|ceo|joe|chill|tell|feel|fill|she'll|c l|see l|see el|see i|still|steel|steal|sail|sale|shell|hey allison|he see our|cl what|see how can you want|how can you open|he see our launch|hunter|so listen|ceo listen)\\s+", Pattern.CASE_INSENSITIVE);
+    private static final Pattern MISHEARD_TRIGGER_PATTERN = Pattern.compile("^(?:hey\\s+|hi\\s+|uh\\s+|um\\s+|ok\\s+|okay\\s+|so\\s+|well\\s+)?(he see our launch|see how can you want|how can you open|he see our|so listen|ceo listen|hey allison|c l|see l|see el|see i|ciel|cl|seal|seo|ceo|joe|chill|tell|feel|fill|she'll|still|steel|steal|sail|sale|shell|hunter)(?:\\s+|$)", Pattern.CASE_INSENSITIVE);
     
     private final Map<String, List<String>> mishearingCorrections = new LinkedHashMap<>();
     private static final Pattern JUNK_PREFIX_PATTERN = Pattern.compile("^(the|a|an)\\s+", Pattern.CASE_INSENSITIVE);
@@ -67,7 +67,6 @@ public class IntentService {
         intentPatterns.put(Intent.TENSURA_ENTER_WORLD, Pattern.compile("(?i)enter (the )?tensura world|start tensura (protocol|mode)"));
         intentPatterns.put(Intent.TENSURA_CONFIRM_COPY, Pattern.compile("(?i)(yes )?(please )?(copy|duplicate|restore) (the )?(skill|ability|raphael)|(confirmed|approved|proceed|execute)"));
 
-        // NEW: Catch phrases meant for dynamic script generation
         intentPatterns.put(Intent.DYNAMIC_PC_CONTROL, Pattern.compile("(?i).*(chant annulment|dynamic script|automate this|run a script to|organize my|script to).*"));
 
         intentPatterns.put(Intent.GET_WEATHER_FORECAST, Pattern.compile("(?i).*(weather|forecast).*(tomorrow|later|tonight).*"));
@@ -81,7 +80,6 @@ public class IntentService {
         intentPatterns.put(Intent.TERMINATE_PROCESS_FORCE, Pattern.compile("(?i)(force close|force quit|force terminate|horse close) (?<appName>.+)"));
         intentPatterns.put(Intent.TERMINATE_PROCESS, Pattern.compile("(?i)(close|quit|terminate) (?<appName>.+)"));
         
-        // REWORKED: Extremely wide nets for shutdown/reboot so natural phrasing doesn't accidentally trigger the LLM to roleplay
         intentPatterns.put(Intent.INITIATE_REBOOT, Pattern.compile("(?i).*(reboot|restart).*(pc|computer|system).*"));
         intentPatterns.put(Intent.INITIATE_SHUTDOWN, Pattern.compile("(?i).*(shut\\s*down|turn\\s*off|power\\s*off).*(pc|computer|system|peace).*"));
         
@@ -158,23 +156,32 @@ public class IntentService {
         double bestRatio = 0.0;
 
         for (String key : LineManager.getEasterEggKeys()) {
+            // If the user's sentence physically contains the exact easter egg phrase, return it immediately
+            if (heardText.contains(key.toLowerCase())) {
+                return key;
+            }
+
             Set<String> keyKeywords = Arrays.stream(key.toLowerCase().split("\\s+")).filter(w -> !STOP_WORDS.contains(w)).collect(Collectors.toSet());
             if (keyKeywords.isEmpty()) continue;
             
             long currentScore = heardKeywords.stream().filter(keyKeywords::contains).count();
-            double currentRatio = (double) currentScore / keyKeywords.size();
+            double keyMatchRatio = (double) currentScore / keyKeywords.size();
+            
+            // CRITICAL FIX: Prevent long conversational queries from triggering short easter eggs.
+            // If the user spoke a 14-word sentence, lengthRatio is 2/14 = 0.14. We require >= 0.4.
+            double lengthRatio = (double) currentScore / heardKeywords.size();
 
-            if (currentRatio > bestRatio) {
-                bestRatio = currentRatio;
+            if (keyMatchRatio > bestRatio && lengthRatio >= 0.4) {
+                bestRatio = keyMatchRatio;
                 bestScore = currentScore;
                 bestMatch = key;
-            } else if (currentRatio == bestRatio && currentScore > bestScore) {
+            } else if (keyMatchRatio == bestRatio && currentScore > bestScore && lengthRatio >= 0.4) {
                 bestScore = currentScore;
                 bestMatch = key;
             }
         }
         
-        if (bestMatch != null && bestRatio >= 0.6 && bestScore > 0) {
+        if (bestMatch != null && bestRatio >= 0.75 && bestScore > 0) {
             return bestMatch;
         }
         return null;

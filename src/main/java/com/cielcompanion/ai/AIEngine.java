@@ -172,7 +172,8 @@ public class AIEngine {
             
             String prompt = "You are the memory core of Ciel. Review this conversation history array:\n" + 
                             gson.toJson(historyArray) + 
-                            "\nExtract any meaningful facts, user preferences, or narrative conclusions into a concise 1-sentence summary. " +
+                            "\nExtract any meaningful facts, preferences, or narrative conclusions into a concise 1-sentence summary. " +
+                            "CRITICAL: Write the summary from Ciel's internal perspective. You MUST refer to the human strictly as 'Master' or 'Master Taylor', NEVER as 'the user'. " +
                             "Reply strictly in JSON: { \"actionable\": true/false, \"summary\": \"the extracted fact\" }. " +
                             "If it was just casual greetings or small talk, set actionable to false.";
                             
