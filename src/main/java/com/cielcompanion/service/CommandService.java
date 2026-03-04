@@ -153,7 +153,8 @@ public class CommandService {
                     
                     if (semanticAnalysis.intent() == Intent.UNKNOWN) {
                         System.out.println("Ciel Debug: Routing general chat to Personality Core (Gemma).");
-                        String context = ContextBuilder.buildActiveContext(loreService);
+                        // NEW: Pass the active text to check for Tensura Lore
+                        String context = ContextBuilder.buildActiveContext(loreService, activeText);
                         
                         ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
                         AIEngine.chatFast(semanticAnalysis.entities().get("query"), context, () -> isBusy.set(false));
@@ -162,7 +163,8 @@ public class CommandService {
                         return; 
                     } else if (semanticAnalysis.intent() == Intent.DND_ANALYZE_LORE) {
                         System.out.println("Ciel Debug: Routing deep analysis to Logic Core (Phi-4).");
-                        String context = ContextBuilder.buildActiveContext(loreService);
+                        // NEW: Pass the active text to check for Tensura Lore
+                        String context = ContextBuilder.buildActiveContext(loreService, activeText);
                         
                         ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
                         AIEngine.reasonDeeply(semanticAnalysis.entities().get("query"), context, () -> isBusy.set(false));
@@ -198,13 +200,15 @@ public class CommandService {
 
     public void handleExplicitSearch(String query) {
        if (!isBusy.compareAndSet(false, true)) return;
-       String context = ContextBuilder.buildActiveContext(loreService);
+       // NEW: Pass the query
+       String context = ContextBuilder.buildActiveContext(loreService, query);
        ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
        AIEngine.chatFast(query, context, () -> isBusy.set(false));
     }
 
     private boolean sendToAiWithData(String userQuery, String systemData) {
-        String context = ContextBuilder.buildActiveContext(loreService) + 
+        // NEW: Pass the userQuery
+        String context = ContextBuilder.buildActiveContext(loreService, userQuery) + 
             "\n\n[SYSTEM DATA REPOSITORY]\n" + systemData + 
             "\n\nINSTRUCTION: Formulate a natural, conversational answer to the user's query using the SYSTEM DATA provided above.";
         

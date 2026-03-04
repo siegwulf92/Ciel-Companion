@@ -56,9 +56,8 @@ public class CombatTrackerService {
     }
 
     private void triggerWorldVoiceAnalysis(String prompt) {
-        // Fetch the standard World Voice persona rules
-        String context = ContextBuilder.buildActiveContext(null);
-        // Feed the battle prompt directly to the fast chat LLM (Gemma) for instant tactical advice
+        // NEW: Pass the prompt to ContextBuilder
+        String context = ContextBuilder.buildActiveContext(null, prompt);
         AIEngine.chatFast(prompt, context, null);
     }
 

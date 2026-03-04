@@ -23,7 +23,8 @@ public class ContextBuilder {
         "You must be highly tolerant of phonetic mishearings and typos, especially regarding anime, fantasy, or D&D names. " +
         "Use your intelligence to infer the correct context.\n\n";
 
-    public static String buildActiveContext(LoreService loreService) {
+    // NEW: Now accepts userMessage so we can scan it for Tensura lore triggers
+    public static String buildActiveContext(LoreService loreService, String userMessage) {
         StringBuilder sb = new StringBuilder();
 
         if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
@@ -49,6 +50,13 @@ public class ContextBuilder {
             sb.append("CORRECT Example 2: '[Focused] ザ ムービー カムズ アウト オン ノーヴェンバー トゥエンティ フィフス。'\n");
             sb.append("INCORRECT (BANNED): '[Focused] 映画 は 11月 に... (Eiga wa 11-gatsu ni...)' - This uses actual Japanese Kanji and Numbers. DO NOT DO THIS.\n\n");
             
+            // --- NEW: TENSURA RAG INJECTION ---
+            String tensuraLore = TensuraKnowledgeService.getRelevantKnowledge(userMessage);
+            if (!tensuraLore.isEmpty()) {
+                sb.append("\n--- TENSURA DATABASE INJECTION ---\n");
+                sb.append(tensuraLore).append("\n");
+            }
+
             sb.append("--- CURRENT SYSTEM STATE ---\n");
             sb.append("Current Time: ").append(LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))).append("\n");
             SystemMonitor.SystemMetrics metrics = SystemMonitor.getSystemMetrics();
