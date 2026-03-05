@@ -32,7 +32,6 @@ public class VoiceListener {
     private static final int PRIVILEGED_MODE_DURATION_SECONDS = 10;
     private static final double MIN_CONFIDENCE = 0.50;
     
-    // REWORKED: Multi-word phrases are now first so they aren't cannibalized by single-word matches
     private static final String WAKE_WORD_REGEX = "^(?:hey\\s+|hi\\s+|uh\\s+|um\\s+|ok\\s+|okay\\s+|so\\s+|well\\s+)?(he see our launch|see how can you want|how can you open|he see our|so listen|ceo listen|hey allison|c l|see l|see el|see i|ciel|cl|seal|seo|ceo|joe|chill|tell|feel|fill|she'll|still|steel|steal|sail|sale|shell|hunter)(?:\\s+|$)";
     private static final Pattern WAKE_WORD_PATTERN = Pattern.compile(WAKE_WORD_REGEX, Pattern.CASE_INSENSITIVE);
     
@@ -42,9 +41,12 @@ public class VoiceListener {
     private final AtomicBoolean isMuted = new AtomicBoolean(false);
     private final AtomicBoolean isInternallyMuted = new AtomicBoolean(false); 
 
-    // INCREASED to 15 seconds to allow for natural silence before assuming the mic is frozen
     private static final long DEAD_STREAM_THRESHOLD_MS = 15000;
     private final AtomicBoolean needsMicReinitialization = new AtomicBoolean(false);
+
+    // NEW: Watchdog variables
+    private volatile long lastAudioTime = System.currentTimeMillis();
+    private Thread watchdogThread;
 
     private Model voskModel;
     private TargetDataLine microphone;
@@ -81,6 +83,7 @@ public class VoiceListener {
                     microphone.open(new AudioFormat(16000, 16, 1, true, false));
                     microphone.start();
                     startContinuousListening();
+                    startWatchdog(); // NEW: Start the external watchdog
                     System.out.println("Ciel Debug: Microphone line opened. Continuous listening started.");
                 } else {
                     System.err.println("Ciel Error: No compatible microphone could be found.");
@@ -156,25 +159,15 @@ public class VoiceListener {
 
             if (transcribedText.isBlank() || PHANTOM_NOISES.contains(transcribedText)) return;
 
-            // NEW: Log exactly what Vosk heard before any logic or regex touches it
             System.out.printf("Vosk STT [Absolute Raw]: \"%s\"%n", transcribedText);
-
             ObserverService.logToPermanentTranscript(transcribedText);
 
             boolean hasWakeWord = WAKE_WORD_PATTERN.matcher(transcribedText).find();
-            
-            // CRITICAL FIX: Create a new variable to hold the cleaned text
             String textToProcess = transcribedText;
 
             if (hasWakeWord) {
-                // Strip the wake word/VoiceAttack trigger out of the sentence
                 textToProcess = WAKE_WORD_PATTERN.matcher(transcribedText).replaceFirst("").trim();
-                
-                if (textToProcess.isEmpty()) {
-                    // The user ONLY said the VoiceAttack trigger phrase (e.g., "Ciel listen").
-                    // Safely throw it in the trash so it doesn't get sent to the AI.
-                    return;
-                }
+                if (textToProcess.isEmpty()) return;
             }
 
             if (ShortTermMemoryService.getMemory().isSearchModeActive()) {
@@ -189,7 +182,6 @@ public class VoiceListener {
             double confidence = getConfidence(resultJson);
             if (confidence < MIN_CONFIDENCE) return;
 
-            // Pass the STRIPPED text to the Command Service, not the raw text
             commandService.handleCommand(textToProcess, hasWakeWord, () -> isProcessing.set(false));
         } finally {
             if (!commandService.isBusy()) isProcessing.set(false);
@@ -244,13 +236,41 @@ public class VoiceListener {
         return new Gson().toJson(grammarSet);
     }
 
+    // NEW: External Watchdog Thread to catch memory lockups
+    private void startWatchdog() {
+        if (watchdogThread != null && watchdogThread.isAlive()) return;
+        
+        watchdogThread = new Thread(() -> {
+            while (isRunning) {
+                try { Thread.sleep(2000); } catch (InterruptedException e) { break; }
+                
+                if (isMuted.get() || isInternallyMuted.get() || needsMicReinitialization.get()) {
+                    lastAudioTime = System.currentTimeMillis(); // Pet the dog while muted
+                    continue;
+                }
+                
+                long silenceDuration = System.currentTimeMillis() - lastAudioTime;
+                if (silenceDuration > DEAD_STREAM_THRESHOLD_MS) {
+                    System.out.println("Ciel FATAL: Watchdog detected dead audio stream (" + silenceDuration + "ms). Assassinating thread and rebuilding...");
+                    needsMicReinitialization.set(true);
+                    lastAudioTime = System.currentTimeMillis(); // Reset to give it 15 seconds to rebuild
+                    
+                    if (listeningThread != null && listeningThread.isAlive()) {
+                        listeningThread.interrupt(); // Force break the native I/O lock
+                    }
+                }
+            }
+        }, "Ciel-AudioWatchdog");
+        watchdogThread.setDaemon(true);
+        watchdogThread.start();
+    }
+
     private void startContinuousListening() {
         listeningThread = new Thread(() -> {
-            long lastAudioTime = System.currentTimeMillis();
+            lastAudioTime = System.currentTimeMillis();
             while (isRunning) {
                 if (needsMicReinitialization.compareAndSet(true, false)) {
                     reinitializeMicrophone();
-                    lastAudioTime = System.currentTimeMillis();
                 }
                 try (Recognizer recognizer = new Recognizer(voskModel, 16000, buildGrammar())) {
                     recognizer.setWords(true);
@@ -262,13 +282,12 @@ public class VoiceListener {
                             continue;
                         }
                         
-                        // NON-BLOCKING READ: Prevents NVIDIA Broadcast from freezing the thread
                         int available = microphone.available();
                         if (available > 0) {
                             int bytesToRead = Math.min(buffer.length, available);
                             int bytesRead = microphone.read(buffer, 0, bytesToRead);
                             if (bytesRead > 0) {
-                                lastAudioTime = System.currentTimeMillis();
+                                lastAudioTime = System.currentTimeMillis(); // HEARTBEAT
                                 if (recognizer.acceptWaveForm(buffer, bytesRead)) {
                                     processRecognitionResult(recognizer.getResult());
                                 }
@@ -276,15 +295,9 @@ public class VoiceListener {
                         } else {
                             try { Thread.sleep(10); } catch (InterruptedException e) { break; }
                         }
-                        
-                        if (System.currentTimeMillis() - lastAudioTime > DEAD_STREAM_THRESHOLD_MS) {
-                            System.out.println("Ciel Warning: Audio stream died (NVIDIA Broadcast freeze detected). Reinitializing mic...");
-                            needsMicReinitialization.set(true);
-                            break;
-                        }
                     }
                 } catch (Exception e) {
-                    try { Thread.sleep(5000); } catch (InterruptedException ie) {}
+                    try { Thread.sleep(2000); } catch (InterruptedException ie) {}
                 }
             }
         });
@@ -294,14 +307,19 @@ public class VoiceListener {
     }
 
     private synchronized void reinitializeMicrophone() {
+        System.out.println("Ciel Debug: Executing Watchdog Mic Reinitialization...");
         if (microphone != null) { try { microphone.stop(); microphone.close(); } catch (Exception e) {} }
         try {
             microphone = getTargetDataLine();
             if (microphone != null) {
                 microphone.open(new AudioFormat(16000, 16, 1, true, false));
                 microphone.start();
+                System.out.println("Ciel Debug: Microphone successfully rebuilt by Watchdog.");
             }
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Watchdog failed to rebuild microphone.");
+        }
+        lastAudioTime = System.currentTimeMillis(); // Reset timer after rebuild
     }
     
     private double getConfidence(JsonObject resultJson) {
@@ -316,6 +334,7 @@ public class VoiceListener {
     public void close() {
         isRunning = false;
         if (listeningThread != null) listeningThread.interrupt();
+        if (watchdogThread != null) watchdogThread.interrupt();
         commandExecutor.shutdownNow();
         if (microphone != null) microphone.close();
         if (voskModel != null) voskModel.close();

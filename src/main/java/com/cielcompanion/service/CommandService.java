@@ -240,7 +240,8 @@ public class CommandService {
                 return false;
                 
             case EXECUTE_SKILL: 
-                com.cielcompanion.ai.SkillManager.executeSkill(userText, () -> isBusy.set(false));
+                // Fix: Pass the exact matched skill name to the SkillManager instead of the user's raw text
+                com.cielcompanion.ai.SkillManager.executeSkill(analysis.entities().get("skill"), () -> isBusy.set(false));
                 return false;
             
             case FIND_APP_PATH: handleFindAppPathCommand(analysis); return true;

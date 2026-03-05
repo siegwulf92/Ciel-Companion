@@ -131,6 +131,14 @@ public class IntentService {
             return new CommandAnalysis(Intent.EASTER_EGG, entities);
         }
 
+        // NEW: Check assimilated skills BEFORE checking generic regex patterns!
+        // This stops "OPEN_APPLICATION" from hijacking your skills.
+        String matchedSkill = com.cielcompanion.ai.SkillManager.matchSkill(lowerText);
+        if (matchedSkill != null) {
+            entities.put("skill", matchedSkill);
+            return new CommandAnalysis(Intent.EXECUTE_SKILL, entities);
+        }
+
         for (Map.Entry<Intent, Pattern> entry : intentPatterns.entrySet()) {
             Matcher matcher = entry.getValue().matcher(lowerText);
             if (matcher.find()) {

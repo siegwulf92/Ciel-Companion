@@ -1,5 +1,6 @@
 package com.cielcompanion.ai;
 
+import com.cielcompanion.CielState;
 import com.cielcompanion.service.SpeechService;
 import java.io.File;
 import java.nio.file.Files;
@@ -13,7 +14,7 @@ import java.util.stream.Collectors;
  */
 public class SkillManager {
 
-    private static final Path SKILLS_DIR = Paths.get(System.getenv("LOCALAPPDATA"), "CielCompanion", "Skills");
+    private static final Path SKILLS_DIR = Paths.get(System.getProperty("user.dir"), "skills");
 
     static {
         try {
@@ -25,7 +26,6 @@ public class SkillManager {
 
     public static void saveSkill(String skillName, String scriptContent) {
         try {
-            // Clean the skill name to be a safe file name
             String safeName = skillName.toLowerCase().replaceAll("[^a-z0-9_]", "_");
             Path skillPath = SKILLS_DIR.resolve(safeName + ".ps1");
             Files.writeString(skillPath, scriptContent);
@@ -48,30 +48,45 @@ public class SkillManager {
                 .collect(Collectors.joining(", "));
     }
 
-    public static void executeSkill(String skillName, Runnable onComplete) {
-        String safeName = skillName.toLowerCase().replaceAll("[^a-z0-9_]", "_");
-        Path scriptPath = SKILLS_DIR.resolve(safeName + ".ps1");
+    public static String matchSkill(String input) {
+        File folder = SKILLS_DIR.toFile();
+        File[] listOfFiles = folder.listFiles((dir, name) -> name.endsWith(".ps1"));
+        if (listOfFiles == null) return null;
 
-        if (!Files.exists(scriptPath)) {
-            // Fallback: try replacing spaces with underscores if the router didn't
-            safeName = skillName.toLowerCase().replace(" ", "_");
-            scriptPath = SKILLS_DIR.resolve(safeName + ".ps1");
+        String lowerInput = input.toLowerCase().replace("the ", "").trim(); 
+        
+        for (File file : listOfFiles) {
+            String rawName = file.getName().replace(".ps1", "");
+            String spacedName = rawName.replace("_", " ");
+            
+            if (lowerInput.contains(spacedName) || lowerInput.contains(rawName)) {
+                return rawName; 
+            }
         }
+        return null;
+    }
+
+    public static void executeSkill(String exactSkillName, Runnable onComplete) {
+        Path scriptPath = SKILLS_DIR.resolve(exactSkillName + ".ps1");
 
         if (!Files.exists(scriptPath)) {
-            SpeechService.speakPreformatted("[Annoyed] スキル エラー。ザ リクエステッド スキル イズ ノット イン マイ データベース。"); // Skill error. The requested skill is not in my database.
+            // FIX: Trigger emotion visually, but only speak the Katakana
+            CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Annoyed", 0.8, "Skill Error"));
+            SpeechService.speakPreformatted("スキル エラー。ザ リクエステッド スキル イズ ノット イン マイ データベース。"); 
             if (onComplete != null) onComplete.run();
             return;
         }
 
-        SpeechService.speakPreformatted("[Focused] エクセキューティング アシミレイテッド スキル。"); // Executing assimilated skill.
+        // FIX: Trigger emotion visually, but only speak the Katakana
+        CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Focused", 0.8, "Executing Skill"));
+        SpeechService.speakPreformatted("エクセキューティング アシミレイテッド スキル。"); 
         
         try {
             ProcessBuilder pb = new ProcessBuilder("powershell.exe", "-ExecutionPolicy", "Bypass", "-File", scriptPath.toString());
             Process process = pb.start();
             process.waitFor();
         } catch (Exception e) {
-            System.err.println("Ciel Error: Failed to execute skill " + safeName);
+            System.err.println("Ciel Error: Failed to execute skill " + exactSkillName);
             e.printStackTrace();
         } finally {
             if (onComplete != null) onComplete.run();
