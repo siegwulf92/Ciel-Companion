@@ -4,6 +4,7 @@ import com.cielcompanion.CielState;
 import com.cielcompanion.ai.AIEngine;
 import com.cielcompanion.ai.ContextBuilder;
 import com.cielcompanion.ai.ObserverService;
+import com.cielcompanion.ai.PhonoKanaSanitizer;
 import com.cielcompanion.dnd.CombatTrackerService;
 import com.cielcompanion.dnd.DndCampaignService;
 import com.cielcompanion.dnd.LoreService;
@@ -115,7 +116,6 @@ public class CommandService {
             try {
                 if (originalText == null || originalText.isBlank()) return;
                 
-                // NEW: Always print exactly what Vosk heard immediately, so we don't have to guess.
                 System.out.printf("Ciel STT [Raw]: \"%s\"%n", originalText);
                 
                 String activeText = originalText;
@@ -153,7 +153,6 @@ public class CommandService {
                     
                     if (semanticAnalysis.intent() == Intent.UNKNOWN) {
                         System.out.println("Ciel Debug: Routing general chat to Personality Core (Gemma).");
-                        // NEW: Pass the active text to check for Tensura Lore
                         String context = ContextBuilder.buildActiveContext(loreService, activeText);
                         
                         ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
@@ -163,7 +162,6 @@ public class CommandService {
                         return; 
                     } else if (semanticAnalysis.intent() == Intent.DND_ANALYZE_LORE) {
                         System.out.println("Ciel Debug: Routing deep analysis to Logic Core (Phi-4).");
-                        // NEW: Pass the active text to check for Tensura Lore
                         String context = ContextBuilder.buildActiveContext(loreService, activeText);
                         
                         ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
@@ -172,9 +170,8 @@ public class CommandService {
                         if (onComplete != null) onComplete.run();
                         return;
                     } else {
-                        // The AI successfully mapped it to a distinct command
                         analysis = semanticAnalysis;
-                        activeText = semanticAnalysis.entities().get("query"); // Use the grammatically corrected text
+                        activeText = semanticAnalysis.entities().get("query"); 
                     }
                 }
 
@@ -200,14 +197,12 @@ public class CommandService {
 
     public void handleExplicitSearch(String query) {
        if (!isBusy.compareAndSet(false, true)) return;
-       // NEW: Pass the query
        String context = ContextBuilder.buildActiveContext(loreService, query);
        ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
        AIEngine.chatFast(query, context, () -> isBusy.set(false));
     }
 
     private boolean sendToAiWithData(String userQuery, String systemData) {
-        // NEW: Pass the userQuery
         String context = ContextBuilder.buildActiveContext(loreService, userQuery) + 
             "\n\n[SYSTEM DATA REPOSITORY]\n" + systemData + 
             "\n\nINSTRUCTION: Formulate a natural, conversational answer to the user's query using the SYSTEM DATA provided above.";
@@ -240,7 +235,6 @@ public class CommandService {
                 return false;
                 
             case EXECUTE_SKILL: 
-                // Fix: Pass the exact matched skill name to the SkillManager instead of the user's raw text
                 com.cielcompanion.ai.SkillManager.executeSkill(analysis.entities().get("skill"), () -> isBusy.set(false));
                 return false;
             
@@ -315,16 +309,29 @@ public class CommandService {
 
     private boolean handleTimeCommand(String userText) {
         LocalDateTime now = LocalDateTime.now();
+        
+        // Preserve the 4:20 Easter Egg
         if (now.getMinute() == 20 && (now.getHour() == 4 || now.getHour() == 16)) {
             LineManager.get420Line().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
-            return true;
+            isBusy.set(false);
+            return false; // Free up busy state
         }
+        
+        // Preserve D&D Fantasy Mode (Routes to AI)
         if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
             String prompt = "The party is asking for the current time. Do not give them a digital clock time. Describe the position of the sun, moons, or shadows to indicate the passage of time.";
             return sendToAiWithData(userText, prompt);
         }
-        String data = "The current date and time is: " + now.format(DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy 'at' h:mm a"));
-        return sendToAiWithData(userText, data);
+        
+        // Standard PC Mode: Bypasses the AI entirely using PhonoKana Sanitzier
+        String timeKatakana = PhonoKanaSanitizer.getCurrentTimeKatakana();
+        String dateKatakana = PhonoKanaSanitizer.getCurrentDateKatakana();
+        
+        CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Focused", 0.8, "Telling Time"));
+        SpeechService.speakPreformatted("ザ カレント タイム イズ " + timeKatakana + "。イット イズ " + dateKatakana + "。");
+        
+        isBusy.set(false);
+        return false;
     }
 
     private boolean handleSystemStatusCommand(String userText) {
