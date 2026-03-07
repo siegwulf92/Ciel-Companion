@@ -81,7 +81,7 @@
         <dependency>
             <groupId>com.microsoft.cognitiveservices.speech</groupId>
             <artifactId>client-sdk</artifactId>
-            <version>1.36.0</version>
+            <version>1.48.2</version>
         </dependency>
         
         <!-- Apache HttpClient for robust API calls -->
