@@ -48,6 +48,21 @@ public class WeatherService {
         return getWeatherData(true);
     }
 
+    // --- NEW METHODS FOR AI CROSSTALK ---
+    public static String getRawWeatherCondition() {
+        if (cachedWeatherData != null && cachedWeatherData.current != null && cachedWeatherData.current.condition != null) {
+            return cachedWeatherData.current.condition.text;
+        }
+        return "Unknown";
+    }
+
+    public static String getKatakanaWeatherCondition() {
+        String raw = getRawWeatherCondition();
+        if ("Unknown".equals(raw)) return "アンノウン";
+        return katakanaConverter.toKatakana(raw);
+    }
+    // ------------------------------------
+
     private static String getWeatherData(boolean isForecast) {
         String apiKey = weatherProps.getProperty("weather.apiKey");
         if (apiKey == null || apiKey.isBlank() || apiKey.equalsIgnoreCase("YOUR_API_KEY_HERE")) {
@@ -198,4 +213,3 @@ public class WeatherService {
         Condition condition;
     }
 }
-

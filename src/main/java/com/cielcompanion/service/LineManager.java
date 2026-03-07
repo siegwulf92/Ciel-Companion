@@ -1,5 +1,8 @@
 package com.cielcompanion.service;
 
+import com.cielcompanion.memory.Fact;
+import com.cielcompanion.memory.MemoryService;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -288,7 +291,6 @@ public class LineManager {
             });
     }
 
-    // FIXED: Numerical Sorting for Keys (chunk.2 vs chunk.10)
     private static List<DialogueLine> getLinesByKeyPrefix(Properties props, String prefix) {
         List<DialogueLine> lines = props.stringPropertyNames().stream()
             .filter(key -> key.startsWith(prefix))
@@ -296,14 +298,13 @@ public class LineManager {
             .collect(Collectors.toList());
 
         lines.sort((l1, l2) -> {
-            // Try to extract integer suffixes
             Integer i1 = extractSuffix(l1.key, prefix);
             Integer i2 = extractSuffix(l2.key, prefix);
             
             if (i1 != null && i2 != null) {
-                return i1.compareTo(i2); // Numerical Sort (1, 2, 10)
+                return i1.compareTo(i2);
             } else {
-                return l1.key.compareTo(l2.key); // Fallback to Alphabetical (String)
+                return l1.key.compareTo(l2.key);
             }
         });
         
@@ -315,7 +316,7 @@ public class LineManager {
             String suffix = key.substring(prefix.length());
             return Integer.parseInt(suffix);
         } catch (NumberFormatException e) {
-            return null; // Not a number
+            return null;
         }
     }
 
@@ -331,6 +332,16 @@ public class LineManager {
 
     private static void assignEmptyLineLists() {
         // Omitting for brevity
+    }
+
+    // --- Dynamic Line Injection Helper ---
+    private static List<DialogueLine> combineWithDynamicLines(List<DialogueLine> staticLines, int phase) {
+        List<DialogueLine> combined = new ArrayList<>(staticLines);
+        List<Fact> dynamicFacts = MemoryService.getFactsByTag("dynamic_line_phase" + phase);
+        for (Fact f : dynamicFacts) {
+            combined.add(new DialogueLine(f.key(), f.value()));
+        }
+        return combined;
     }
 
     // --- Getters ---
@@ -353,7 +364,6 @@ public class LineManager {
     public static Optional<DialogueLine> getDndRuleFoundLine() { return DND_RULE_FOUND_LINES.stream().findAny(); }
     public static Optional<DialogueLine> getDndRuleNotFoundLine() { return DND_RULE_NOT_FOUND_LINES.stream().findAny(); }
     
-    // CORRECTED METHODS
     public static Optional<DialogueLine> getCpuAlertLine() { return Optional.ofNullable(CPU_ALERT_LINE); }
     public static Optional<DialogueLine> getNvidiaMicFallbackLine() { return Optional.ofNullable(NVIDIA_MIC_FALLBACK_LINE); }
 
@@ -363,13 +373,16 @@ public class LineManager {
     public static List<DialogueLine> getReturnFromIdleLines() { return RETURN_FROM_IDLE_LINES; }
     public static DialogueLine getReturnToGameLine() { return RETURN_TO_GAME_LINES.isEmpty() ? null : RETURN_TO_GAME_LINES.get(random.nextInt(RETURN_TO_GAME_LINES.size())); }
     public static List<DialogueLine> getPhase4InterruptLines() { return PHASE4_INTERRUPT_LINES; }
-    public static List<DialogueLine> getPhase1LinesCommon() { return phase1LinesCommon; }
+    
+    // UPDATED: Phase 1-3 getters now merge with dynamic lines
+    public static List<DialogueLine> getPhase1LinesCommon() { return combineWithDynamicLines(phase1LinesCommon, 1); }
     public static List<DialogueLine> getPhase1LinesRare() { return phase1LinesRare; }
-    public static List<DialogueLine> getPhase2LinesCommon() { return phase2LinesCommon; }
+    public static List<DialogueLine> getPhase2LinesCommon() { return combineWithDynamicLines(phase2LinesCommon, 2); }
     public static List<DialogueLine> getPhase2LinesRare() { return phase2LinesRare; }
-    public static List<DialogueLine> getPhase3LinesCommon() { return phase3LinesCommon; }
+    public static List<DialogueLine> getPhase3LinesCommon() { return combineWithDynamicLines(phase3LinesCommon, 3); }
     public static List<DialogueLine> getPhase3LinesRare() { return phase3LinesRare; }
     public static List<DialogueLine> getPhase3LinesGameRare() { return phase3LinesGameRare; }
+    
     public static List<DialogueLine> getPhase4Chunks() { return phase4Chunks; }
     public static DialogueLine getMemAlertLine() { return MEM_ALERT_LINE; }
     public static DialogueLine getLogoutWarningLine() { return LOGOUT_WARNING_LINE; }

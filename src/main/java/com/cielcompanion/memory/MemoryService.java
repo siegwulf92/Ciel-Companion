@@ -61,6 +61,31 @@ public class MemoryService {
         return Optional.empty();
     }
 
+    // --- ADD THIS NEW METHOD ---
+    public static List<Fact> getFactsByTag(String tag) {
+        List<Fact> facts = new ArrayList<>();
+        String sql = "SELECT key, value, created_at_ms, tags, source, version FROM facts WHERE tags LIKE ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, "%" + tag + "%");
+            ResultSet rs = pstmt.executeQuery();
+            while (rs.next()) {
+                facts.add(new Fact(
+                    rs.getString("key"),
+                    rs.getString("value"),
+                    rs.getLong("created_at_ms"),
+                    rs.getString("tags"),
+                    rs.getString("source"),
+                    rs.getInt("version")
+                ));
+            }
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Failed to retrieve facts by tag.");
+            e.printStackTrace();
+        }
+        return facts;
+    }
+
     // --- NEW: Retrieve Long-Term Episodic Memories ---
     public static List<String> getRecentEpisodicMemories(int limit) {
         List<String> memories = new ArrayList<>();

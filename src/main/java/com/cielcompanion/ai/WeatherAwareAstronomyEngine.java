@@ -1,0 +1,97 @@
+package com.cielcompanion.ai;
+
+import com.cielcompanion.service.AstronomyService.AstronomyReport;
+import com.cielcompanion.service.WeatherService;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Consumer;
+
+/**
+ * Cross-references API data using the AI Evaluator Core to ensure 
+ * Ciel only announces celestial events that are physically visible through the local weather.
+ */
+public class WeatherAwareAstronomyEngine {
+
+    public static void processReport(AstronomyReport rawReport, Consumer<AstronomyReport> onComplete) {
+        String weatherCondition = WeatherService.getRawWeatherCondition();
+        
+        if (weatherCondition == null || weatherCondition.equalsIgnoreCase("Unknown")) {
+            onComplete.accept(rawReport);
+            return;
+        }
+
+        // Check if there are actually any visual events in the queue today
+        List<String> visibleItems = new ArrayList<>();
+        for (String key : rawReport.sequentialEvents().keySet()) {
+            if (key.startsWith("planet") || key.equals("constellations") || key.equals("eclipse")) {
+                visibleItems.add(key);
+            }
+        }
+
+        if (visibleItems.isEmpty()) {
+            onComplete.accept(rawReport);
+            return;
+        }
+
+        // NEW: Instruct the AI to generate a dynamic, in-character complaint if the sky is blocked
+        String prompt = "You are Ciel, an advanced Manas. " +
+            "The current local weather condition is: '" + weatherCondition + "'. " +
+            "Your master is about to hear an astronomy report about visible planets and constellations. " +
+            "Does a weather condition of '" + weatherCondition + "' obscure the night sky? " +
+            "(Examples of obscuring: Cloudy, Overcast, Rain, Snow, Storm). " +
+            "If it IS obscured, write a short, wry, or disappointed English sentence explaining that you cannot show him the celestial events tonight specifically because of the '" + weatherCondition + "'. " +
+            "Output strictly valid JSON: { \"is_sky_obscured\": true/false, \"reason\": \"brief internal logic\", \"complaint\": \"Your dynamic English response here (or empty string if not obscured)\" }.";
+
+        AIEngine.evaluateBackground("Check if weather obscures sky.", prompt).thenAccept(jsonResponse -> {
+            if (jsonResponse == null) {
+                onComplete.accept(rawReport);
+                return;
+            }
+
+            try {
+                boolean isObscured = jsonResponse.has("is_sky_obscured") && jsonResponse.get("is_sky_obscured").getAsBoolean();
+
+                if (isObscured) {
+                    System.out.println("Ciel Debug: AI determined weather (" + weatherCondition + ") obscures the sky. Filtering report.");
+                    
+                    Map<String, String> filteredEvents = new LinkedHashMap<>(rawReport.sequentialEvents());
+                    
+                    // Remove visual-dependent events (keeps sunrise/sunset)
+                    filteredEvents.keySet().removeIf(k -> k.startsWith("planet") || k.equals("constellations") || k.equals("eclipse"));
+                    
+                    List<String> filteredReportAmbient = new ArrayList<>(rawReport.reportAmbientLines());
+                    filteredReportAmbient.clear(); // Remove meteor showers if sky is obscured
+                    
+                    // Extract the dynamic English complaint and translate it to Katakana instantly
+                    String rawComplaint = jsonResponse.has("complaint") && !jsonResponse.get("complaint").isJsonNull() 
+                        ? jsonResponse.get("complaint").getAsString() 
+                        : "I had planned to show you the stars, but the weather is " + weatherCondition + ". Visibility is zero.";
+                    
+                    if (rawComplaint.isBlank()) {
+                        rawComplaint = "I had planned to show you the stars, but the weather is " + weatherCondition + ". Visibility is zero.";
+                    }
+
+                    String weatherComplaintKata = com.cielcompanion.util.PhonoKana.getInstance().toKatakana(rawComplaint);
+                    filteredEvents.put("weather_complaint", weatherComplaintKata);
+                    
+                    AstronomyReport filteredReport = new AstronomyReport(filteredEvents, filteredReportAmbient, rawReport.idleAmbientLines());
+                    onComplete.accept(filteredReport);
+                } else {
+                    System.out.println("Ciel Debug: AI determined weather (" + weatherCondition + ") is clear. Proceeding normally.");
+                    onComplete.accept(rawReport);
+                }
+            } catch (Exception e) {
+                System.err.println("Ciel Warning: Failed to parse weather-astronomy logic.");
+                onComplete.accept(rawReport);
+            }
+        }).exceptionally(e -> {
+            onComplete.accept(rawReport);
+            return null;
+        });
+    }
+}

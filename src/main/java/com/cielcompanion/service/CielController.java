@@ -138,7 +138,6 @@ public class CielController {
             return true;
         }
         
-        // REWORKED: Use smarter identification including Window Title Regex
         AppProfile profile = AppProfilerService.identifyActiveApp(metrics.activeProcessName(), metrics.activeWindowTitle());
 
         if (profile != null && "Game".equalsIgnoreCase(profile.category())) {
@@ -185,14 +184,18 @@ public class CielController {
         if (!CielState.hasPlayedAstronomyReport()) {
             CielState.setHasPlayedAstronomyReport(true); 
             AstronomyReport report = AstronomyService.getTodaysAstronomyReport();
-            List<String> linesToSpeak = new ArrayList<>(report.sequentialEvents().values());
-            linesToSpeak.addAll(report.reportAmbientLines()); 
+            
+            // --- NEW: Route the report through the Logic Core weather filter ---
+            com.cielcompanion.ai.WeatherAwareAstronomyEngine.processReport(report, finalReport -> {
+                List<String> linesToSpeak = new ArrayList<>(finalReport.sequentialEvents().values());
+                linesToSpeak.addAll(finalReport.reportAmbientLines()); 
 
-            if (!linesToSpeak.isEmpty()) {
-                speakSpecialEventsSequentially(linesToSpeak, () -> speakSubsequentPhase1Chatter());
-            } else {
-                SpeechService.speakPreformatted("Scanning celestial data. No significant events detected in your sector today.");
-            }
+                if (!linesToSpeak.isEmpty()) {
+                    speakSpecialEventsSequentially(linesToSpeak, () -> speakSubsequentPhase1Chatter());
+                } else {
+                    SpeechService.speakPreformatted("Scanning celestial data. No significant events detected in your sector today.");
+                }
+            });
         } else {
             speakSubsequentPhase1Chatter();
         }
@@ -361,6 +364,13 @@ public class CielController {
         List<DialogueLine> availableLines = potentialLines.stream().filter(line -> !recentLineKeys.contains(line.key())).collect(Collectors.toList());
         DialogueLine lineToSpeak = availableLines.isEmpty() ? potentialLines.get(random.nextInt(potentialLines.size())) : availableLines.get(random.nextInt(availableLines.size()));
         
+        // NEW: 5% chance to trigger Dynamic Thought Generation based on this line
+        if (currentPhase >= 1 && currentPhase <= 3) {
+            if (random.nextInt(100) < 5) {
+                com.cielcompanion.ai.DynamicThoughtEngine.generateAndAssimilateNewThought(currentPhase, lineToSpeak.text());
+            }
+        }
+
         SpeechService.speakPreformatted(lineToSpeak.text(), lineToSpeak.key(), isRare);
         
         MemoryService.recordSpokenLine(new SpokenLine(lineToSpeak.key(), lineToSpeak.text(), System.currentTimeMillis(), currentPhase));

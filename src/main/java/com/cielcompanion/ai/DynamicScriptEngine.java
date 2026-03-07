@@ -91,9 +91,8 @@ public class DynamicScriptEngine {
                 System.out.println("Ciel Debug: PowerShell Execution Output:\n" + output);
                 
                 if (exitCode == 0 && !output.toLowerCase().contains("exception") && !output.toLowerCase().contains("error")) {
-                    // NEW: Assimilate the skill permanently if it executed successfully
                     SkillManager.saveSkill(skillName, script);
-                    speakStatus("[Happy] チャント アナルメント サクセスフル。スキル アシミレイテッド。"); // Chant Annulment successful. Skill assimilated.
+                    speakStatus("[Happy] チャント アナルメント サクセスフル。スキル アシミレイテッド。");
                 } else {
                     speakStatus("[Annoyed] エクセキューション エンカウンタード アン アノマリー。スクリプト フェイルド。");
                 }
