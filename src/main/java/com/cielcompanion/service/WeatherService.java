@@ -50,6 +50,11 @@ public class WeatherService {
 
     // --- NEW METHODS FOR AI CROSSTALK ---
     public static String getRawWeatherCondition() {
+        // FIX: If we don't have weather data in memory yet, silently fetch it first!
+        if (cachedWeatherData == null) {
+            getCurrentWeather(); 
+        }
+        
         if (cachedWeatherData != null && cachedWeatherData.current != null && cachedWeatherData.current.condition != null) {
             return cachedWeatherData.current.condition.text;
         }

@@ -44,7 +44,6 @@ public class VoiceListener {
     private static final long DEAD_STREAM_THRESHOLD_MS = 15000;
     private final AtomicBoolean needsMicReinitialization = new AtomicBoolean(false);
 
-    // NEW: Watchdog variables
     private volatile long lastAudioTime = System.currentTimeMillis();
     private Thread watchdogThread;
 
@@ -83,7 +82,7 @@ public class VoiceListener {
                     microphone.open(new AudioFormat(16000, 16, 1, true, false));
                     microphone.start();
                     startContinuousListening();
-                    startWatchdog(); // NEW: Start the external watchdog
+                    startWatchdog(); 
                     System.out.println("Ciel Debug: Microphone line opened. Continuous listening started.");
                 } else {
                     System.err.println("Ciel Error: No compatible microphone could be found.");
@@ -167,7 +166,13 @@ public class VoiceListener {
 
             if (hasWakeWord) {
                 textToProcess = WAKE_WORD_PATTERN.matcher(transcribedText).replaceFirst("").trim();
-                if (textToProcess.isEmpty()) return;
+                
+                // FIX: Added '|| textToProcess.equalsIgnoreCase("listen")'
+                if (textToProcess.isEmpty() || textToProcess.equalsIgnoreCase("listen")) {
+                    System.out.println("Ciel Debug: Wake word isolated. Activating Privileged Mode.");
+                    startListeningForCommand();
+                    return;
+                }
             }
 
             if (ShortTermMemoryService.getMemory().isSearchModeActive()) {
@@ -236,7 +241,6 @@ public class VoiceListener {
         return new Gson().toJson(grammarSet);
     }
 
-    // NEW: External Watchdog Thread to catch memory lockups
     private void startWatchdog() {
         if (watchdogThread != null && watchdogThread.isAlive()) return;
         
@@ -245,7 +249,7 @@ public class VoiceListener {
                 try { Thread.sleep(2000); } catch (InterruptedException e) { break; }
                 
                 if (isMuted.get() || isInternallyMuted.get() || needsMicReinitialization.get()) {
-                    lastAudioTime = System.currentTimeMillis(); // Pet the dog while muted
+                    lastAudioTime = System.currentTimeMillis(); 
                     continue;
                 }
                 
@@ -253,10 +257,10 @@ public class VoiceListener {
                 if (silenceDuration > DEAD_STREAM_THRESHOLD_MS) {
                     System.out.println("Ciel FATAL: Watchdog detected dead audio stream (" + silenceDuration + "ms). Assassinating thread and rebuilding...");
                     needsMicReinitialization.set(true);
-                    lastAudioTime = System.currentTimeMillis(); // Reset to give it 15 seconds to rebuild
+                    lastAudioTime = System.currentTimeMillis(); 
                     
                     if (listeningThread != null && listeningThread.isAlive()) {
-                        listeningThread.interrupt(); // Force break the native I/O lock
+                        listeningThread.interrupt(); 
                     }
                 }
             }
@@ -287,7 +291,7 @@ public class VoiceListener {
                             int bytesToRead = Math.min(buffer.length, available);
                             int bytesRead = microphone.read(buffer, 0, bytesToRead);
                             if (bytesRead > 0) {
-                                lastAudioTime = System.currentTimeMillis(); // HEARTBEAT
+                                lastAudioTime = System.currentTimeMillis(); 
                                 if (recognizer.acceptWaveForm(buffer, bytesRead)) {
                                     processRecognitionResult(recognizer.getResult());
                                 }
@@ -319,7 +323,7 @@ public class VoiceListener {
         } catch (Exception e) {
             System.err.println("Ciel Error: Watchdog failed to rebuild microphone.");
         }
-        lastAudioTime = System.currentTimeMillis(); // Reset timer after rebuild
+        lastAudioTime = System.currentTimeMillis(); 
     }
     
     private double getConfidence(JsonObject resultJson) {

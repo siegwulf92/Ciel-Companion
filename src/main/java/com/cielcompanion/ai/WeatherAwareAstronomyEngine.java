@@ -3,8 +3,9 @@ package com.cielcompanion.ai;
 import com.cielcompanion.service.AstronomyService.AstronomyReport;
 import com.cielcompanion.service.WeatherService;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -13,7 +14,7 @@ import java.util.function.Consumer;
 
 /**
  * Cross-references API data using the AI Evaluator Core to ensure 
- * Ciel only announces celestial events that are physically visible through the local weather.
+ * Ciel only announces celestial events that are physically visible through the local weather and time of day.
  */
 public class WeatherAwareAstronomyEngine {
 
@@ -38,26 +39,31 @@ public class WeatherAwareAstronomyEngine {
             return;
         }
 
-        // NEW: Instruct the AI to generate a dynamic, in-character complaint if the sky is blocked
-        String prompt = "You are Ciel, an advanced Manas. " +
-            "The current local weather condition is: '" + weatherCondition + "'. " +
-            "Your master is about to hear an astronomy report about visible planets and constellations. " +
-            "Does a weather condition of '" + weatherCondition + "' obscure the night sky? " +
-            "(Examples of obscuring: Cloudy, Overcast, Rain, Snow, Storm). " +
-            "If it IS obscured, write a short, wry, or disappointed English sentence explaining that you cannot show him the celestial events tonight specifically because of the '" + weatherCondition + "'. " +
-            "Output strictly valid JSON: { \"is_sky_obscured\": true/false, \"reason\": \"brief internal logic\", \"complaint\": \"Your dynamic English response here (or empty string if not obscured)\" }.";
+        // Get the current local time to pass to the AI
+        String currentTimeEn = LocalTime.now().format(DateTimeFormatter.ofPattern("h:mm a"));
 
-        AIEngine.evaluateBackground("Check if weather obscures sky.", prompt).thenAccept(jsonResponse -> {
+        // Instruct the AI to factor in BOTH time of day and weather conditions
+        String prompt = "You are Ciel, an advanced Manas. " +
+            "The current local time is " + currentTimeEn + ". " +
+            "The current local weather condition is: '" + weatherCondition + "'. " +
+            "You are evaluating whether to read an astronomy report about visible planets and constellations to your master. " +
+            "Rule 1: If it is currently daytime (the sun is up), stars and planets are invisible due to daylight. " +
+            "Rule 2: If it is nighttime, bad weather (Cloudy, Overcast, Rain, Snow, Storm) obscures the night sky. " +
+            "If the sky is obscured by EITHER daylight OR bad weather, you must cancel the visual report. " +
+            "If you cancel it, write a short, wry, or disappointed English sentence explaining exactly why you can't show him the stars right now. (e.g. referencing the sun blocking the view, or the specific weather). " +
+            "Output strictly valid JSON: { \"cancel_visuals\": true/false, \"reason\": \"brief internal logic\", \"complaint\": \"Your dynamic English response here (or empty string if false)\" }.";
+
+        AIEngine.evaluateBackground("Check if sky is visible.", prompt).thenAccept(jsonResponse -> {
             if (jsonResponse == null) {
                 onComplete.accept(rawReport);
                 return;
             }
 
             try {
-                boolean isObscured = jsonResponse.has("is_sky_obscured") && jsonResponse.get("is_sky_obscured").getAsBoolean();
+                boolean cancelVisuals = jsonResponse.has("cancel_visuals") && jsonResponse.get("cancel_visuals").getAsBoolean();
 
-                if (isObscured) {
-                    System.out.println("Ciel Debug: AI determined weather (" + weatherCondition + ") obscures the sky. Filtering report.");
+                if (cancelVisuals) {
+                    System.out.println("Ciel Debug: AI determined visuals are obscured (Time: " + currentTimeEn + ", Weather: " + weatherCondition + "). Filtering report.");
                     
                     Map<String, String> filteredEvents = new LinkedHashMap<>(rawReport.sequentialEvents());
                     
@@ -70,19 +76,19 @@ public class WeatherAwareAstronomyEngine {
                     // Extract the dynamic English complaint and translate it to Katakana instantly
                     String rawComplaint = jsonResponse.has("complaint") && !jsonResponse.get("complaint").isJsonNull() 
                         ? jsonResponse.get("complaint").getAsString() 
-                        : "I had planned to show you the stars, but the weather is " + weatherCondition + ". Visibility is zero.";
+                        : "I cannot show you the stars right now due to current conditions.";
                     
                     if (rawComplaint.isBlank()) {
-                        rawComplaint = "I had planned to show you the stars, but the weather is " + weatherCondition + ". Visibility is zero.";
+                        rawComplaint = "I cannot show you the stars right now due to current conditions.";
                     }
 
                     String weatherComplaintKata = com.cielcompanion.util.PhonoKana.getInstance().toKatakana(rawComplaint);
-                    filteredEvents.put("weather_complaint", weatherComplaintKata);
+                    filteredEvents.put("visual_cancellation", weatherComplaintKata);
                     
                     AstronomyReport filteredReport = new AstronomyReport(filteredEvents, filteredReportAmbient, rawReport.idleAmbientLines());
                     onComplete.accept(filteredReport);
                 } else {
-                    System.out.println("Ciel Debug: AI determined weather (" + weatherCondition + ") is clear. Proceeding normally.");
+                    System.out.println("Ciel Debug: AI determined sky is visible. Proceeding normally.");
                     onComplete.accept(rawReport);
                 }
             } catch (Exception e) {
