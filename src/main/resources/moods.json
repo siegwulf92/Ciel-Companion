@@ -28,13 +28,13 @@
       "baseColor": "255, 80, 80",
       "animation": "SHARP_FLICKER",
       "ssmlStyle": "angry",
-      "pitch": "-4%"
+      "pitch": "-3%"
     },
     "Pain": {
       "baseColor": "255, 0, 0",
       "animation": "SLOW_BURN",
       "ssmlStyle": "fearful",
-      "pitch": "-6%",
+      "pitch": "-4%",
       "causes": {
         "Heat": { "colorTint": "255, 100, 0" },
         "Overload": { "colorTint": "200, 50, 0" }
@@ -44,19 +44,19 @@
       "baseColor": "255, 223, 0",
       "animation": "GENTLE_PULSE",
       "ssmlStyle": "cheerful",
-      "pitch": "+4%"
+      "pitch": "+3%"
     },
     "Curious": {
       "baseColor": "173, 216, 230",
       "animation": "GENTLE_PULSE",
       "ssmlStyle": "default",
-      "pitch": "+3%"
+      "pitch": "+2%"
     },
     "Excited": {
       "baseColor": "255, 255, 255",
       "animation": "RAINBOW_CYCLE",
       "ssmlStyle": "cheerful",
-      "pitch": "+6%"
+      "pitch": "+4%"
     },
     "Lonely": {
       "baseColor": "100, 100, 255",
@@ -72,7 +72,7 @@
     },
     "Concerned": {
       "styleModifier": "whispering",
-      "pitchModifier": "-5%"
+      "pitchModifier": "-4%"
     },
     "Amused": {
       "styleModifier": "cheerful",
