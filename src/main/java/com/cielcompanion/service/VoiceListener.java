@@ -45,6 +45,8 @@ public class VoiceListener {
     private final AtomicBoolean needsMicReinitialization = new AtomicBoolean(false);
 
     private volatile long lastAudioTime = System.currentTimeMillis();
+    private volatile long ignoreSttUntil = 0;
+    
     private Thread watchdogThread;
 
     private Model voskModel;
@@ -148,15 +150,28 @@ public class VoiceListener {
     }
     
     private void processRecognitionResult(String result) {
+        // FIX: If muted, we still process the audio to keep the memory HOT in physical RAM,
+        // but we throw away the result here so she doesn't actually "hear" you.
+        if (isMuted.get() || isInternallyMuted.get()) {
+            return;
+        }
+
+        if (System.currentTimeMillis() < ignoreSttUntil) {
+            System.out.println("Ciel Debug: Silently dropping STT input (Within 3-second VoiceAttack Ghost Echo window).");
+            return;
+        }
+
         if (!isProcessing.compareAndSet(false, true)) return; 
         try {
             boolean isPrivileged = ShortTermMemoryService.getMemory().isInPrivilegedMode();
             if (ShortTermMemoryService.getMemory().isInGamingSession() && !isPrivileged) return;
 
             JsonObject resultJson = JsonParser.parseString(result).getAsJsonObject();
-            String transcribedText = resultJson.get("text").getAsString();
+            String transcribedText = resultJson.get("text").getAsString().trim();
 
-            if (transcribedText.isBlank() || PHANTOM_NOISES.contains(transcribedText)) return;
+            if (transcribedText.isBlank() || PHANTOM_NOISES.contains(transcribedText)) {
+                return;
+            }
 
             System.out.printf("Vosk STT [Absolute Raw]: \"%s\"%n", transcribedText);
             ObserverService.logToPermanentTranscript(transcribedText);
@@ -167,11 +182,16 @@ public class VoiceListener {
             if (hasWakeWord) {
                 textToProcess = WAKE_WORD_PATTERN.matcher(transcribedText).replaceFirst("").trim();
                 
-                // FIX: Added '|| textToProcess.equalsIgnoreCase("listen")'
-                if (textToProcess.isEmpty() || textToProcess.equalsIgnoreCase("listen")) {
-                    System.out.println("Ciel Debug: Wake word isolated. Activating Privileged Mode.");
-                    startListeningForCommand();
-                    return;
+                if (textToProcess.isEmpty() || textToProcess.matches("(?i)^(listen|listened|listening|lesson|wilson|lessen|vision)$")) {
+                    
+                    if (ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
+                        System.out.println("Ciel Debug: Silently dropping STT ghost echo '" + transcribedText + "' (VoiceAttack handled it).");
+                        return;
+                    } else {
+                        System.out.println("Ciel Debug: Wake word isolated via STT. Activating Privileged Mode.");
+                        startListeningForCommand();
+                        return;
+                    }
                 }
             }
 
@@ -210,6 +230,8 @@ public class VoiceListener {
     public void forceMicReinitialization() { refresh(); }
 
     public void startListeningForCommand() {
+        ignoreSttUntil = System.currentTimeMillis() + 3000;
+        
         LineManager.getWakeWordAckLine().ifPresent(line -> {
             long speechDuration = SpeechService.estimateSpeechDuration(line.text());
             ShortTermMemoryService.getMemory().setPrivilegedMode(true, PRIVILEGED_MODE_DURATION_SECONDS + (int)(speechDuration/1000));
@@ -248,7 +270,8 @@ public class VoiceListener {
             while (isRunning) {
                 try { Thread.sleep(2000); } catch (InterruptedException e) { break; }
                 
-                if (isMuted.get() || isInternallyMuted.get() || needsMicReinitialization.get()) {
+                // Mute state no longer pauses the stream, so Watchdog shouldn't check it for stream death.
+                if (needsMicReinitialization.get()) {
                     lastAudioTime = System.currentTimeMillis(); 
                     continue;
                 }
@@ -276,15 +299,12 @@ public class VoiceListener {
                 if (needsMicReinitialization.compareAndSet(true, false)) {
                     reinitializeMicrophone();
                 }
-                try (Recognizer recognizer = new Recognizer(voskModel, 16000, buildGrammar())) {
+                
+                // FIX: Removed 'buildGrammar()' to unlock the massive, open-ended Podcast dictionary
+                try (Recognizer recognizer = new Recognizer(voskModel, 16000)) {
                     recognizer.setWords(true);
                     byte[] buffer = new byte[4096];
                     while (isRunning && microphone != null && microphone.isOpen() && !needsMicReinitialization.get()) {
-                        if (isMuted.get() || isInternallyMuted.get()) { 
-                            try { Thread.sleep(100); } catch (InterruptedException e) { break; }
-                            lastAudioTime = System.currentTimeMillis();
-                            continue;
-                        }
                         
                         int available = microphone.available();
                         if (available > 0) {

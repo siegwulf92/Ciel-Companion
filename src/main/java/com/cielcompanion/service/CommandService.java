@@ -106,9 +106,22 @@ public class CommandService {
     }
 
     public void handleCommand(String originalText, boolean hasWakeWord, Runnable onComplete) {
-        if (!isBusy.compareAndSet(false, true)) {
-            if(onComplete != null) onComplete.run();
-            return;
+        // NEW: Check if the command is critical. If it is, pierce the 'isBusy' lock!
+        CommandAnalysis preAnalysis = intentService.analyze(originalText);
+        boolean isCriticalOverride = (
+            preAnalysis.intent() == Intent.INITIATE_REBOOT || 
+            preAnalysis.intent() == Intent.INITIATE_SHUTDOWN || 
+            preAnalysis.intent() == Intent.CANCEL_SHUTDOWN
+        );
+
+        if (!isCriticalOverride) {
+            if (!isBusy.compareAndSet(false, true)) {
+                if(onComplete != null) onComplete.run();
+                return;
+            }
+        } else {
+            System.out.println("Ciel Debug: Critical Command Detected. Piercing AI Busy Lock!");
+            isBusy.set(true); 
         }
 
         commandExecutor.submit(() -> {
@@ -162,7 +175,15 @@ public class CommandService {
                         return; 
                     } else if (semanticAnalysis.intent() == Intent.DND_ANALYZE_LORE) {
                         System.out.println("Ciel Debug: Routing deep analysis to Logic Core (Phi-4).");
-                        String context = ContextBuilder.buildActiveContext(loreService, activeText);
+                        String subject = semanticAnalysis.entities().get("query");
+                        
+                        // Fetch the Obsidian-crawled lore using our new method
+                        String loreData = loreService.getExpandedNoteContent(subject)
+                                                     .orElse("No specific campaign notes found for: " + subject);
+
+                        String context = ContextBuilder.buildActiveContext(loreService, activeText) +
+                                         "\n\n[D&D CAMPAIGN NOTES FOR ANALYSIS]\n" + loreData +
+                                         "\n\nINSTRUCTION: Analyze the provided campaign notes and answer the user's query.";
                         
                         ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
                         AIEngine.reasonDeeply(semanticAnalysis.entities().get("query"), context, () -> isBusy.set(false));
@@ -275,6 +296,11 @@ public class CommandService {
             case DND_LINK_SESSION_NOTE: loreService.linkNote(analysis.entities().get("subjectA"), analysis.entities().get("subjectB")); return true;
             case DND_RECALL_SESSION_LINKS: loreService.getConnections(analysis.entities().get("subject")); return true;
             case DND_REVEAL_LORE: loreService.revealLore(analysis.entities().get("subject")); return true;
+            case DND_ANALYZE_LORE: 
+                String subject = analysis.entities().get("subject");
+                if (subject == null) subject = userText;
+                String loreData = loreService.getExpandedNoteContent(subject).orElse("No specific notes found.");
+                return sendToAiWithData(userText, "[D&D CAMPAIGN NOTES]\n" + loreData + "\n\nINSTRUCTION: Analyze these notes to answer the user.");
             case TOGGLE_LISTENING: 
                 if (voiceListener != null) {
                     voiceListener.toggleListening();
@@ -310,20 +336,17 @@ public class CommandService {
     private boolean handleTimeCommand(String userText) {
         LocalDateTime now = LocalDateTime.now();
         
-        // Preserve the 4:20 Easter Egg
         if (now.getMinute() == 20 && (now.getHour() == 4 || now.getHour() == 16)) {
             LineManager.get420Line().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
             isBusy.set(false);
-            return false; // Free up busy state
+            return false; 
         }
         
-        // Preserve D&D Fantasy Mode (Routes to AI)
         if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
             String prompt = "The party is asking for the current time. Do not give them a digital clock time. Describe the position of the sun, moons, or shadows to indicate the passage of time.";
             return sendToAiWithData(userText, prompt);
         }
         
-        // Standard PC Mode: Bypasses the AI entirely using PhonoKana Sanitzier
         String timeKatakana = PhonoKanaSanitizer.getCurrentTimeKatakana();
         String dateKatakana = PhonoKanaSanitizer.getCurrentDateKatakana();
         
@@ -389,8 +412,15 @@ public class CommandService {
                 double alt = AstroUtils.getAltitude(p.ra(), p.dec(), com.cielcompanion.service.LocationService.getLatitude(), com.cielcompanion.service.LocationService.getLongitude(), now);
                 if (alt > 10.0) visible.add(p.id());
             }
-            String data = visible.isEmpty() ? "No major planets are currently visible." : "Currently visible planets: " + String.join(", ", visible);
-            return sendToAiWithData(userText, data);
+            String rawData = visible.isEmpty() ? "No major planets are currently above the horizon." : "Planets currently above the horizon: " + String.join(", ", visible);
+            
+            String weather = WeatherService.getCurrentWeather();
+            String time = now.format(DateTimeFormatter.ofPattern("h:mm a"));
+            
+            String combinedPrompt = "RAW ASTRONOMY DATA: " + rawData + "\nCURRENT WEATHER: " + weather + "\nCURRENT TIME: " + time +
+                "\n\nINSTRUCTION: Based on the current time and weather conditions, are these planets actually visible to the naked eye right now? If it is daytime, raining, or heavily clouded, tell the user visibility is poor or zero. Be conversational and concise.";
+            
+            return sendToAiWithData(userText, combinedPrompt);
         }
         return sendToAiWithData(userText, "Planet visibility data is unavailable.");
     }
@@ -399,7 +429,16 @@ public class CommandService {
         ensureFreshAstronomyData();
         Optional<CombinedAstronomyData> dataOpt = AstronomyService.getTodaysApiData();
         if (dataOpt.isPresent() && dataOpt.get().prominentConstellationLines != null && !dataOpt.get().prominentConstellationLines.isEmpty()) {
-            return sendToAiWithData(userText, dataOpt.get().prominentConstellationLines.get(0));
+            String rawData = dataOpt.get().prominentConstellationLines.get(0);
+            
+            ZonedDateTime now = ZonedDateTime.now(ZoneId.of(com.cielcompanion.service.LocationService.getTimezone()));
+            String weather = WeatherService.getCurrentWeather();
+            String time = now.format(DateTimeFormatter.ofPattern("h:mm a"));
+            
+            String combinedPrompt = "RAW CONSTELLATION DATA: " + rawData + "\nCURRENT WEATHER: " + weather + "\nCURRENT TIME: " + time +
+                "\n\nINSTRUCTION: Based on the current time and weather conditions, are these constellations actually visible right now? If it is daytime, raining, or overcast, inform the user they cannot be seen. Be conversational.";
+            
+            return sendToAiWithData(userText, combinedPrompt);
         }
         return sendToAiWithData(userText, "Constellation data is unavailable.");
     }
@@ -603,12 +642,24 @@ public class CommandService {
             LineManager.getPrivilegedCommandRequiredLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
             return;
         }
-        CielState.setPerformingColdShutdown(true);
-        if ("shutdown".equals(commandType)) {
+        
+        boolean isReboot = "reboot".equals(commandType);
+        CielState.setPerformingColdShutdown(!isReboot);
+        
+        if (!isReboot) {
             SpeechService.speakPreformatted(LineManager.getShutdownConfirmLine().text(), LineManager.getShutdownConfirmLine().key());
         } else {
             SpeechService.speakPreformatted(LineManager.getRebootConfirmLine().text(), LineManager.getRebootConfirmLine().key());
         }
+        
+        // Trigger the Diary Entry Generation. We pass the command type so she knows why she is logging.
+        String contextSummary = "The Master initiated a " + commandType + " sequence via voice command.";
+        
+        // FIX: Updated to match the new method name in VaultService
+        VaultService.generateSystemDiaryEntryBlocking(contextSummary, isReboot);
+
+        // The 30-second delay ensures the LLM has enough time to finish writing the diary 
+        // before the OS forces the application to close.
         shutdownScheduler = Executors.newSingleThreadScheduledExecutor();
         shutdownScheduler.schedule(() -> {
             try {

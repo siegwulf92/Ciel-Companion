@@ -5,7 +5,7 @@ import com.cielcompanion.dnd.DndCampaignService;
 import com.cielcompanion.dnd.LoreService;
 import com.cielcompanion.dnd.MasteryService;
 import com.cielcompanion.dnd.RulebookService;
-import com.cielcompanion.dnd.SpellCheckService; // Changed from SpellMishapService
+import com.cielcompanion.dnd.SpellCheckService;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.mood.EmotionManager;
 import com.cielcompanion.service.*;
@@ -25,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -72,6 +73,7 @@ public class CielCompanion {
             CielState.setCielGui(cielGui);
             
             MemoryService.initialize();
+            VaultService.initialize();
             AppProfilerService.initialize();
             PhoneticsService.initialize();
             
@@ -93,7 +95,7 @@ public class CielCompanion {
             
             // NEW SERVICES
             CombatTrackerService combatTrackerService = new CombatTrackerService();
-            SpellCheckService spellCheckService = new SpellCheckService(); // Changed from SpellMishapService
+            SpellCheckService spellCheckService = new SpellCheckService(); 
             
             // UPDATED: CommandService now accepts ALL D&D services including spellCheckService
             CommandService commandService = new CommandService(
@@ -101,7 +103,7 @@ public class CielCompanion {
                 webService, appFinderService, appScannerService, emotionManager, 
                 soundService, loreService, rulebookService, 
                 masteryService, dndCampaignService,
-                combatTrackerService, spellCheckService // Pass correct service here
+                combatTrackerService, spellCheckService 
             );
 
             voiceListener = new VoiceListener(commandService);
@@ -120,18 +122,32 @@ public class CielCompanion {
             System.exit(1);
         }
 
+        // --- UPDATED SHUTDOWN HOOK ---
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("Ciel Companion shutting down...");
-            if (!CielState.isPerformingColdShutdown()) {
+
+            // Fetch the last 5 episodic memories to give her context on what happened this session
+            List<String> recentMemories = MemoryService.getRecentEpisodicMemories(5);
+            String contextSummary = recentMemories.isEmpty() ? "No significant interactions recorded this session." : String.join("\n- ", recentMemories);
+
+            // Determine if it's a reboot (creating the flag file) or a full stop
+            boolean isReboot = !CielState.isPerformingColdShutdown();
+            
+            // BLOCKING CALL: The terminal will pause here until the AI finishes generating the markdown text.
+            VaultService.generateSystemDiaryEntryBlocking(contextSummary, isReboot);
+
+            if (isReboot) {
                 try {
                     Files.createDirectories(SHUTDOWN_FLAG_PATH.getParent());
                     Files.createFile(SHUTDOWN_FLAG_PATH);
                 } catch (IOException ignored) {}
             }
+            
             if (voiceListener != null) voiceListener.close();
             if (scheduler != null) scheduler.shutdown();
             SpeechService.cleanup();
             releaseInstanceLock();
+            System.out.println("Ciel Companion shutdown complete.");
         }));
     }
 

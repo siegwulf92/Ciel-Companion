@@ -52,7 +52,23 @@ public class CielGui {
         });
     }
 
-    public void setState(GuiState state) { if (panel != null) panel.setCurrentState(state); }
+    public void setState(GuiState state) { 
+        if (panel != null) {
+            panel.setCurrentState(state); 
+            
+            // Force the window to the absolute front whenever she becomes active
+            if (state != GuiState.IDLE && frame != null) {
+                SwingUtilities.invokeLater(() -> {
+                    // Toggling this off and back on is a reliable trick to force 
+                    // the OS window manager to push the frame over active apps.
+                    frame.setAlwaysOnTop(false); 
+                    frame.setAlwaysOnTop(true);
+                    frame.toFront();
+                });
+            }
+        }
+    }
+    
     public void setVisualState(EmotionalState.VisualState state) { if (panel != null) panel.setCurrentVisualState(state); }
     
     private static class CielPanel extends JPanel {
@@ -141,14 +157,14 @@ public class CielGui {
         public void setCurrentState(GuiState state) { this.currentState = state; repaint(); }
         public void setCurrentVisualState(EmotionalState.VisualState state) { this.currentVisualState = state; }
 
-        @Override
+       @Override
         protected void paintComponent(Graphics g) {
             super.paintComponent(g);
 
             // 1. Visibility Logic:
-            // If IDLE, we draw NOTHING (creating a 100% transparent window).
-            // She will only "appear" when state changes to SPEAKING or LISTENING.
-            if (currentState == GuiState.IDLE) {
+            // If IDLE and the setting is false, we draw NOTHING.
+            // Otherwise, she remains visible.
+            if (currentState == GuiState.IDLE && !GuiSettings.isVisibleWhenIdle()) {
                 return;
             }
 

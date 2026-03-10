@@ -87,6 +87,11 @@ public class IntentService {
         intentPatterns.put(Intent.SCAN_FOR_APPS, Pattern.compile("(?i).*scan for new (apps|applications|games).*"));
         intentPatterns.put(Intent.FIND_APP_PATH, Pattern.compile("(?i)(find|locate|learn|save path for) (?<appName>.+)"));
         intentPatterns.put(Intent.START_ROUTINE, Pattern.compile("(?i)(start|initiate|begin|run) (?<routineName>\\w+) routine"));
+        
+        // NEW: Chat Mode Triggers
+        intentPatterns.put(Intent.START_CHAT_MODE, Pattern.compile("(?i)(let's chat|start conversation|talk to me|open chat mode)"));
+        intentPatterns.put(Intent.END_CHAT_MODE, Pattern.compile("(?i)(end conversation|stop chatting|that's all|close chat mode)"));
+        
         intentPatterns.put(Intent.OPEN_APPLICATION, Pattern.compile("(?i)(open|launch|start) (?<appName>.+)"));
         intentPatterns.put(Intent.REMEMBER_FACT, Pattern.compile("(?i)remember that (?<key>.+) is (?<value>.+)"));
         intentPatterns.put(Intent.REMEMBER_FACT_SIMPLE, Pattern.compile("(?i)remember (?<key>.+)"));

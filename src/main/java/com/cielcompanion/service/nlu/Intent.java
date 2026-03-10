@@ -49,6 +49,8 @@ public enum Intent {
     GET_ECLIPSES,
     DYNAMIC_PC_CONTROL, 
     EXECUTE_SKILL, // NEW: Run a saved script
+    START_CHAT_MODE,
+    END_CHAT_MODE,
     EASTER_EGG,
     UNKNOWN
 }

@@ -9,12 +9,17 @@ import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class LoreService {
 
     private final Map<String, Path> publicKnowledgeBase = new ConcurrentHashMap<>();
     private final Map<String, Path> restrictedKnowledgeBase = new ConcurrentHashMap<>();
     private Path campaignRoot;
+
+    // Regex to match Obsidian links: [[NoteName]] or [[NoteName|Alias]] or [[NoteName#Header]]
+    private static final Pattern OBSIDIAN_LINK_PATTERN = Pattern.compile("\\[\\[(.*?)(?:\\|.*?)?\\]\\]");
 
     public LoreService() {
         initialize();
@@ -120,6 +125,106 @@ public class LoreService {
             if (speakable.length() > 600) speakable = speakable.substring(0, 600) + "... there is more data.";
             SpeechService.speakPreformatted((isSecret ? "Restricted Data: " : "") + speakable);
         } catch (IOException e) { e.printStackTrace(); }
+    }
+
+    /**
+     * NEW: Obsidian Link Parser with Cross-Path (Backlink) and Folder Hierarchy Checks
+     */
+    public Optional<String> getExpandedNoteContent(String subject) {
+        if (subject == null || subject.isBlank()) return Optional.empty();
+        Set<String> visited = new HashSet<>();
+        StringBuilder expandedContent = new StringBuilder();
+
+        String cleanSubject = subject;
+        int hashIndex = cleanSubject.indexOf('#');
+        if (hashIndex != -1) cleanSubject = cleanSubject.substring(0, hashIndex);
+        cleanSubject = cleanSubject.trim();
+        String lowerSubject = cleanSubject.toLowerCase();
+
+        // 1. OUTBOUND LINKS: Get the direct note and its outbound links (Depth 2)
+        getExpandedNoteContentRecursive(lowerSubject, visited, 2, false)
+            .ifPresent(expandedContent::append);
+
+        // 2. FOLDER HIERARCHY CHECK: If the note is in a dedicated folder (e.g. /Tet/Tet.md), 
+        // grab all sibling files in that folder (like Appearance.md).
+        Optional<Path> mainFileOpt = findBestMatch(publicKnowledgeBase, lowerSubject);
+        if (mainFileOpt.isPresent()) {
+            Path mainFile = mainFileOpt.get();
+            String parentDirName = mainFile.getParent().getFileName().toString();
+            
+            if (parentDirName.equalsIgnoreCase(cleanSubject)) {
+                try {
+                    Files.list(mainFile.getParent()).forEach(sibling -> {
+                        if (isMarkdownOrTxt(sibling)) {
+                            String siblingKey = sibling.getFileName().toString().replaceFirst("[.][^.]+$", "").toLowerCase();
+                            if (!visited.contains(siblingKey)) {
+                                getExpandedNoteContentRecursive(siblingKey, visited, 0, false)
+                                    .ifPresent(expandedContent::append);
+                            }
+                        }
+                    });
+                } catch (IOException ignored) {}
+            }
+        }
+
+        // 3. CROSS-PATH CHECK (BACKLINKS): Find other files that link TO this subject.
+        // Processed at Depth 0 to prevent a "Jibril/Architect Explosion".
+        String backlinkPatternStr = "\\[\\[(?i)" + Pattern.quote(cleanSubject) + "(?:\\|.*?)?\\]\\]";
+        Pattern backlinkPattern = Pattern.compile(backlinkPatternStr);
+
+        for (Map.Entry<String, Path> entry : publicKnowledgeBase.entrySet()) {
+            if (visited.contains(entry.getKey())) continue; // Skip already added files
+
+            try {
+                String content = Files.readString(entry.getValue(), StandardCharsets.UTF_8);
+                if (backlinkPattern.matcher(content).find()) {
+                    // This file links TO our target. Pull it in at depth 0.
+                    getExpandedNoteContentRecursive(entry.getKey(), visited, 0, false)
+                        .ifPresent(expandedContent::append);
+                }
+            } catch (IOException ignored) {}
+        }
+
+        if (expandedContent.length() == 0) return Optional.empty();
+        return Optional.of(expandedContent.toString());
+    }
+
+    private Optional<String> getExpandedNoteContentRecursive(String subject, Set<String> visited, int depth, boolean allowRestricted) {
+        String cleanSubject = subject;
+        int hashIndex = cleanSubject.indexOf('#');
+        if (hashIndex != -1) cleanSubject = cleanSubject.substring(0, hashIndex);
+        cleanSubject = cleanSubject.trim();
+        String lowerSubject = cleanSubject.toLowerCase();
+
+        if (visited.contains(lowerSubject) || depth < 0) return Optional.empty();
+
+        Optional<Path> fileOpt = findBestMatch(publicKnowledgeBase, lowerSubject);
+        if (fileOpt.isEmpty() && allowRestricted) {
+            fileOpt = findBestMatch(restrictedKnowledgeBase, lowerSubject);
+        }
+
+        if (fileOpt.isEmpty()) return Optional.empty();
+
+        visited.add(lowerSubject);
+
+        try {
+            String content = Files.readString(fileOpt.get(), StandardCharsets.UTF_8);
+            StringBuilder expandedContent = new StringBuilder();
+            expandedContent.append("\n--- LORE ENTRY: ").append(cleanSubject.toUpperCase()).append(" ---\n");
+            expandedContent.append(content).append("\n");
+
+            if (depth > 0) {
+                Matcher matcher = OBSIDIAN_LINK_PATTERN.matcher(content);
+                while (matcher.find()) {
+                    String linkedSubject = matcher.group(1);
+                    getExpandedNoteContentRecursive(linkedSubject, visited, depth - 1, allowRestricted)
+                        .ifPresent(expandedContent::append);
+                }
+            }
+            return Optional.of(expandedContent.toString());
+        } catch (IOException e) {
+            return Optional.empty();
+        }
     }
 
     public void createNote(String subject) { SpeechService.speak("Note creation is currently disabled."); }

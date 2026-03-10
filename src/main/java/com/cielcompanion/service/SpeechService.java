@@ -33,6 +33,7 @@ public class SpeechService {
 
     private static final ExecutorService speechExecutor = Executors.newSingleThreadExecutor();
     private static volatile Future<?> sequentialSpeechTask = null;
+    private static volatile Future<?> currentSpeechTask = null; // Tracks the active speech task for interruptions
     private static final AtomicBoolean isActivelySpeaking = new AtomicBoolean(false);
     
     private static final AtomicReference<Process> activeProcess = new AtomicReference<>();
@@ -56,6 +57,28 @@ public class SpeechService {
             sequentialSpeechTask = null;
         }
         ShortTermMemoryService.getMemory().setSpeechEndTime(System.currentTimeMillis());
+    }
+
+    // --- Hard-Kills the currently playing audio ---
+    public static void stopCurrentPlayback() {
+        if (currentSpeechTask != null && !currentSpeechTask.isDone()) {
+            currentSpeechTask.cancel(true);
+        }
+        Process p = activeProcess.get();
+        if (p != null && p.isAlive()) {
+            p.destroyForcibly();
+        }
+        
+        // FIX: Add a 250ms delay to allow the OS audio buffer to completely flush.
+        // This prevents the old audio from bleeding into the new interrupt audio.
+        try {
+            Thread.sleep(250);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        
+        isActivelySpeaking.set(false);
+        CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
     }
 
     // --- OVERLOADS ---
@@ -243,7 +266,8 @@ public class SpeechService {
     }
 
     private static void executeSpeech(String text, String key, int rate, String style, String pitch, String langCode) {
-        speechExecutor.submit(() -> executeSpeechBlocking(text, key, rate, style, pitch, langCode));
+        // Track the current task so we can kill it later
+        currentSpeechTask = speechExecutor.submit(() -> executeSpeechBlocking(text, key, rate, style, pitch, langCode));
     }
 
     private static void executeSpeechBlocking(String text, String key, int rate, String style, String pitch, String langCode) {
@@ -274,7 +298,16 @@ public class SpeechService {
             String encodedCommand = Base64.getEncoder().encodeToString(psScript.getBytes(StandardCharsets.UTF_16LE));
             
             ProcessBuilder pb = new ProcessBuilder("pwsh.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand);
-            try { pb.start().waitFor(15, TimeUnit.SECONDS); } catch (Exception e) {}
+            try { 
+                // Store the process so we can destroy it if the user interrupts
+                Process p = pb.start();
+                activeProcess.set(p);
+                p.waitFor(15, TimeUnit.SECONDS); 
+            } catch (Exception e) {
+                // Handle interruption 
+            } finally {
+                activeProcess.set(null);
+            }
         }
 
         isActivelySpeaking.set(false);
@@ -288,6 +321,6 @@ public class SpeechService {
     }
 
     public static void cleanup() {
-        speechExecutor.shutdown();
+        speechExecutor.shutdownNow();
     }
 }

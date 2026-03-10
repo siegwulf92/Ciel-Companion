@@ -101,8 +101,11 @@ public class CielController {
 
         SpeechService.getVoiceListener().ifPresent(VoiceListener::forceMicReinitialization);
 
+        // FIX: Hard-kill whatever audio clip is currently playing out loud right now
+        SpeechService.stopCurrentPlayback();
+        SpeechService.cancelSequentialSpeech();
+
         if (oldPhase >= 4) {
-            SpeechService.cancelSequentialSpeech();
             memory.setInPhase4Monologue(false);
             speakRandomLine(LineManager.getPhase4InterruptLines(), null, 1, false, false);
         } else {

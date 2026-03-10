@@ -5,9 +5,13 @@ import com.cielcompanion.service.Settings;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 public class CampaignKnowledgeBase {
@@ -15,6 +19,9 @@ public class CampaignKnowledgeBase {
     private final Map<Path, String> campaignNotes = new ConcurrentHashMap<>();
     private Thread watcherThread;
     private volatile boolean isRunning = true;
+    
+    // Regex to match Obsidian links: [[NoteName]] or [[NoteName|Alias]] or [[NoteName#Header]]
+    private static final Pattern OBSIDIAN_LINK_PATTERN = Pattern.compile("\\[\\[(.*?)(?:\\|.*?)?\\]\\]");
 
     public void initialize() {
         System.out.println("Ciel Debug (D&D): Initializing Campaign Knowledge Base at: " + Settings.getDndCampaignPath());
@@ -120,10 +127,7 @@ public class CampaignKnowledgeBase {
     }
 
     /**
-     * Searches the knowledge base for a note matching the subject.
-     * The search is case-insensitive and ignores file extensions.
-     * @param subject The name of the note to find.
-     * @return An Optional containing the note's content if found.
+     * Searches the knowledge base for a single specific note (No cross-referencing).
      */
     public Optional<String> getNoteContent(String subject) {
         String lowerSubject = subject.toLowerCase();
@@ -140,5 +144,60 @@ public class CampaignKnowledgeBase {
         }
         return Optional.empty();
     }
-}
 
+    /**
+     * NEW: Obsidian Link Parser
+     * Gets a note AND crawls its Obsidian links up to a specific depth to build a mega-context string.
+     */
+    public Optional<String> getExpandedNoteContent(String subject) {
+        Set<String> visited = new HashSet<>();
+        // Set depth to 2. Meaning it will read the first note, read any notes it links to, 
+        // and read the notes THOSE notes link to. Prevents blowing up the LLM token limit.
+        return getExpandedNoteContentRecursive(subject, visited, 2); 
+    }
+
+    private Optional<String> getExpandedNoteContentRecursive(String subject, Set<String> visited, int depth) {
+        // Obsidian links often use headers like [[NoteName#Header]]. Strip the # header for the file search.
+        String cleanSubject = subject;
+        int hashIndex = cleanSubject.indexOf('#');
+        if (hashIndex != -1) {
+            cleanSubject = cleanSubject.substring(0, hashIndex);
+        }
+        cleanSubject = cleanSubject.trim();
+
+        String lowerSubject = cleanSubject.toLowerCase();
+
+        // Stop if we've already loaded this note (prevents infinite loops) or hit the depth limit
+        if (visited.contains(lowerSubject) || depth < 0) {
+            return Optional.empty();
+        }
+        
+        Optional<String> baseNoteOpt = getNoteContent(cleanSubject);
+        if (baseNoteOpt.isEmpty()) {
+            return Optional.empty(); // Note doesn't exist in folder
+        }
+
+        // Mark as visited
+        visited.add(lowerSubject);
+
+        String content = baseNoteOpt.get();
+        StringBuilder expandedContent = new StringBuilder();
+        
+        // Format nicely for the AI
+        expandedContent.append("\n--- LORE ENTRY: ").append(cleanSubject.toUpperCase()).append(" ---\n");
+        expandedContent.append(content).append("\n");
+
+        // If we still have depth remaining, find links inside this note and crawl them
+        if (depth > 0) {
+            Matcher matcher = OBSIDIAN_LINK_PATTERN.matcher(content);
+            while (matcher.find()) {
+                String linkedSubject = matcher.group(1); // Grabs the inside of [[ ]]
+                
+                Optional<String> linkedNoteContent = getExpandedNoteContentRecursive(linkedSubject, visited, depth - 1);
+                linkedNoteContent.ifPresent(expandedContent::append);
+            }
+        }
+
+        return Optional.of(expandedContent.toString());
+    }
+}

@@ -169,7 +169,8 @@ public class ObserverService {
         }
         
         if (!cleanText.isEmpty()) {
-            SpeechService.speakPreformatted(cleanText);
+            // FIX: Route through PhonoKana instead of speaking preformatted Japanese
+            SpeechService.speak(cleanText);
         }
     }
 }
