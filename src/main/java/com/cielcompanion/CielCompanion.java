@@ -194,8 +194,16 @@ public class CielCompanion {
                 soundService.initialize();
                 voiceListener.initialize();
                 voiceListener.initializeMicrophoneAsync();
-                startTriggerListener(5555, COMMAND_TRIGGER_PASSPHRASE, () -> voiceListener.startListeningForCommand());
+                
+                // FIX: Grant Privileged Mode when the VoiceAttack trigger is received (Requires Phase Int)
+                startTriggerListener(5555, COMMAND_TRIGGER_PASSPHRASE, () -> {
+                    System.out.println("Ciel Debug: VoiceAttack Command Trigger received. Granting Privileged Mode.");
+                    com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, 1);
+                    voiceListener.startListeningForCommand();
+                });
+                
                 startTriggerListener(5556, SEARCH_TRIGGER_PASSPHRASE, () -> voiceListener.startListeningForSearchQuery());
+                
                 if (Settings.isHotkeyEnabled()) {
                     HotkeyService hotkeyService = new HotkeyService(voiceListener);
                     hotkeyService.initialize();
