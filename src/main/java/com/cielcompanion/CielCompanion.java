@@ -226,9 +226,16 @@ public class CielCompanion {
                     while (!Thread.currentThread().isInterrupted()) {
                         try (Socket clientSocket = serverSocket.accept();
                              BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream(), StandardCharsets.UTF_8))) {
-                            String receivedPassphrase = reader.readLine();
-                            if (receivedPassphrase != null && passphrase.equals(receivedPassphrase.trim())) {
-                                if (action != null) action.run();
+                            
+                            // FIX: Robust read that does NOT require a newline character from VoiceAttack
+                            char[] buffer = new char[256];
+                            int charsRead = reader.read(buffer);
+                            
+                            if (charsRead > 0) {
+                                String receivedPassphrase = new String(buffer, 0, charsRead).trim();
+                                if (passphrase.equals(receivedPassphrase)) {
+                                    if (action != null) action.run();
+                                }
                             }
                         } catch (IOException e) {
                             System.err.println("Ciel Warning: Trigger connection error: " + e.getMessage());
