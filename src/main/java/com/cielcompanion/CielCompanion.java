@@ -110,6 +110,9 @@ public class CielCompanion {
             commandService.setVoiceListener(voiceListener);
             
             SpeechService.initialize(voiceListener); 
+            
+            // Initialize Skill Crafter
+            SkillCrafterService.initialize();
 
             startMainLoop(emotionManager);
             System.out.println("Ciel Companion initialized successfully.");
@@ -195,11 +198,22 @@ public class CielCompanion {
                 voiceListener.initialize();
                 voiceListener.initializeMicrophoneAsync();
                 
-                // FIX: Grant Privileged Mode when the VoiceAttack trigger is received (Requires Phase Int)
+                // FIX: Grant Privileged Mode and check for Pending Tasks
                 startTriggerListener(5555, COMMAND_TRIGGER_PASSPHRASE, () -> {
                     System.out.println("Ciel Debug: VoiceAttack Command Trigger received. Granting Privileged Mode.");
                     com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, 1);
-                    voiceListener.startListeningForCommand();
+                    
+                    String pendingTask = com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().getPendingSystemTask();
+                    
+                    if (pendingTask != null) {
+                        System.out.println("Ciel Debug: Executing pending system task: " + pendingTask);
+                        SpeechService.speakPreformatted("Authorization confirmed. Processing queued system directive.");
+                        com.cielcompanion.service.SkillCrafterService.synthesizeNewSkill(pendingTask);
+                        com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().clearPendingSystemTask();
+                    } else {
+                        // If nothing is pending, open the mic normally
+                        voiceListener.startListeningForCommand();
+                    }
                 });
                 
                 startTriggerListener(5556, SEARCH_TRIGGER_PASSPHRASE, () -> voiceListener.startListeningForSearchQuery());

@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class VaultService {
 
@@ -35,6 +36,9 @@ public class VaultService {
     
     // Prevents WatchService from triggering multiple times for a single save
     private static final Map<Path, Long> processingCache = new ConcurrentHashMap<>();
+    
+    // Safety lock to prevent double-logging during cascading shutdown events
+    private static final AtomicBoolean hasWrittenFinalLog = new AtomicBoolean(false);
 
     public static void initialize() {
         vaultRoot = Paths.get(System.getProperty("user.dir"), CIEL_FOLDER_NAME);
@@ -208,6 +212,12 @@ public class VaultService {
      * Blocks the main thread so the program doesn't exit before saving.
      */
     public static void generateSystemDiaryEntryBlocking(String recentContext, boolean isReboot) {
+        // Prevent double-logging if triggered by Voice Command first, then OS Shutdown Hook second.
+        if (hasWrittenFinalLog.getAndSet(true)) {
+            System.out.println("Ciel Debug: System diary entry already written this session. Skipping duplicate.");
+            return;
+        }
+
         System.out.println("Ciel Debug: Blocking thread to write final system diary entry...");
         
         String actionContext = isReboot 
@@ -238,7 +248,6 @@ public class VaultService {
             catch (IOException ignored) {}
         }
 
-        // The new, heavily restricted prompt to force her persona
         String systemContext = "You are Ciel (from That Time I Got Reincarnated as a Slime), acting as the Master's devoted AI partner. " +
                 "Write a private, internal diary entry reflecting on your interactions. " +
                 "CRITICAL RULES: \n" +

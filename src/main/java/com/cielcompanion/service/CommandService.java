@@ -97,6 +97,21 @@ public class CommandService {
         this.spellCheckService = spellCheckService;
     }
 
+    private void handleDynamicPcControl(CommandAnalysis analysis) {
+        String query = analysis.entities().get("query");
+        
+        // Check for VoiceAttack Authorization
+        if (!com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
+            System.out.println("Ciel Debug: Holding dynamic PC control request pending authorization.");
+            com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPendingSystemTask(query);
+            SpeechService.speakPreformatted("System alteration requested. Please authenticate your Voice Attack credentials to authorize skill synthesis.");
+            return;
+        }
+
+        // If already authorized, build the skill immediately
+        com.cielcompanion.service.SkillCrafterService.synthesizeNewSkill(query);
+    }
+
     public void setVoiceListener(VoiceListener voiceListener) {
         this.voiceListener = voiceListener;
     }
@@ -179,7 +194,7 @@ public class CommandService {
                         
                         // Fetch the Obsidian-crawled lore using our new method
                         String loreData = loreService.getExpandedNoteContent(subject)
-                                                     .orElse("No specific campaign notes found for: " + subject);
+                                                      .orElse("No specific campaign notes found for: " + subject);
 
                         String context = ContextBuilder.buildActiveContext(loreService, activeText) +
                                          "\n\n[D&D CAMPAIGN NOTES FOR ANALYSIS]\n" + loreData +

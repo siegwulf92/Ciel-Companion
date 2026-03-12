@@ -3,7 +3,7 @@ package com.cielcompanion.memory.stwm;
 import com.cielcompanion.service.conversation.ConversationTopic;
 
 /**
- * V3: Adds state tracking for gaming sessions and CPU alerts.
+ * V3: Adds state tracking for gaming sessions, CPU alerts, and Pending Skills.
  */
 public class ShortTermMemory {
 
@@ -23,6 +23,9 @@ public class ShortTermMemory {
     private int highCpuAlertCountInSession = 0;
     private long lastCpuAlertTimestamp = 0;
 
+    // NEW: Holds unauthenticated skill creation requests
+    private String pendingSystemTask = null;
+
     // --- Getters ---
     public int getCurrentPhase() { return currentPhase; }
     public boolean isInPhase4Monologue() { return inPhase4Monologue; }
@@ -36,6 +39,8 @@ public class ShortTermMemory {
     public boolean isInGamingSession() { return inGamingSession; }
     public int getHighCpuAlertCountInSession() { return highCpuAlertCountInSession; }
     public long getLastCpuAlertTimestamp() { return lastCpuAlertTimestamp; }
+    
+    public String getPendingSystemTask() { return pendingSystemTask; }
 
     // --- Setters ---
     public void setCurrentPhase(int phase) { currentPhase = phase; }
@@ -49,6 +54,9 @@ public class ShortTermMemory {
     public void setInGamingSession(boolean inGamingSession) { this.inGamingSession = inGamingSession; }
     public void setHighCpuAlertCountInSession(int count) { this.highCpuAlertCountInSession = count; }
     public void setLastCpuAlertTimestamp(long timestamp) { this.lastCpuAlertTimestamp = timestamp; }
+    
+    public void setPendingSystemTask(String task) { this.pendingSystemTask = task; }
+    public void clearPendingSystemTask() { this.pendingSystemTask = null; }
 
     public void setPrivilegedMode(boolean active, int durationSeconds) {
         if (active) {
@@ -62,4 +70,3 @@ public class ShortTermMemory {
         return System.currentTimeMillis() < this.privilegedModeEndTime;
     }
 }
-
