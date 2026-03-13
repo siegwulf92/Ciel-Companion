@@ -271,7 +271,12 @@ public class CommandService {
                 return false;
                 
             case EXECUTE_SKILL: 
-                com.cielcompanion.ai.SkillManager.executeSkill(analysis.entities().get("skill"), () -> isBusy.set(false));
+                // UPGRADED: Extracts the inferred arguments out of the Semantic Router
+                String skillName = analysis.entities().get("query");
+                if (skillName == null || skillName.isBlank()) skillName = analysis.entities().get("skill"); // Fallback check
+                String arguments = analysis.entities().get("arguments");
+                
+                com.cielcompanion.ai.SkillManager.executeSkill(skillName, arguments, () -> isBusy.set(false));
                 return false;
             
             case FIND_APP_PATH: handleFindAppPathCommand(analysis); return true;

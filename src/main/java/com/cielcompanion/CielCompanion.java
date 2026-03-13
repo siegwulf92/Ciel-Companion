@@ -114,6 +114,12 @@ public class CielCompanion {
             // Initialize Skill Crafter
             SkillCrafterService.initialize();
 
+            // Initialize background Swarm services for Autonomy, Habits, and Skill Merging
+            HabitTrackerService.initialize();
+            com.cielcompanion.ai.SkillEvolutionEngine.initialize();
+            
+            com.cielcompanion.memory.stwm.ShortTermMemoryService.initialize();
+
             startMainLoop(emotionManager);
             System.out.println("Ciel Companion initialized successfully.");
 

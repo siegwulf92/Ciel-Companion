@@ -93,6 +93,9 @@ public class SpeechService {
 
     public static void speakPreformatted(String text, String key, boolean isRare) {
         if (text == null || text.isBlank()) return;
+
+        // NEW: Ensure any current speech is stopped before starting a new one
+        stopCurrentPlayback();
         
         System.out.println("[Ciel Dialogue]: " + text);
 
@@ -246,6 +249,8 @@ public class SpeechService {
                              textToSpeak = applyStutter(textToSpeak);
                          }
 
+                        // NEW: Before executing the next sequential line, make sure any currently playing line is stopped.
+                        stopCurrentPlayback();
                         executeSpeechBlocking(textToSpeak, line.key(), Settings.getTtsRate(), style, pitch, langCode);
                         
                         if (Thread.currentThread().isInterrupted()) break;

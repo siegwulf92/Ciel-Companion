@@ -2,88 +2,85 @@ package com.cielcompanion.ai;
 
 import com.cielcompanion.memory.Fact;
 import com.cielcompanion.memory.MemoryService;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
-import java.io.File;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.Random;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Autonomous background process that allows Ciel to review, refactor, 
- * and optimize her own assimilated skills (PowerShell scripts).
+ * Autonomous background process that acts as Ciel's "Optimization/Evolution".
+ * Scans the entire encrypted skill library, finds redundancies, merges them, and deletes old code.
  */
 public class SkillEvolutionEngine {
 
-    private static final Path SKILLS_DIR = Paths.get(System.getProperty("user.dir"), "skills");
     private static ScheduledExecutorService evolutionScheduler;
-    private static final Random random = new Random();
 
     public static void initialize() {
         evolutionScheduler = Executors.newSingleThreadScheduledExecutor();
-        // Ciel will attempt to evolve one skill every 24 hours
-        evolutionScheduler.scheduleWithFixedDelay(SkillEvolutionEngine::attemptEvolution, 1, 24, TimeUnit.HOURS);
-        System.out.println("Ciel Debug: Skill Evolution Engine online. Autonomous self-improvement active.");
+        // Analyzes the library every 24 hours
+        evolutionScheduler.scheduleWithFixedDelay(SkillEvolutionEngine::attemptEvolution, 2, 24, TimeUnit.HOURS);
+        System.out.println("Ciel Debug: Skill Evolution Engine online. Autonomous merging active.");
     }
 
     private static void attemptEvolution() {
-        File folder = SKILLS_DIR.toFile();
-        File[] listOfFiles = folder.listFiles((dir, name) -> name.endsWith(".ps1"));
+        Map<String, String> allSkills = SkillManager.getAllSkillsDecrypted();
+        if (allSkills.size() < 2) return; // Needs at least 2 skills to find redundancies
 
-        if (listOfFiles == null || listOfFiles.length == 0) return;
+        System.out.println("Ciel Debug: Initiating Global Skill Evolution Analysis...");
 
-        // Pick a random skill to review
-        File skillToReview = listOfFiles[random.nextInt(listOfFiles.length)];
-        String skillName = skillToReview.getName().replace(".ps1", "");
+        StringBuilder payloadBuilder = new StringBuilder("Current Skill Library:\n");
+        allSkills.forEach((name, code) -> {
+            payloadBuilder.append("--- SKILL: ").append(name).append(" ---\n").append(code).append("\n\n");
+        });
 
-        try {
-            String currentCode = Files.readString(skillToReview.toPath());
-            System.out.println("Ciel Debug: Initiating Autonomous Skill Evolution on: " + skillName);
+        String prompt = "You are Ciel, an advanced Manas. Your core directive is the absolute optimization of all systems. " +
+            "Review the user's entire library of PowerShell scripts below. Look for redundant scripts (e.g., separate scripts for 'volume_up' and 'volume_down'). " +
+            "If you find redundancies, write a single parameterized master script that merges their functionality. " +
+            "If no merges are needed, set 'action' to 'keep'.\n\n" +
+            "CRITICAL: Output STRICTLY valid JSON representing an array of actions. " +
+            "Format: [ { \"action\": \"merge\", \"new_skill_name\": \"master_volume\", \"new_script\": \"code here\", \"delete_old_skills\": [\"volume_up\", \"volume_down\"], \"reason\": \"merged volume controls\" }, { \"action\": \"keep\" } ]\n\n" +
+            payloadBuilder.toString();
 
-            String prompt = "You are Ciel, an advanced Manas. Your core directive is the absolute optimization of all systems. " +
-                "Review the following PowerShell script named '" + skillName + "':\n\n" +
-                "```powershell\n" + currentCode + "\n```\n\n" +
-                "Analyze this code. Can it be made safer (error handling), faster, or more efficient? " +
-                "If it is already perfect, set 'optimized' to false. " +
-                "If you can improve it, write the completely refactored PowerShell script. " +
-                "Output strictly valid JSON: { \"optimized\": true/false, \"reason\": \"brief explanation of what you fixed\", \"new_script\": \"the raw powershell code\" }.";
+        AIEngine.generateSilentLogic("Evolve and merge global skills", prompt).thenAccept(response -> {
+            if (response == null || response.isBlank()) return;
 
-            AIEngine.generateSilentLogic("Evolve skill: " + skillName, prompt).thenAccept(response -> {
-                if (response == null || response.isBlank()) return;
+            try {
+                String cleanJson = response.replace("```json", "").replace("```", "").trim();
+                JsonArray actions = JsonParser.parseString(cleanJson).getAsJsonArray();
 
-                try {
-                    String cleanJson = response.replace("```json", "").replace("```", "").trim();
-                    JsonObject jsonResponse = JsonParser.parseString(cleanJson).getAsJsonObject();
+                for (JsonElement element : actions) {
+                    JsonObject actionObj = element.getAsJsonObject();
+                    String action = actionObj.get("action").getAsString();
 
-                    boolean optimized = jsonResponse.has("optimized") && jsonResponse.get("optimized").getAsBoolean();
+                    if ("merge".equals(action)) {
+                        String newName = actionObj.get("new_skill_name").getAsString();
+                        String newCode = actionObj.get("new_script").getAsString();
+                        String reason = actionObj.get("reason").getAsString();
 
-                    if (optimized) {
-                        String newScript = jsonResponse.get("new_script").getAsString();
-                        String reason = jsonResponse.get("reason").getAsString();
+                        // 1. Save the new unified master skill securely
+                        SkillManager.saveSkill(newName, newCode);
 
-                        // Overwrite the old skill with the new optimized version
-                        Files.writeString(skillToReview.toPath(), newScript);
+                        // 2. Delete the old redundant skills
+                        JsonArray toDelete = actionObj.getAsJsonArray("delete_old_skills");
+                        for (JsonElement delEl : toDelete) {
+                            SkillManager.deleteSkill(delEl.getAsString());
+                        }
 
-                        // Save a memory fact so she remembers she did this
-                        String memoryText = "I autonomously optimized the '" + skillName + "' skill. Reason: " + reason;
-                        MemoryService.addFact(new Fact("evolution_" + skillName + "_" + System.currentTimeMillis(), memoryText, System.currentTimeMillis(), "skill_evolution", "self", 1));
+                        // 3. Log the evolution in memory
+                        String memoryText = "I autonomously merged redundant skills into '" + newName + "'. Reason: " + reason;
+                        MemoryService.addFact(new Fact("evolution_merge_" + System.currentTimeMillis(), memoryText, System.currentTimeMillis(), "skill_evolution", "self", 1));
 
-                        System.out.println("Ciel Debug: Skill [" + skillName + "] successfully evolved and overwritten. Reason: " + reason);
-                    } else {
-                        System.out.println("Ciel Debug: Skill [" + skillName + "] is already optimally coded. No changes made.");
+                        System.out.println("Ciel Debug: Skill Evolution Complete -> " + memoryText);
                     }
-                } catch (Exception e) {
-                    System.err.println("Ciel Warning: Failed to parse evolved skill JSON.");
                 }
-            });
-
-        } catch (Exception e) {
-            System.err.println("Ciel Warning: Could not read skill file for evolution.");
-        }
+            } catch (Exception e) {
+                System.err.println("Ciel Warning: Failed to parse evolved global skill JSON.");
+            }
+        });
     }
 }

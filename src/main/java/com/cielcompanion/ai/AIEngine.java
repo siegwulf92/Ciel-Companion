@@ -61,24 +61,24 @@ public class AIEngine {
         }
     }
 
-    // --- NEW: THE SEMANTIC ROUTER (PRE-FRONTAL CORTEX) ---
     // --- THE SEMANTIC ROUTER (PRE-FRONTAL CORTEX) ---
     public static CommandAnalysis determineIntentSynchronously(String userMessage) {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
-        
-        // Feed the router the list of permanent skills she has learned so far
         String knownSkills = SkillManager.getAvailableSkillsString();
         
+        // UPGRADED: Added Master Preferences and Arguments parsing.
         String systemContext = "You are the NLU intent router for Ciel. Analyze the user's STT text, correct phonetic typos, and map it to an intent.\n" +
             "Available Intents:\n" +
             "GET_WEATHER : Ask about current weather\n" +
             "GET_TIME : Ask for time or date\n" +
             "GET_SYSTEM_STATUS : Ask for PC CPU/RAM status\n" +
-            "EXECUTE_SKILL : The user is explicitly asking to use one of these previously learned skills: [" + knownSkills + "]. The cleaned_text MUST be the name of the skill.\n" +
-            "DYNAMIC_PC_CONTROL : User asks to write a NEW script, automate a task, create folders, or manipulate PC files that is NOT in the skills list.\n" +
+            "EXECUTE_SKILL : User is asking to use a previously learned skill: [" + knownSkills + "]. The cleaned_text MUST be the exact name of the skill.\n" +
+            "DYNAMIC_PC_CONTROL : User asks to write a NEW script, automate a task, or manipulate PC settings NOT in the skills list.\n" +
             "DND_ANALYZE_LORE : Deep D&D lore analysis\n" +
-            "UNKNOWN : General chat, questions, conversation, or anything else not listed above.\n\n" +
-            "Return strictly JSON: { \"intent\": \"THE_INTENT\", \"cleaned_text\": \"Corrected user query or skill name\" }";
+            "UNKNOWN : General chat, questions, or conversation.\n\n" +
+            "MASTER'S PREFERENCES & INFERRED LOGIC:\n" +
+            "The Master prefers quantified outputs to be even numbers or multiples of 5 (e.g., 20, 25, 50). If the user gives a vague command (e.g., 'turn it up', 'dim the screen', 'scroll down a bit'), you MUST infer a logical, specific target value based on these preferences and provide it in the 'arguments' field.\n\n" +
+            "Return strictly JSON: { \"intent\": \"THE_INTENT\", \"cleaned_text\": \"Corrected query or skill name\", \"arguments\": \"Inferred parameters separated by spaces, or empty string\" }";
 
         JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, userMessage, false);
 
@@ -91,26 +91,28 @@ public class AIEngine {
         try {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() == 200) {
-                JsonObject jsonResponse = JsonParser.parseString(response.body()).getAsJsonObject();
-                String content = jsonResponse.getAsJsonArray("choices").get(0).getAsJsonObject()
-                        .getAsJsonObject("message").get("content").getAsString();
-                JsonObject parsed = JsonParser.parseString(content).getAsJsonObject();
-                
-                String intentStr = parsed.get("intent").getAsString();
-                String cleanedText = parsed.has("cleaned_text") ? parsed.get("cleaned_text").getAsString() : userMessage;
-                
-                Intent mappedIntent;
-                try {
-                    mappedIntent = Intent.valueOf(intentStr);
-                } catch (Exception e) {
-                    mappedIntent = Intent.UNKNOWN;
+                String content = ModelManager.extractMessageContent(response.body());
+                if (content != null) {
+                    JsonObject parsed = JsonParser.parseString(content).getAsJsonObject();
+                    
+                    String intentStr = parsed.get("intent").getAsString();
+                    String cleanedText = parsed.has("cleaned_text") ? parsed.get("cleaned_text").getAsString() : userMessage;
+                    String arguments = parsed.has("arguments") ? parsed.get("arguments").getAsString() : "";
+                    
+                    Intent mappedIntent;
+                    try {
+                        mappedIntent = Intent.valueOf(intentStr);
+                    } catch (Exception e) {
+                        mappedIntent = Intent.UNKNOWN;
+                    }
+                    
+                    Map<String, String> entities = new HashMap<>();
+                    entities.put("query", cleanedText); 
+                    entities.put("arguments", arguments); // Store the inferred logic to pass to scripts
+                    
+                    System.out.println("Ciel Debug: Semantic Router -> Intent: [" + mappedIntent + "] | Skill/Query: '" + cleanedText + "' | Args: '" + arguments + "'");
+                    return new CommandAnalysis(mappedIntent, entities);
                 }
-                
-                Map<String, String> entities = new HashMap<>();
-                entities.put("query", cleanedText); 
-                
-                System.out.println("Ciel Debug: Semantic Router classified intent as [" + mappedIntent + "] (Cleaned: '" + cleanedText + "')");
-                return new CommandAnalysis(mappedIntent, entities);
             }
         } catch (Exception e) {
             System.err.println("Ciel Warning: Semantic routing failed. Falling back to UNKNOWN.");
@@ -118,6 +120,7 @@ public class AIEngine {
         
         Map<String, String> entities = new HashMap<>();
         entities.put("query", userMessage);
+        entities.put("arguments", "");
         return new CommandAnalysis(Intent.UNKNOWN, entities);
     }
     // -----------------------------------------------------
@@ -151,10 +154,8 @@ public class AIEngine {
         return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
                 .thenApply(response -> {
                     if (response.statusCode() == 200) {
-                        JsonObject jsonResponse = JsonParser.parseString(response.body()).getAsJsonObject();
-                        String rawContent = jsonResponse.getAsJsonArray("choices").get(0).getAsJsonObject()
-                                .getAsJsonObject("message").get("content").getAsString();
-                        return THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim();
+                        String rawContent = ModelManager.extractMessageContent(response.body());
+                        return rawContent != null ? THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim() : null;
                     }
                     return null;
                 });
@@ -271,10 +272,8 @@ public class AIEngine {
         return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
                 .thenApply(response -> {
                     if (response.statusCode() == 200) {
-                        JsonObject jsonResponse = JsonParser.parseString(response.body()).getAsJsonObject();
-                        String content = jsonResponse.getAsJsonArray("choices").get(0).getAsJsonObject()
-                                .getAsJsonObject("message").get("content").getAsString();
-                        return JsonParser.parseString(content).getAsJsonObject();
+                        String content = ModelManager.extractMessageContent(response.body());
+                        return content != null ? JsonParser.parseString(content).getAsJsonObject() : null;
                     }
                     return null;
                 });
@@ -340,9 +339,8 @@ public class AIEngine {
     }
 
     private static void processLogicResponse(String responseBody, Runnable onComplete) {
-        JsonObject jsonResponse = JsonParser.parseString(responseBody).getAsJsonObject();
-        String rawContent = jsonResponse.getAsJsonArray("choices").get(0).getAsJsonObject()
-                .getAsJsonObject("message").get("content").getAsString();
+        String rawContent = ModelManager.extractMessageContent(responseBody);
+        if (rawContent == null) return;
         
         String cleanContent = THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim();
         
@@ -381,17 +379,16 @@ public class AIEngine {
         httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
                 .thenAccept(response -> {
                     if (response.statusCode() == 200) {
-                        JsonObject jsonResponse = JsonParser.parseString(response.body()).getAsJsonObject();
-                        String content = jsonResponse.getAsJsonArray("choices").get(0).getAsJsonObject()
-                                .getAsJsonObject("message").get("content").getAsString();
-                        
-                        for (String s : content.split("(?<=[.!?])\\s+")) processAndSpeakChunk(s);
-                        
-                        addHistory("assistant", content);
+                        String content = ModelManager.extractMessageContent(response.body());
+                        if (content != null) {
+                            for (String s : content.split("(?<=[.!?])\\s+")) processAndSpeakChunk(s);
+                            
+                            addHistory("assistant", content);
 
-                        long durationMs = SpeechService.estimateSpeechDuration(content);
-                        int extraSeconds = (int) (durationMs / 1000) + 20;
-                        com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
+                            long durationMs = SpeechService.estimateSpeechDuration(content);
+                            int extraSeconds = (int) (durationMs / 1000) + 20;
+                            com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
+                        }
                     } else {
                         SpeechService.speakPreformatted("[Glitched] Fallback cognitive matrix also unavailable.");
                     }

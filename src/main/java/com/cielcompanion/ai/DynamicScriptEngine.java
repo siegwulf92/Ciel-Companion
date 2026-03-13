@@ -4,9 +4,12 @@ import com.cielcompanion.CielState;
 import com.cielcompanion.service.SpeechService;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -14,7 +17,9 @@ import java.util.regex.Pattern;
 public class DynamicScriptEngine {
 
     private static final Set<String> BANNED_KEYWORDS = Set.of(
-        "remove-item", "rm ", "del ", "format ", "reg add", "reg delete", "netsh", "stop-process", "kill "
+        "remove-item", "rm ", "del ", "erase ", "rd ", "rmdir ", 
+        "format ", "reg add", "reg delete", "netsh", "stop-process", "kill ",
+        "invoke-webrequest", "iwr ", "wget ", "curl "
     );
 
     private static void speakStatus(String textWithEmotion) {
@@ -45,27 +50,28 @@ public class DynamicScriptEngine {
         
         String systemContext = "You are a master Windows PowerShell scripter. " +
             "The user will give you a natural language task. Write a safe, efficient PowerShell script to accomplish it. " +
-            "CRITICAL: You MUST output ONLY a valid JSON object. Do not use Markdown blocks (no ```json). " +
-            "JSON Format: { \"skill_name\": \"a_short_descriptive_name_with_underscores\", \"script\": \"the raw powershell code\" }. " +
-            "The script must execute immediately without requiring user input. " +
-            "If the task implies deleting files, use Move-Item to a 'C:\\Temp_Recycle' folder instead.";
+            "CRITICAL: If the task implies a variable (like volume level), your script MUST accept arguments using a standard `param(...)` block. " +
+            "You MUST output ONLY a valid JSON object. Do not use Markdown blocks (no ```json). " +
+            "JSON Format: { \"skill_name\": \"name_with_underscores\", \"script\": \"the raw powershell code\", \"args_for_this_run\": \"any inferred arguments to pass right now\" }.";
             
-        AIEngine.generateSilentLogic(userRequest, systemContext).thenAccept(response -> {
+        attemptGenerationAndExecution(userRequest, systemContext, 0, onComplete);
+    }
+
+    private static void attemptGenerationAndExecution(String prompt, String systemContext, int attemptNum, Runnable onComplete) {
+        AIEngine.generateSilentLogic(prompt, systemContext).thenAccept(response -> {
             if (response == null || response.isBlank()) {
-                speakStatus("[Annoyed] スクリプト ジェネレーション フェイルド。ロジック マトリックス アンステイブル。");
+                speakStatus("[Annoyed] スクリプト ジェネレーション フェイルド。");
                 if (onComplete != null) onComplete.run();
                 return;
             }
             
             try {
-                // Clean up possible markdown tags just in case
                 String cleanJson = response.replace("```json", "").replace("```", "").trim();
                 JsonObject jsonResponse = JsonParser.parseString(cleanJson).getAsJsonObject();
                 
                 String skillName = jsonResponse.get("skill_name").getAsString();
                 String script = jsonResponse.get("script").getAsString();
-                
-                System.out.println("\n--- CIEL GENERATED SCRIPT [" + skillName + "] ---\n" + script + "\n-----------------------------\n");
+                String argsForRun = jsonResponse.has("args_for_this_run") ? jsonResponse.get("args_for_this_run").getAsString() : "";
                 
                 String lowerScript = script.toLowerCase();
                 for (String banned : BANNED_KEYWORDS) {
@@ -76,31 +82,49 @@ public class DynamicScriptEngine {
                     }
                 }
                 
-                Path tempPath = Paths.get(System.getenv("LOCALAPPDATA"), "CielCompanion", "temp_chant.ps1");
-                Files.writeString(tempPath, script);
-                
-                speakStatus("[Observing] エクセキューティング ダイナミック シーケンス。");
-                
-                ProcessBuilder pb = new ProcessBuilder("powershell.exe", "-ExecutionPolicy", "Bypass", "-File", tempPath.toString());
+                if (attemptNum == 0) speakStatus("[Observing] エクセキューティング ダイナミック シーケンス。");
+                else speakStatus("[Focused] アプライイング コレクションズ。リアテンプティング エクセキューション。"); 
+
+                // SECURITY UPGRADE: Encode the script directly into a Base64 string for fileless execution
+                String scriptToExecute = script;
+                if (!argsForRun.isBlank()) {
+                     scriptToExecute = script + "\n" + argsForRun;
+                }
+                String base64Command = Base64.getEncoder().encodeToString(scriptToExecute.getBytes(StandardCharsets.UTF_16LE));
+
+                List<String> command = new ArrayList<>();
+                command.add("powershell.exe");
+                command.add("-ExecutionPolicy");
+                command.add("Bypass");
+                command.add("-EncodedCommand");
+                command.add(base64Command);
+
+                ProcessBuilder pb = new ProcessBuilder(command);
                 pb.redirectErrorStream(true); 
                 
                 Process process = pb.start();
                 String output = new String(process.getInputStream().readAllBytes());
                 int exitCode = process.waitFor();
                 
-                System.out.println("Ciel Debug: PowerShell Execution Output:\n" + output);
+                boolean hasError = exitCode != 0 || output.toLowerCase().contains("exception") || output.toLowerCase().contains("error");
                 
-                if (exitCode == 0 && !output.toLowerCase().contains("exception") && !output.toLowerCase().contains("error")) {
+                if (!hasError) {
+                    // Uses the new encrypted SkillManager logic
                     SkillManager.saveSkill(skillName, script);
                     speakStatus("[Happy] チャント アナルメント サクセスフル。スキル アシミレイテッド。");
+                    if (onComplete != null) onComplete.run();
                 } else {
-                    speakStatus("[Annoyed] エクセキューション エンカウンタード アン アノマリー。スクリプト フェイルド。");
+                    if (attemptNum < 2) {
+                        String correctionPrompt = "The script failed with this output/error:\n" + output + "\nRewrite the script to fix this error. Ensure you still output strictly JSON.";
+                        attemptGenerationAndExecution(correctionPrompt, systemContext, attemptNum + 1, onComplete);
+                    } else {
+                        speakStatus("[Annoyed] エクセキューション エンカウンタード クリティカル アノマリー。スクリプト アボーテッド。");
+                        if (onComplete != null) onComplete.run();
+                    }
                 }
                 
             } catch (Exception e) {
                 speakStatus("[Annoyed] ジェイソン パーシング オア エクセキューション フェイルド。");
-                e.printStackTrace();
-            } finally {
                 if (onComplete != null) onComplete.run();
             }
         });

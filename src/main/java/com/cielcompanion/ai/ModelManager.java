@@ -3,6 +3,7 @@ package com.cielcompanion.ai;
 import com.cielcompanion.service.Settings;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 /**
  * Acts as the Orchestrator for multiple local LLMs.
@@ -73,5 +74,22 @@ public class ModelManager {
             case LOGIC -> Settings.getLlmLogicUrl() + "/chat/completions";
             case LOCAL_LOGIC_FALLBACK -> Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
         };
+    }
+
+    /**
+     * Utility method to safely extract the standard OpenAI/OpenAI-compatible text response.
+     * Reduces boilerplate across the AI Engine.
+     */
+    public static String extractMessageContent(String jsonBody) {
+        try {
+            JsonObject jsonResponse = JsonParser.parseString(jsonBody).getAsJsonObject();
+            return jsonResponse.getAsJsonArray("choices")
+                    .get(0).getAsJsonObject()
+                    .getAsJsonObject("message")
+                    .get("content").getAsString();
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Failed to parse LLM JSON response.");
+            return null;
+        }
     }
 }
