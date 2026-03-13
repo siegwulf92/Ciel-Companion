@@ -22,6 +22,8 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -69,8 +71,7 @@ public class SpeechService {
             p.destroyForcibly();
         }
         
-        // FIX: Add a 250ms delay to allow the OS audio buffer to completely flush.
-        // This prevents the old audio from bleeding into the new interrupt audio.
+        // Add a 250ms delay to allow the OS audio buffer to completely flush.
         try {
             Thread.sleep(250);
         } catch (InterruptedException e) {
@@ -94,30 +95,51 @@ public class SpeechService {
     public static void speakPreformatted(String text, String key, boolean isRare) {
         if (text == null || text.isBlank()) return;
 
-        // NEW: Ensure any current speech is stopped before starting a new one
+        // Ensure any current speech is stopped before starting a new one
         stopCurrentPlayback();
         
-        System.out.println("[Ciel Dialogue]: " + text);
+        // --- 1. EXTRACT AND STRIP EMOTION TAGS ---
+        Matcher matcher = Pattern.compile("\\[([a-zA-Z]+)\\]").matcher(text);
+        String emotionToTrigger = null;
+        while (matcher.find()) {
+            emotionToTrigger = matcher.group(1);
+        }
+        String cleanText = matcher.replaceAll("").trim();
+        cleanText = cleanText.replaceAll("\\*.*?\\*", "").trim(); // Remove markdown actions like *sighs*
+
+        if (emotionToTrigger != null && !emotionToTrigger.isBlank()) {
+            final String finalEmotion = emotionToTrigger;
+            CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion(finalEmotion, 0.8, "Dialogue Tag"));
+        }
+
+        System.out.println("[Ciel Dialogue]: " + cleanText);
 
         if (isRare) {
             CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Excited", 0.8, "RareDialogue"));
         }
         
-        String finalOutput = text;
+        String finalOutput = cleanText;
         String langCode = CielVoiceManager.getActiveLanguageCode();
 
         // TENSURA LOGIC: If Locked, Translate to Japanese
         if (CielVoiceManager.isLanguageLocked()) {
-            finalOutput = TranslationService.toJapanese(text);
+            finalOutput = TranslationService.toJapanese(cleanText);
             System.out.println("[Ciel World Voice]: Translated to: " + finalOutput);
         } 
         // D&D LOGIC: If English Mode, use raw text (no Katakana conversion needed for Jenny)
         else if (langCode.equals("en-US")) {
-            finalOutput = text; 
+            finalOutput = cleanText; 
         }
-        // DEFAULT LOGIC: If Japanese Mode but text is English, convert to Katakana
-        else if (langCode.equals("ja-JP") && text.matches(".*[a-zA-Z]+.*")) {
-             finalOutput = PhonoKana.getInstance().toKatakana(text);
+        // DEFAULT LOGIC: Japanese TTS voice reading English. Convert all text to Katakana.
+        else if (langCode.equals("ja-JP")) {
+            // Check if there are any english letters left. If so, transliterate.
+            if (Pattern.compile("[a-zA-Z]").matcher(cleanText).find()) {
+                finalOutput = PhonoKana.getInstance().toKatakana(cleanText);
+                System.out.println("[Ciel PhonoKana]: Translated to: " + finalOutput);
+            } else {
+                 // It's already in Japanese/Katakana from a static properties file, just use it
+                 finalOutput = cleanText;
+            }
         }
 
         long estimatedDuration = estimateSpeechDuration(finalOutput);
@@ -129,7 +151,6 @@ public class SpeechService {
         String attitude = "Professional";
 
         if (CielState.getEmotionManager().isPresent()) {
-            // 1. Check for Attitude Override (from JSON quirks or events)
             attitude = CielState.getEmotionManager().get().getCurrentAttitude();
             if (!"Professional".equals(attitude)) {
                 Optional<MoodConfig.AttitudeDefinition> attDef = MoodConfig.getAttitudeDef(attitude);
@@ -137,9 +158,7 @@ public class SpeechService {
                     style = attDef.get().styleModifier();
                     pitch = attDef.get().pitchModifier();
                 }
-            } 
-            // 2. If no attitude override, check Dominant Emotion
-            else {
+            } else {
                 List<Emotion> activeEmotions = CielState.getEmotionManager().get().getEmotionalState().getActiveEmotions().values().stream()
                     .sorted(Comparator.comparingDouble(Emotion::intensity).reversed())
                     .collect(Collectors.toList());
@@ -154,10 +173,8 @@ public class SpeechService {
                 }
             }
             
-            // 3. Apply Human Variance (Small random fluctuations)
             pitch = applyHumanVariance(pitch);
             
-            // 4. Apply Stutter if Glitched/Concerned (Narrative effect)
             if ("Glitched".equals(attitude) || "Concerned".equals(attitude)) {
                 finalOutput = applyStutter(finalOutput);
             }
@@ -166,16 +183,13 @@ public class SpeechService {
         executeSpeech(finalOutput, key, Settings.getTtsRate(), style, pitch, langCode);
     }
     
-    // Adds small random variances to pitch strings (e.g. "+5%" becomes "+4%" or "+6%")
     private static String applyHumanVariance(String basePitch) {
         if (basePitch.equals("default")) return "+0%";
         try {
-            // Remove % and +, parse, jitter by -2 to +2, reconstruct
             String clean = basePitch.replace("%", "").replace("+", "");
             if (clean.isEmpty()) return "+0%";
-            
             int val = Integer.parseInt(clean);
-            int variance = random.nextInt(5) - 2; // -2 to +2 variation
+            int variance = random.nextInt(5) - 2; 
             int newVal = val + variance;
             return (newVal >= 0 ? "+" : "") + newVal + "%";
         } catch (Exception e) {
@@ -183,16 +197,12 @@ public class SpeechService {
         }
     }
     
-    // Randomly repeats the first syllable of words to simulate processing error/stress
     private static String applyStutter(String input) {
-        if (random.nextInt(10) > 3) return input; // Only stutter 30% of the time in this mode
-        
+        if (random.nextInt(10) > 3) return input; 
         String[] words = input.split(" ");
         if (words.length == 0) return input;
-        
         int targetIdx = random.nextInt(words.length);
         String targetWord = words[targetIdx];
-        
         if (targetWord.length() > 2) {
             String stutter = targetWord.substring(0, 2) + "-" + targetWord;
             words[targetIdx] = stutter;
@@ -215,6 +225,22 @@ public class SpeechService {
                     DialogueLine line = lines.get(i);
                     if (line != null && line.text() != null && !line.text().isBlank()) {
                         
+                        String textToSpeak = line.text();
+
+                        // STRIP EMOTIONS IN SEQUENTIAL LISTS TOO
+                        Matcher matcher = Pattern.compile("\\[([a-zA-Z]+)\\]").matcher(textToSpeak);
+                        String emotionToTrigger = null;
+                        while (matcher.find()) {
+                            emotionToTrigger = matcher.group(1);
+                        }
+                        textToSpeak = matcher.replaceAll("").trim();
+                        textToSpeak = textToSpeak.replaceAll("\\*.*?\\*", "").trim();
+
+                        if (emotionToTrigger != null && !emotionToTrigger.isBlank()) {
+                            final String finalEmotion = emotionToTrigger;
+                            CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion(finalEmotion, 0.8, "Dialogue Tag"));
+                        }
+
                         String style = "default";
                         String pitch = "+0%";
                         String attitude = "Professional";
@@ -236,20 +262,27 @@ public class SpeechService {
                         }
 
                         String langCode = CielVoiceManager.getActiveLanguageCode();
-                        String textToSpeak = line.text();
                         
-                         if (CielVoiceManager.isLanguageLocked()) {
-                             textToSpeak = TranslationService.toJapanese(textToSpeak);
-                         } else if (langCode.equals("ja-JP") && textToSpeak.matches(".*[a-zA-Z]+.*")) {
-                             textToSpeak = PhonoKana.getInstance().toKatakana(textToSpeak);
-                         }
+                        // TENSURA LOGIC: If Locked, Translate to Japanese
+                        if (CielVoiceManager.isLanguageLocked()) {
+                            textToSpeak = TranslationService.toJapanese(textToSpeak);
+                        } 
+                        // D&D LOGIC: English TTS
+                        else if (langCode.equals("en-US")) {
+                            // Do nothing, text is already English
+                        }
+                        // DEFAULT LOGIC: Katakana conversion
+                        else if (langCode.equals("ja-JP")) {
+                            if (Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                                textToSpeak = PhonoKana.getInstance().toKatakana(textToSpeak);
+                                System.out.println("[Ciel PhonoKana (Seq)]: Translated to: " + textToSpeak);
+                            }
+                        }
                          
-                         // Apply stutter to sequential lines too if glitched
                          if ("Glitched".equals(attitude) || "Concerned".equals(attitude)) {
                              textToSpeak = applyStutter(textToSpeak);
                          }
 
-                        // NEW: Before executing the next sequential line, make sure any currently playing line is stopped.
                         stopCurrentPlayback();
                         executeSpeechBlocking(textToSpeak, line.key(), Settings.getTtsRate(), style, pitch, langCode);
                         
@@ -271,7 +304,6 @@ public class SpeechService {
     }
 
     private static void executeSpeech(String text, String key, int rate, String style, String pitch, String langCode) {
-        // Track the current task so we can kill it later
         currentSpeechTask = speechExecutor.submit(() -> executeSpeechBlocking(text, key, rate, style, pitch, langCode));
     }
 
@@ -304,7 +336,6 @@ public class SpeechService {
             
             ProcessBuilder pb = new ProcessBuilder("pwsh.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand);
             try { 
-                // Store the process so we can destroy it if the user interrupts
                 Process p = pb.start();
                 activeProcess.set(p);
                 p.waitFor(15, TimeUnit.SECONDS); 
