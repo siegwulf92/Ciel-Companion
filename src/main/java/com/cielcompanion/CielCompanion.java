@@ -29,6 +29,8 @@ import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
 public class CielCompanion {
 
@@ -40,6 +42,7 @@ public class CielCompanion {
     private static final String COMMAND_TRIGGER_PASSPHRASE = "ciel_privileged_access_protocol_-alpha-";
     private static final String SEARCH_TRIGGER_PASSPHRASE = "ciel_web_search_protocol-beta-";
     private static final Path SHUTDOWN_FLAG_PATH = Paths.get(System.getenv("LOCALAPPDATA") + File.separator + "CielCompanion", "clean_shutdown.flag");
+    private static Process jarvisProcess;
 
     public static void main(String[] args) {
         System.setProperty("jdk.http.auth.tunneling.disabledSchemes", "");
@@ -155,6 +158,16 @@ public class CielCompanion {
             if (voiceListener != null) voiceListener.close();
             if (scheduler != null) scheduler.shutdown();
             SpeechService.cleanup();
+            
+            // Clean up the background Python server if we started it this session
+            if (jarvisProcess != null && jarvisProcess.isAlive()) {
+                System.out.println("Ciel Debug: Shutting down background OpenJarvis server...");
+                try {
+                    // Windows specific command to kill the entire process tree (cmd.exe + python)
+                    Runtime.getRuntime().exec("taskkill /F /T /PID " + jarvisProcess.pid());
+                } catch (IOException e) { e.printStackTrace(); }
+            }
+            
             releaseInstanceLock();
             System.out.println("Ciel Companion shutdown complete.");
         }));
@@ -194,6 +207,12 @@ public class CielCompanion {
 
         new Thread(() -> {
             try {
+                // ADDED: Wait for Windows to boot Ollama/LM Studio before trying to start OpenJarvis
+                waitForInferenceEngines();
+                
+                // Check and boot the AI Brain
+                ensureJarvisServerRunning();
+
                 LocationService.initialize();
                 AstronomyService.initializeApiState();
                 WeatherService.initialize();
@@ -233,6 +252,101 @@ public class CielCompanion {
                 e.printStackTrace();
             }
         }, "Ciel-Background-Initializer").start();
+    }
+
+    private static void ensureJarvisServerRunning() {
+        System.out.println("Ciel Debug: Checking if OpenJarvis AI server is running...");
+        if (isJarvisAlive()) {
+            System.out.println("Ciel Debug: OpenJarvis is already running on port 8000.");
+            return;
+        }
+
+        System.out.println("Ciel Debug: OpenJarvis not detected. Auto-starting local AI server...");
+        try {
+            ProcessBuilder pb = new ProcessBuilder("cmd.exe", "/c", "jarvis serve");
+            pb.directory(new File("C:\\Ciel Companion\\OpenJarvis-main"));
+            pb.redirectErrorStream(true); // Merge standard error and standard output
+            
+            jarvisProcess = pb.start();
+            
+            // Read the Python server's console output and print it directly into Ciel's Java log
+            new Thread(() -> {
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(jarvisProcess.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        System.out.println("[OpenJarvis Brain] " + line);
+                    }
+                } catch (Exception e) {
+                    System.err.println("Ciel Error: Lost connection to OpenJarvis console stream.");
+                }
+            }, "Jarvis-Console-Stream").start();
+            
+            // Wait for it to boot (increased to 45 seconds to allow Ollama to load heavy models into VRAM)
+            int attempts = 0;
+            while (!isJarvisAlive() && attempts < 45) {
+                Thread.sleep(1000);
+                attempts++;
+            }
+            
+            if (isJarvisAlive()) {
+                System.out.println("Ciel Debug: OpenJarvis server successfully auto-started in the background.");
+            } else {
+                System.err.println("Ciel Error: OpenJarvis failed to respond after 45 seconds. Check the [OpenJarvis Brain] logs above for errors.");
+            }
+            
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Failed to auto-launch OpenJarvis process.");
+            e.printStackTrace();
+        }
+    }
+
+    private static boolean isJarvisAlive() {
+        try {
+            java.net.HttpURLConnection connection = (java.net.HttpURLConnection) new java.net.URL("http://localhost:8000/docs").openConnection();
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(1000);
+            connection.setReadTimeout(1000);
+            int responseCode = connection.getResponseCode();
+            return (200 <= responseCode && responseCode <= 399);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // NEW METHOD: Patiently waits for Ollama or LM Studio to wake up
+    private static boolean waitForInferenceEngines() {
+        System.out.println("Ciel Debug: Waiting for Local Inference Engines (Ollama/LM Studio) to initialize...");
+        int attempts = 0;
+        // Wait up to 3 minutes (18 attempts * 10 seconds) for Windows to boot the engines
+        while (attempts < 18) { 
+            boolean ollamaAlive = pingUrl("http://localhost:11434");
+            boolean lmStudioAlive = pingUrl("http://localhost:1234/v1/models");
+            
+            if (ollamaAlive || lmStudioAlive) {
+                System.out.println("Ciel Debug: Local Inference Engine detected! Proceeding with AI boot sequence.");
+                return true;
+            }
+            
+            System.out.println("Ciel Debug: Inference engines not ready yet. Waiting 10 seconds... (Attempt " + (attempts + 1) + "/18)");
+            try { Thread.sleep(10000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            attempts++;
+        }
+        System.err.println("Ciel Error: Inference engines failed to start after 3 minutes. OpenJarvis may fail to load models.");
+        return false;
+    }
+
+    // NEW METHOD: Helper to check if a URL is active
+    private static boolean pingUrl(String urlStr) {
+        try {
+            java.net.HttpURLConnection connection = (java.net.HttpURLConnection) new java.net.URL(urlStr).openConnection();
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(2000);
+            connection.setReadTimeout(2000);
+            int responseCode = connection.getResponseCode();
+            return (200 <= responseCode && responseCode <= 399);
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private static void startTriggerListener(int port, String passphrase, Runnable action) {

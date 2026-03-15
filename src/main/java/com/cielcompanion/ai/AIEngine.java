@@ -22,6 +22,7 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -35,6 +36,7 @@ public class AIEngine {
             .connectTimeout(Duration.ofSeconds(15))
             .build();
     private static final Gson gson = new Gson();
+    private static final ExecutorService translationExecutor = Executors.newSingleThreadExecutor();
     
     private static final Pattern EMOTION_TAG_PATTERN = Pattern.compile("\\[([a-zA-Z]+)\\]");
     private static final Pattern THINK_TAG_PATTERN = Pattern.compile("(?s)<think>.*?</think>");
@@ -61,12 +63,53 @@ public class AIEngine {
         }
     }
 
+    // --- HIGH-SPEED TRANSLITERATION (PARALLEL) ---
+    public static CompletableFuture<String> transliterateAsync(String englishText) {
+        return CompletableFuture.supplyAsync(() -> {
+            if (!Pattern.compile("[a-zA-Z]").matcher(englishText).find()) return englishText;
+
+            String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
+            String systemContext = "You are a phonetic transliteration engine. Convert English to Katakana. JSON format: { \"katakana\": \"...\" }";
+            
+            JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, englishText, false);
+            payload.addProperty("temperature", 0.0);
+            
+            try {
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("Content-Type", "application/json")
+                        .timeout(Duration.ofSeconds(45))
+                        .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
+                        .build();
+
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() == 200) {
+                    String content = ModelManager.extractMessageContent(response.body());
+                    if (content != null) {
+                        String cleanJson = content.replace("```json", "").replace("```", "").trim();
+                        return JsonParser.parseString(cleanJson).getAsJsonObject().get("katakana").getAsString();
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("Ciel Warning: AI Transliteration failed. Falling back to PhonoKana.");
+            }
+            return com.cielcompanion.util.PhonoKana.getInstance().toKatakana(englishText);
+        }, translationExecutor);
+    }
+
+    public static String transliterateToKatakanaSync(String englishText) {
+        try {
+            return transliterateAsync(englishText).get(15, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            return com.cielcompanion.util.PhonoKana.getInstance().toKatakana(englishText);
+        }
+    }
+
     // --- THE SEMANTIC ROUTER (PRE-FRONTAL CORTEX) ---
     public static CommandAnalysis determineIntentSynchronously(String userMessage) {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
         String knownSkills = SkillManager.getAvailableSkillsString();
         
-        // UPGRADED: Added Master Preferences and Arguments parsing.
         String systemContext = "You are the NLU intent router for Ciel. Analyze the user's STT text, correct phonetic typos, and map it to an intent.\n" +
             "Available Intents:\n" +
             "GET_WEATHER : Ask about current weather\n" +
@@ -77,7 +120,7 @@ public class AIEngine {
             "DND_ANALYZE_LORE : Deep D&D lore analysis\n" +
             "UNKNOWN : General chat, questions, or conversation.\n\n" +
             "MASTER'S PREFERENCES & INFERRED LOGIC:\n" +
-            "The Master prefers quantified outputs to be even numbers or multiples of 5 (e.g., 20, 25, 50). If the user gives a vague command (e.g., 'turn it up', 'dim the screen', 'scroll down a bit'), you MUST infer a logical, specific target value based on these preferences and provide it in the 'arguments' field.\n\n" +
+            "The Master prefers quantified outputs to be even numbers or multiples of 5. If the user gives a vague command, infer a logical target value based on these preferences and provide it in the 'arguments' field.\n\n" +
             "Return strictly JSON: { \"intent\": \"THE_INTENT\", \"cleaned_text\": \"Corrected query or skill name\", \"arguments\": \"Inferred parameters separated by spaces, or empty string\" }";
 
         JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, userMessage, false);
@@ -100,15 +143,11 @@ public class AIEngine {
                     String arguments = parsed.has("arguments") ? parsed.get("arguments").getAsString() : "";
                     
                     Intent mappedIntent;
-                    try {
-                        mappedIntent = Intent.valueOf(intentStr);
-                    } catch (Exception e) {
-                        mappedIntent = Intent.UNKNOWN;
-                    }
+                    try { mappedIntent = Intent.valueOf(intentStr); } catch (Exception e) { mappedIntent = Intent.UNKNOWN; }
                     
                     Map<String, String> entities = new HashMap<>();
                     entities.put("query", cleanedText); 
-                    entities.put("arguments", arguments); // Store the inferred logic to pass to scripts
+                    entities.put("arguments", arguments);
                     
                     System.out.println("Ciel Debug: Semantic Router -> Intent: [" + mappedIntent + "] | Skill/Query: '" + cleanedText + "' | Args: '" + arguments + "'");
                     return new CommandAnalysis(mappedIntent, entities);
@@ -123,7 +162,6 @@ public class AIEngine {
         entities.put("arguments", "");
         return new CommandAnalysis(Intent.UNKNOWN, entities);
     }
-    // -----------------------------------------------------
 
     public static CompletableFuture<String> generateSilentLogic(String userMessage, String systemContext) {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOGIC);
@@ -159,6 +197,48 @@ public class AIEngine {
                     }
                     return null;
                 });
+    }
+
+    // NEW: Dedicated, purely synchronous generation for critical OS-level shutdown hooks
+    public static String generateDiaryEntrySync(String userMessage, String systemContext) {
+        System.out.println("Ciel Debug: Generating diary entry synchronously (Fast Personality Tier)...");
+        String url = ModelManager.getUrlForTier(ModelManager.ModelTier.PERSONALITY);
+        
+        JsonObject payload = new JsonObject();
+        payload.addProperty("model", Settings.getLlmPersonalityModel()); 
+        payload.addProperty("stream", false);
+        payload.addProperty("temperature", 0.6); 
+
+        JsonArray messages = new JsonArray();
+        JsonObject sysMsg = new JsonObject();
+        sysMsg.addProperty("role", "system");
+        sysMsg.addProperty("content", systemContext);
+        messages.add(sysMsg);
+
+        JsonObject usrMsg = new JsonObject();
+        usrMsg.addProperty("role", "user");
+        usrMsg.addProperty("content", userMessage);
+        messages.add(usrMsg);
+
+        payload.add("messages", messages);
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(15)) // Hard timeout to prevent hanging the OS shutdown
+                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
+                .build();
+
+        try {
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                String rawContent = ModelManager.extractMessageContent(response.body());
+                return rawContent != null ? THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim() : null;
+            }
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Synchronous diary generation failed or timed out.");
+        }
+        return null;
     }
 
     private static synchronized void checkIdleMemoryDigestion() {
@@ -245,6 +325,7 @@ public class AIEngine {
                     
                     addHistory("assistant", fullResponseBuffer.toString());
 
+                    // RESTORED: Privileged mode extra seconds calculation
                     long durationMs = SpeechService.estimateSpeechDuration(fullResponseBuffer.toString());
                     int extraSeconds = (int) (durationMs / 1000) + 20;
                     com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
@@ -351,6 +432,7 @@ public class AIEngine {
         
         addHistory("assistant", cleanContent);
 
+        // RESTORED: Privileged mode extra seconds calculation
         long durationMs = SpeechService.estimateSpeechDuration(cleanContent);
         int extraSeconds = (int) (durationMs / 1000) + 20;
         com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
@@ -385,6 +467,7 @@ public class AIEngine {
                             
                             addHistory("assistant", content);
 
+                            // RESTORED: Privileged mode extra seconds calculation
                             long durationMs = SpeechService.estimateSpeechDuration(content);
                             int extraSeconds = (int) (durationMs / 1000) + 20;
                             com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
@@ -445,8 +528,8 @@ public class AIEngine {
             emotionToTrigger = matcher.group(1);
         }
         
-        cleanText = matcher.replaceAll("").trim();
-        cleanText = cleanText.replaceAll("\\*.*?\\*", "").trim();
+        String rawText = matcher.replaceAll("").trim();
+        final String textToProcess = rawText.replaceAll("\\*.*?\\*", "").trim();
 
         if (emotionToTrigger != null && !emotionToTrigger.isBlank()) {
             final String finalEmotion = emotionToTrigger;
@@ -455,8 +538,8 @@ public class AIEngine {
             });
         }
 
-        if (!cleanText.isEmpty()) {
-            SpeechService.speak(cleanText);
-        }
+        transliterateAsync(textToProcess).thenAccept(katakana -> {
+            SpeechService.speakChunk(katakana); // Uses the new streaming queue method
+        });
     }
 }

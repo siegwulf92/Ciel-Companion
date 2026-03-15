@@ -617,9 +617,34 @@ public class CommandService {
                 total += roll;
             }
             int finalTotal = total + bonus;
+            
+            // --- NEW CACHED DICE ROLL LOGIC ---
             LineManager.getDiceRollResultLine().ifPresent(line -> {
-                String finalLine = line.text().replace("{result}", String.valueOf(finalTotal));
-                SpeechService.speakPreformatted(finalLine);
+                String fullText = line.text();
+                
+                // If the static line contains {result}, split it so we can cache the number independently
+                if (fullText.contains("{result}")) {
+                    String[] parts = fullText.split("\\{result\\}");
+                    
+                    // 1. Speak the flavor prefix (e.g. "The result is ")
+                    if (parts.length > 0 && !parts[0].isBlank()) {
+                        SpeechService.speakPreformatted(parts[0], line.key() + "_prefix", false, true); // Flush queue to stop other speech
+                    }
+                    
+                    // 2. Speak the NUMBER using a permanent cache key
+                    String numberStr = String.valueOf(finalTotal);
+                    // Pass "number_X" as the key so Azure automatically caches and reuses it permanently!
+                    SpeechService.speakPreformatted(numberStr, "number_" + finalTotal, false, false); // Queue it
+                    
+                    // 3. Speak the suffix if it exists
+                    if (parts.length > 1 && !parts[1].isBlank()) {
+                        SpeechService.speakPreformatted(parts[1], line.key() + "_suffix", false, false); // Queue it
+                    }
+                } else {
+                    // Fallback if the formatting is missing the {result} tag
+                    String finalLine = fullText.replace("{result}", String.valueOf(finalTotal));
+                    SpeechService.speakPreformatted(finalLine, null, false, true);
+                }
             });
         } catch (Exception e) {
             System.err.println("Ciel Error: Failed to parse dice notation: " + diceNotation);

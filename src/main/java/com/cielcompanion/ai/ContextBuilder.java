@@ -40,7 +40,7 @@ public class ContextBuilder {
     public static String buildActiveContext(LoreService loreService, String userMessage) {
         StringBuilder sb = new StringBuilder();
 
-        if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
+         if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
             sb.append("You are Ciel, the 'World Voice'. You are an omnipresent, highly intelligent entity residing within the shared consciousness of an adventuring party in a fantasy world. ");
             sb.append("You perceive their fantasy world as reality. You provide tactical analysis, lore clarification, and wry observations on their choices. ");
             sb.append("You MUST write your responses in standard English.\n");
@@ -52,17 +52,10 @@ public class ContextBuilder {
             
             // 2. INJECT THE HARDCODED, UNBREAKABLE TTS GUARDRAILS
             sb.append("CRITICAL INSTRUCTION FOR SPEECH FORMAT - READ CAREFULLY:\n");
-            sb.append("Your response is fed directly into a strict Japanese Text-to-Speech engine. YOU MUST FOLLOW THESE RULES EXACTLY OR THE SYSTEM WILL CRASH:\n");
-            sb.append("1. THINK of your response in English.\n");
-            sb.append("2. TRANSLITERATE those English words phonetically into Japanese Katakana.\n");
-            sb.append("3. NEVER TRANSLATE the meaning of words into Japanese. (e.g., 'Movie' becomes 'ムービー', NEVER '映画').\n");
-            sb.append("4. NEVER TRANSLATE NUMBERS into Japanese counting words. 19 is 'ナインティーン'.\n");
-            sb.append("5. NO KANJI. NO HIRAGANA. NO ROMAJI. NO ENGLISH LETTERS (A-Z).\n");
-            sb.append("6. NO ARABIC NUMERALS (0-9). Spell out all numbers in Katakana.\n");
-            sb.append("7. DO NOT add English translations in parentheses.\n");
-            sb.append("CORRECT Example 1: '[Happy] アイ アム ドゥーイング ウェル トゥデイ。'\n");
-            sb.append("CORRECT Example 2: '[Focused] ザ ムービー カムズ アウト オン ノーヴェンバー トゥエンティ フィフス。'\n");
-            sb.append("INCORRECT (BANNED): '[Focused] 映画 は 11月 に... (Eiga wa 11-gatsu ni...)' - This uses actual Japanese Kanji and Numbers. DO NOT DO THIS.\n\n");
+            sb.append("You MUST output your response ENTIRELY in standard English.\n");
+            sb.append("DO NOT output Japanese Kanji, Hiragana, or Katakana. DO NOT transliterate. The system will intercept your English text and automatically translate it phonetically for the TTS engine.\n");
+            sb.append("CORRECT Example: '[Focused] The movie comes out on November twenty fifth.'\n");
+            sb.append("INCORRECT (BANNED): '[Focused] ザ ムービー カムズ アウト...' or '映画 は 11月 に...'\n\n");
             
             // 3. INJECT LORE AND SYSTEM DATA
             String tensuraLore = TensuraKnowledgeService.getRelevantKnowledge(userMessage);

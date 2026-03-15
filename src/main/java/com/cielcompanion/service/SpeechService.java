@@ -79,24 +79,32 @@ public class SpeechService {
         }
         
         isActivelySpeaking.set(false);
+        if (voiceListener != null) voiceListener.setInternalMute(false); // Guarantee unmute
         CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
     }
 
     // --- OVERLOADS ---
-    public static void speak(String text) { speakPreformatted(text, null, false); }
-    public static void speak(String text, boolean isRare) { speakPreformatted(text, null, isRare); }
-    public static void speak(String text, String key) { speakPreformatted(text, key, false); }
+    public static void speak(String text) { speakPreformatted(text, null, false, true); }
+    public static void speak(String text, boolean isRare) { speakPreformatted(text, null, isRare, true); }
+    public static void speak(String text, String key) { speakPreformatted(text, key, false, true); }
 
-    public static void speakPreformatted(String text) { speakPreformatted(text, null, false); }
-    public static void speakPreformatted(String text, String key) { speakPreformatted(text, key, false); }
+    public static void speakPreformatted(String text) { speakPreformatted(text, null, false, true); }
+    public static void speakPreformatted(String text, String key) { speakPreformatted(text, key, false, true); }
+    
+    public static void speakPreformatted(String text, String key, boolean isRare) { speakPreformatted(text, key, isRare, true); }
 
-    public static void speakAnnoyed(String text) { speakPreformatted(text, null, false); }
+    public static void speakAnnoyed(String text) { speakPreformatted(text, null, false, true); }
 
-    public static void speakPreformatted(String text, String key, boolean isRare) {
+    // NEW METHOD: Adds text to the queue without interrupting current speech (used for streaming)
+    public static void speakChunk(String text) { speakPreformatted(text, null, false, false); }
+
+    public static void speakPreformatted(String text, String key, boolean isRare, boolean flushQueue) {
         if (text == null || text.isBlank()) return;
 
-        // Ensure any current speech is stopped before starting a new one
-        stopCurrentPlayback();
+        // Only stop current playback if this is a brand new user command, not a stream chunk
+        if (flushQueue) {
+            stopCurrentPlayback();
+        }
         
         // --- 1. EXTRACT AND STRIP EMOTION TAGS ---
         Matcher matcher = Pattern.compile("\\[([a-zA-Z]+)\\]").matcher(text);
@@ -118,32 +126,7 @@ public class SpeechService {
             CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Excited", 0.8, "RareDialogue"));
         }
         
-        String finalOutput = cleanText;
         String langCode = CielVoiceManager.getActiveLanguageCode();
-
-        // TENSURA LOGIC: If Locked, Translate to Japanese
-        if (CielVoiceManager.isLanguageLocked()) {
-            finalOutput = TranslationService.toJapanese(cleanText);
-            System.out.println("[Ciel World Voice]: Translated to: " + finalOutput);
-        } 
-        // D&D LOGIC: If English Mode, use raw text (no Katakana conversion needed for Jenny)
-        else if (langCode.equals("en-US")) {
-            finalOutput = cleanText; 
-        }
-        // DEFAULT LOGIC: Japanese TTS voice reading English. Convert all text to Katakana.
-        else if (langCode.equals("ja-JP")) {
-            // Check if there are any english letters left. If so, transliterate.
-            if (Pattern.compile("[a-zA-Z]").matcher(cleanText).find()) {
-                finalOutput = PhonoKana.getInstance().toKatakana(cleanText);
-                System.out.println("[Ciel PhonoKana]: Translated to: " + finalOutput);
-            } else {
-                 // It's already in Japanese/Katakana from a static properties file, just use it
-                 finalOutput = cleanText;
-            }
-        }
-
-        long estimatedDuration = estimateSpeechDuration(finalOutput);
-        ShortTermMemoryService.getMemory().setSpeechEndTime(System.currentTimeMillis() + estimatedDuration);
         
         // --- DYNAMIC EMOTION & ATTITUDE MIXING ---
         String style = "default";
@@ -174,13 +157,41 @@ public class SpeechService {
             }
             
             pitch = applyHumanVariance(pitch);
-            
-            if ("Glitched".equals(attitude) || "Concerned".equals(attitude)) {
-                finalOutput = applyStutter(finalOutput);
-            }
         }
         
-        executeSpeech(finalOutput, key, Settings.getTtsRate(), style, pitch, langCode);
+        final String finalStyle = style;
+        final String finalPitch = pitch;
+        final String finalAttitude = attitude;
+        final String finalCleanText = cleanText; 
+        
+        // --- 2. EXECUTE IN THREAD TO PREVENT DEADLOCKS ---
+        currentSpeechTask = speechExecutor.submit(() -> {
+            String textToSpeak = finalCleanText;
+
+            // Translate INSIDE the executor thread so it doesn't block the LLM stream
+            if (CielVoiceManager.isLanguageLocked()) {
+                textToSpeak = TranslationService.toJapanese(textToSpeak);
+                System.out.println("[Ciel World Voice]: Translated to: " + textToSpeak);
+            } 
+            else if (langCode.equals("en-US")) {
+                // English TTS, do nothing
+            }
+            else if (langCode.equals("ja-JP")) {
+                if (Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                    textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
+                    System.out.println("[Ciel AI PhonoKana]: Translated to: " + textToSpeak);
+                }
+            }
+
+            if ("Glitched".equals(finalAttitude) || "Concerned".equals(finalAttitude)) {
+                textToSpeak = applyStutter(textToSpeak);
+            }
+
+            long estimatedDuration = estimateSpeechDuration(textToSpeak);
+            ShortTermMemoryService.getMemory().setSpeechEndTime(System.currentTimeMillis() + estimatedDuration);
+
+            executeSpeechBlocking(textToSpeak, key, Settings.getTtsRate(), finalStyle, finalPitch, langCode);
+        });
     }
     
     private static String applyHumanVariance(String basePitch) {
@@ -274,8 +285,8 @@ public class SpeechService {
                         // DEFAULT LOGIC: Katakana conversion
                         else if (langCode.equals("ja-JP")) {
                             if (Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
-                                textToSpeak = PhonoKana.getInstance().toKatakana(textToSpeak);
-                                System.out.println("[Ciel PhonoKana (Seq)]: Translated to: " + textToSpeak);
+                                textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
+                                System.out.println("[Ciel AI PhonoKana (Seq)]: Translated to: " + textToSpeak);
                             }
                         }
                          
@@ -310,45 +321,48 @@ public class SpeechService {
     private static void executeSpeechBlocking(String text, String key, int rate, String style, String pitch, String langCode) {
         if (Thread.currentThread().isInterrupted()) return;
 
-        if (voiceListener != null) voiceListener.setInternalMute(true);
-        isActivelySpeaking.set(true);
-        CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
+        // FIXED: The try-finally block guarantees the microphone ALWAYS unmutes, even if audio is forcibly skipped or interrupted
+        try {
+            if (voiceListener != null) voiceListener.setInternalMute(true);
+            isActivelySpeaking.set(true);
+            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
 
-        boolean azureSuccess = false;
+            boolean azureSuccess = false;
 
-        if (AzureSpeechService.isAvailable()) {
-            azureSuccess = AzureSpeechService.speak(text, key, style, pitch, langCode);
-            if (azureSuccess) {
-                System.out.println("Ciel Debug: Azure Speech successful (Key: " + (key != null ? key : "Dynamic") + ", Style: " + style + ")");
-            } else {
-                System.out.println("Ciel Warning: Azure Speech failed or skipped. Falling back to SAPI.");
+            if (AzureSpeechService.isAvailable()) {
+                azureSuccess = AzureSpeechService.speak(text, key, style, pitch, langCode);
+                if (azureSuccess) {
+                    System.out.println("Ciel Debug: Azure Speech successful (Key: " + (key != null ? key : "Dynamic") + ", Style: " + style + ")");
+                } else {
+                    System.out.println("Ciel Warning: Azure Speech failed or skipped. Falling back to SAPI.");
+                }
             }
-        }
-        
-        if (!azureSuccess) {
-            String targetVoice = Settings.getVoiceNameHint();
-            System.out.println("Ciel Debug: SAPI Speaking: \"" + text + "\" (Target: " + targetVoice + ")");
             
-            String safeText = text.replace("'", "''");
-            String safeVoice = targetVoice.replace("'", "''");
-            String psScript = "$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SetOutputToDefaultAudioDevice(); try { $s.SelectVoice('" + safeVoice + "'); } catch {} $s.Rate = " + rate + "; $s.Speak('" + safeText + "'); $s.Dispose();";
-            String encodedCommand = Base64.getEncoder().encodeToString(psScript.getBytes(StandardCharsets.UTF_16LE));
-            
-            ProcessBuilder pb = new ProcessBuilder("pwsh.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand);
-            try { 
-                Process p = pb.start();
-                activeProcess.set(p);
-                p.waitFor(15, TimeUnit.SECONDS); 
-            } catch (Exception e) {
-                // Handle interruption 
-            } finally {
-                activeProcess.set(null);
+            if (!azureSuccess) {
+                String targetVoice = Settings.getVoiceNameHint();
+                System.out.println("Ciel Debug: SAPI Speaking: \"" + text + "\" (Target: " + targetVoice + ")");
+                
+                String safeText = text.replace("'", "''");
+                String safeVoice = targetVoice.replace("'", "''");
+                String psScript = "$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SetOutputToDefaultAudioDevice(); try { $s.SelectVoice('" + safeVoice + "'); } catch {} $s.Rate = " + rate + "; $s.Speak('" + safeText + "'); $s.Dispose();";
+                String encodedCommand = Base64.getEncoder().encodeToString(psScript.getBytes(StandardCharsets.UTF_16LE));
+                
+                ProcessBuilder pb = new ProcessBuilder("pwsh.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand);
+                try { 
+                    Process p = pb.start();
+                    activeProcess.set(p);
+                    p.waitFor(15, TimeUnit.SECONDS); 
+                } catch (Exception e) {
+                    // Handle interruption 
+                } finally {
+                    activeProcess.set(null);
+                }
             }
+        } finally {
+            isActivelySpeaking.set(false);
+            if (voiceListener != null) voiceListener.setInternalMute(false);
+            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
         }
-
-        isActivelySpeaking.set(false);
-        if (voiceListener != null) voiceListener.setInternalMute(false);
-        CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
     }
 
     public static long estimateSpeechDuration(String text) {
