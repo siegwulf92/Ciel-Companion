@@ -209,6 +209,7 @@ public class CielCompanion {
             try {
                 // ADDED: Wait for Windows to boot Ollama/LM Studio before trying to start OpenJarvis
                 waitForInferenceEngines();
+                com.cielcompanion.ai.AIEngine.warmUpModels();
                 
                 // Check and boot the AI Brain
                 ensureJarvisServerRunning();
@@ -255,15 +256,16 @@ public class CielCompanion {
     }
 
     private static void ensureJarvisServerRunning() {
-        System.out.println("Ciel Debug: Checking if OpenJarvis AI server is running...");
+        System.out.println("Ciel Debug: Checking if OpenJarvis Swarm server is running...");
         if (isJarvisAlive()) {
             System.out.println("Ciel Debug: OpenJarvis is already running on port 8000.");
             return;
         }
 
-        System.out.println("Ciel Debug: OpenJarvis not detected. Auto-starting local AI server...");
+        System.out.println("Ciel Debug: OpenJarvis not detected. Auto-starting local AI Swarm server...");
         try {
-            ProcessBuilder pb = new ProcessBuilder("cmd.exe", "/c", "jarvis serve");
+            // UPDATED: Now runs your custom python Swarm orchestrator
+            ProcessBuilder pb = new ProcessBuilder("cmd.exe", "/c", "python openjarvis.py");
             pb.directory(new File("C:\\Ciel Companion\\OpenJarvis-main"));
             pb.redirectErrorStream(true); // Merge standard error and standard output
             
@@ -274,7 +276,7 @@ public class CielCompanion {
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(jarvisProcess.getInputStream(), StandardCharsets.UTF_8))) {
                     String line;
                     while ((line = reader.readLine()) != null) {
-                        System.out.println("[OpenJarvis Brain] " + line);
+                        System.out.println("[OpenJarvis Swarm] " + line);
                     }
                 } catch (Exception e) {
                     System.err.println("Ciel Error: Lost connection to OpenJarvis console stream.");
@@ -289,9 +291,9 @@ public class CielCompanion {
             }
             
             if (isJarvisAlive()) {
-                System.out.println("Ciel Debug: OpenJarvis server successfully auto-started in the background.");
+                System.out.println("Ciel Debug: OpenJarvis Swarm successfully auto-started in the background.");
             } else {
-                System.err.println("Ciel Error: OpenJarvis failed to respond after 45 seconds. Check the [OpenJarvis Brain] logs above for errors.");
+                System.err.println("Ciel Error: OpenJarvis failed to respond after 45 seconds. Check the [OpenJarvis Swarm] logs above for errors.");
             }
             
         } catch (Exception e) {
@@ -302,6 +304,7 @@ public class CielCompanion {
 
     private static boolean isJarvisAlive() {
         try {
+            // The OpenAPI /docs endpoint is standard for FastAPI (which our new openjarvis.py uses)
             java.net.HttpURLConnection connection = (java.net.HttpURLConnection) new java.net.URL("http://localhost:8000/docs").openConnection();
             connection.setRequestMethod("GET");
             connection.setConnectTimeout(1000);

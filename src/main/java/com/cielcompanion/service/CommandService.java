@@ -412,7 +412,15 @@ public class CommandService {
         String data = String.join(" ", linesToSpeak);
         if (data.isBlank()) data = "No significant daily events detected.";
         
-        return sendToAiWithData(userText, "Daily Astronomy Report Data: " + data);
+        // FIX: Qwen3 was interpreting bullet points as system instructions to memorize.
+        // Rewritten as a direct conversational request.
+        String prompt = "Master has asked for the Daily Report. Here is the local astronomy data:\n" + data + "\n\n" +
+            "Please deliver a smooth, elegant morning briefing. Start with an appropriate [Emotion] tag. " +
+            "Summarize the astronomy data, and also analyze today's date. If today is a major holiday, a notable historical event, or a pop-culture anniversary, briefly mention it. If not, just deliver the astronomy report.";
+            
+        ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
+        AIEngine.chatFast(prompt, ContextBuilder.buildActiveContext(loreService, userText), () -> isBusy.set(false));
+        return false;
     }
 
     private boolean handleGetMoonPhase(String userText) {

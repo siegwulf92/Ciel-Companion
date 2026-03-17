@@ -12,12 +12,13 @@ public class AzureSpeechService {
     private static SpeechConfig config;
     private static boolean isInitialized = false;
     
-    // Standard cache for app lines
     private static final String CACHE_DIR_PATH = "voice_cache";
-    // Dedicated cache for D&D lines (Dynamic campaign content)
     private static final String DND_CACHE_DIR_PATH = "dnd_voice_cache";
+    
+    // HARDWARE LOCKS
+    private static Clip activeClip = null;
+    private static SpeechSynthesizer activeSynthesizer = null;
 
-    // Initialize statically based on Settings
     public static void initialize() {
         String key = Settings.getAzureSpeechKey();
         String region = Settings.getAzureSpeechRegion();
@@ -25,10 +26,8 @@ public class AzureSpeechService {
         if (key != null && !key.isBlank() && region != null && !region.isBlank()) {
             try {
                 config = SpeechConfig.fromSubscription(key, region);
-                // We set a default here, but it will be overridden per-call in buildSsml
                 config.setSpeechSynthesisLanguage("ja-JP"); 
                 
-                // Ensure cache directories exist
                 new File(CACHE_DIR_PATH).mkdirs();
                 new File(DND_CACHE_DIR_PATH).mkdirs();
                 
@@ -47,8 +46,22 @@ public class AzureSpeechService {
     public static boolean isAvailable() {
         return isInitialized;
     }
+    
+    // EXPLICIT HARDWARE KILL SWITCH
+    public static void stopAllAudio() {
+        if (activeClip != null && activeClip.isRunning()) {
+            activeClip.stop();
+            activeClip.close();
+            activeClip = null;
+        }
+        if (activeSynthesizer != null) {
+            try {
+                activeSynthesizer.StopSpeakingAsync().get(2, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (Exception ignored) {}
+            activeSynthesizer = null;
+        }
+    }
 
-    // Overloaded for backward compatibility (defaults to Japanese if not specified)
     public static boolean speak(String text, String key, String style, String pitch) {
         return speak(text, key, style, pitch, "ja-JP");
     }
@@ -60,60 +73,46 @@ public class AzureSpeechService {
         String safePitch = (pitch == null || pitch.isBlank()) ? "+0%" : pitch;
         String safeLang = (langCode == null || langCode.isBlank()) ? "ja-JP" : langCode;
         
-        // Determine which cache to use
-        // If langCode is en-US, it's likely D&D content.
         boolean isDndContent = safeLang.equalsIgnoreCase("en-US");
         String targetCacheDir = isDndContent ? DND_CACHE_DIR_PATH : CACHE_DIR_PATH;
 
-        // --- SCENARIO A: Static Line (Key Provided) ---
         if (key != null && !key.isBlank()) {
-            // FIX: Only append language code if it differs from the default (ja-JP)
-            // This prevents "boot_greeting.0_default_ja-JP.wav" clutter.
             String suffix = safeLang.equalsIgnoreCase("ja-JP") ? "" : "_" + safeLang;
             String safeFilename = key.replaceAll("[^a-zA-Z0-9._-]", "_") + "_" + safeStyle + suffix + ".wav";
             File cachedFile = new File(targetCacheDir, safeFilename);
 
-            // 1. Check Local Cache (Does not hit API)
             if (cachedFile.exists()) {
                 System.out.println("[Azure TTS] Cache hit (Static): " + safeFilename);
                 return playWav(cachedFile);
             }
 
-            // 2. Not in cache: Check Quota
             long estimatedSeconds = (SpeechService.estimateSpeechDuration(text) / 1000) + 1;
             if (!AzureUsageTracker.canSpeak(estimatedSeconds)) {
                 System.out.println("[Azure TTS] Quota exceeded. Cannot generate new static file: " + safeFilename);
                 return false;
             }
 
-            // 3. Generate and Save using SSML
             return generateAndPlayFile(text, safeStyle, safePitch, safeLang, cachedFile);
-        }
-
-        // --- SCENARIO B: Dynamic Line (No Key) ---
-        else {
+        } else {
             long estimatedSeconds = (SpeechService.estimateSpeechDuration(text) / 1000) + 1;
             if (!AzureUsageTracker.canSpeak(estimatedSeconds)) {
                 System.out.println("[Azure TTS] Quota exceeded. Cannot stream dynamic speech.");
                 return false;
             }
-
-            // 2. Stream Directly using SSML
             return streamDirectly(text, safeStyle, safePitch, safeLang);
         }
     }
 
     private static boolean generateAndPlayFile(String text, String style, String pitch, String lang, File destination) {
-        SpeechSynthesizer synthesizer = null;
         AudioConfig fileOutput = null;
         try {
             System.out.println("[Azure TTS] Generating new static file: " + destination.getName() + " [Style: " + style + ", Lang: " + lang + "]");
             
             fileOutput = AudioConfig.fromWavFileOutput(destination.getAbsolutePath());
-            synthesizer = new SpeechSynthesizer(config, fileOutput);
+            activeSynthesizer = new SpeechSynthesizer(config, fileOutput);
 
             String ssml = buildSsml(text, style, pitch, lang);
-            SpeechSynthesisResult result = synthesizer.SpeakSsml(ssml);
+            SpeechSynthesisResult result = activeSynthesizer.SpeakSsml(ssml);
 
             if (result.getReason() == ResultReason.SynthesizingAudioCompleted) {
                 long bytes = result.getAudioData().length;
@@ -122,9 +121,9 @@ public class AzureSpeechService {
                 AzureUsageTracker.addUsage(durationSeconds);
 
                 result.close();
-                synthesizer.close();
+                activeSynthesizer.close();
                 fileOutput.close(); 
-                synthesizer = null;
+                activeSynthesizer = null;
 
                 return playWav(destination);
             } else {
@@ -136,21 +135,23 @@ public class AzureSpeechService {
             e.printStackTrace();
             if (destination.exists()) destination.delete();
         } finally {
-            if (synthesizer != null) synthesizer.close();
+            if (activeSynthesizer != null) {
+                activeSynthesizer.close();
+                activeSynthesizer = null;
+            }
         }
         return false;
     }
 
     private static boolean streamDirectly(String text, String style, String pitch, String lang) {
-        SpeechSynthesizer synthesizer = null;
         try {
             System.out.println("[Azure TTS] Streaming dynamic content (Style: " + style + ", Lang: " + lang + ")...");
             
             AudioConfig audioConfig = AudioConfig.fromDefaultSpeakerOutput();
-            synthesizer = new SpeechSynthesizer(config, audioConfig);
+            activeSynthesizer = new SpeechSynthesizer(config, audioConfig);
 
             String ssml = buildSsml(text, style, pitch, lang);
-            SpeechSynthesisResult result = synthesizer.SpeakSsml(ssml);
+            SpeechSynthesisResult result = activeSynthesizer.SpeakSsml(ssml);
 
             if (result.getReason() == ResultReason.SynthesizingAudioCompleted) {
                 long bytes = result.getAudioData().length;
@@ -159,7 +160,6 @@ public class AzureSpeechService {
                 AzureUsageTracker.addUsage(durationSeconds);
                 
                 result.close();
-                synthesizer.close();
                 return true;
             } else {
                 logError(result);
@@ -168,16 +168,16 @@ public class AzureSpeechService {
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
-            if (synthesizer != null) synthesizer.close();
+            if (activeSynthesizer != null) {
+                activeSynthesizer.close();
+                activeSynthesizer = null;
+            }
         }
         return false;
     }
 
     private static String buildSsml(String text, String style, String pitch, String lang) {
-        // DYNAMICALLY FETCH VOICE NAME BASED ON LANGUAGE
-        // This ensures D&D mode uses Jenny, and Normal mode uses Nanami
         String currentVoiceName = CielVoiceManager.getActiveVoiceName();
-        // Fallback if CielVoiceManager isn't fully ready or returns default logic
         if (lang.equals("en-US") && currentVoiceName.contains("Nanami")) {
              currentVoiceName = "en-US-JennyNeural";
         }
@@ -215,6 +215,7 @@ public class AzureSpeechService {
         try (javax.sound.sampled.AudioInputStream audioStream = AudioSystem.getAudioInputStream(file)) {
             DataLine.Info info = new DataLine.Info(Clip.class, audioStream.getFormat());
             Clip clip = (Clip) AudioSystem.getLine(info);
+            activeClip = clip; // Attach to hardware monitor
             
             clip.open(audioStream);
             clip.start();
@@ -223,9 +224,16 @@ public class AzureSpeechService {
             while (clip.isRunning()) Thread.sleep(10);
             
             clip.close();
+            activeClip = null;
             return true;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            // CRITICAL FIX: Kill the clip if Java thread is interrupted
+            if (activeClip != null) {
+                activeClip.stop();
+                activeClip.close();
+                activeClip = null;
+            }
             System.out.println("Ciel Debug: Audio playback interrupted manually.");
             return true; 
         } catch (Exception e) {

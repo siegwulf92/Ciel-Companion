@@ -15,9 +15,14 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 public class WeatherService {
 
@@ -25,6 +30,9 @@ public class WeatherService {
     private static Properties weatherProps = new Properties();
     private static WeatherData cachedWeatherData = null;
     private static final PhonoKana katakanaConverter = PhonoKana.getInstance();
+    
+    // Background polling for proactive emergency weather alerts
+    private static ScheduledExecutorService weatherScheduler;
 
     public static void initialize() {
         try (InputStream is = WeatherService.class.getResourceAsStream("/weather.properties")) {
@@ -33,10 +41,24 @@ public class WeatherService {
                 return;
             }
             weatherProps.load(new InputStreamReader(is, StandardCharsets.UTF_8));
-            System.out.println("Ciel Debug: WeatherService initialized and configuration loaded.");
+            
+            // Start the background emergency weather heartbeat (Every 30 mins)
+            weatherScheduler = Executors.newSingleThreadScheduledExecutor();
+            weatherScheduler.scheduleWithFixedDelay(WeatherService::proactiveWeatherCheck, 5, 30, TimeUnit.MINUTES);
+            
+            System.out.println("Ciel Debug: WeatherService initialized. Proactive emergency weather alerts active.");
         } catch (Exception e) {
             System.err.println("Ciel Error: Failed to initialize WeatherService.");
             e.printStackTrace();
+        }
+    }
+
+    private static void proactiveWeatherCheck() {
+        try {
+            // Silently fetch weather data. The internal logic handles caching automatically.
+            getWeatherData(false);
+        } catch (Exception e) {
+            // Fail silently so background threads don't crash the app
         }
     }
 
@@ -48,9 +70,7 @@ public class WeatherService {
         return getWeatherData(true);
     }
 
-    // --- NEW METHODS FOR AI CROSSTALK ---
     public static String getRawWeatherCondition() {
-        // FIX: If we don't have weather data in memory yet, silently fetch it first!
         if (cachedWeatherData == null) {
             getCurrentWeather(); 
         }
@@ -66,7 +86,6 @@ public class WeatherService {
         if ("Unknown".equals(raw)) return "アンノウン";
         return katakanaConverter.toKatakana(raw);
     }
-    // ------------------------------------
 
     private static String getWeatherData(boolean isForecast) {
         String apiKey = weatherProps.getProperty("weather.apiKey");
@@ -74,12 +93,12 @@ public class WeatherService {
             return "My weather functionality has not been configured with a valid API key.";
         }
 
-        long cacheDurationMinutes = Long.parseLong(weatherProps.getProperty("weather.cacheDurationMinutes", "60"));
+        // Default to a 30-minute cache loop for high accuracy and proactive alerts
+        long cacheDurationMinutes = Long.parseLong(weatherProps.getProperty("weather.cacheDurationMinutes", "30"));
 
         if (cachedWeatherData != null && cachedWeatherData.fetchTimeEpochSeconds > 0) {
             Duration duration = Duration.between(Instant.ofEpochSecond(cachedWeatherData.fetchTimeEpochSeconds), Instant.now());
             if (duration.toMinutes() < cacheDurationMinutes) {
-                System.out.println("Ciel Debug (WeatherService): Using in-memory cached weather data.");
                 return isForecast ? formatForecastReport(cachedWeatherData) : formatWeatherReport(cachedWeatherData);
             }
         }
@@ -91,7 +110,6 @@ public class WeatherService {
             if (dbCachedData != null && dbCachedData.fetchTimeEpochSeconds > 0) {
                 Duration duration = Duration.between(Instant.ofEpochSecond(dbCachedData.fetchTimeEpochSeconds), Instant.now());
                 if (duration.toMinutes() < cacheDurationMinutes) {
-                    System.out.println("Ciel Debug (WeatherService): Using database cached weather data.");
                     cachedWeatherData = dbCachedData;
                     return isForecast ? formatForecastReport(dbCachedData) : formatWeatherReport(dbCachedData);
                 }
@@ -102,9 +120,9 @@ public class WeatherService {
     }
 
     private static String fetchAndCacheNewData(String apiKey, boolean isForecast) {
-        System.out.println("Ciel Debug (WeatherService): No valid cache. Fetching new data (forecast=" + isForecast + ").");
+        System.out.println("Ciel Debug (WeatherService): Fetching new data from WeatherAPI (alerts=yes).");
         String location = String.format("%f,%f", LocationService.getLatitude(), LocationService.getLongitude());
-        String urlString = String.format("http://api.weatherapi.com/v1/forecast.json?key=%s&q=%s&days=1&aqi=no&alerts=no", apiKey, location);
+        String urlString = String.format("http://api.weatherapi.com/v1/forecast.json?key=%s&q=%s&days=1&aqi=no&alerts=yes", apiKey, location);
 
         try {
             URL url = new URL(urlString);
@@ -125,6 +143,33 @@ public class WeatherService {
 
             Fact weatherFact = new Fact(CACHED_WEATHER_KEY, gson.toJson(newWeatherData), System.currentTimeMillis(), "system_cache", "system", 1);
             MemoryService.addFact(weatherFact);
+            
+            // PROACTIVE ALERT CHECK WITH PERSISTENT MEMORY CACHING
+            if (newWeatherData.alerts != null && newWeatherData.alerts.alert != null && !newWeatherData.alerts.alert.isEmpty()) {
+                List<String> newAlerts = new ArrayList<>();
+                String today = LocalDate.now().toString();
+
+                for (Alert alert : newWeatherData.alerts.alert) {
+                    // Create a safe, unique key for this specific alert today
+                    String alertKey = "weather_alert_" + today + "_" + alert.event.replaceAll("[^a-zA-Z0-9]", "");
+                    
+                    // Check if we've already announced this specific alert today (survives reboots)
+                    if (MemoryService.getFact(alertKey).isEmpty()) {
+                        newAlerts.add(alert.event);
+                        // Save to long-term database so she remembers it
+                        MemoryService.addFact(new Fact(alertKey, "Announced", System.currentTimeMillis(), "system_alert", "system", 1));
+                    }
+                }
+
+                if (!newAlerts.isEmpty()) {
+                    String events = String.join(" and ", newAlerts);
+                    System.out.println("Ciel Debug (WeatherService): Announcing consolidated Emergency Weather Alerts -> " + events);
+                    
+                    // By combining them into one string, we prevent Azure from crashing due to overlapping cancel signals!
+                    String warningText = "[Concerned] Master, a severe weather alert has been issued for our area: " + events + ". Please be advised.";
+                    SpeechService.speakPreformatted(warningText, null, false, true); 
+                }
+            }
 
             conn.disconnect();
             return isForecast ? formatForecastReport(newWeatherData) : formatWeatherReport(newWeatherData);
@@ -185,6 +230,7 @@ public class WeatherService {
         Location location;
         Current current;
         Forecast forecast;
+        Alerts alerts; 
         long fetchTimeEpochSeconds;
     }
 
@@ -216,5 +262,15 @@ public class WeatherService {
         @SerializedName("mintemp_f")
         double mintempF;
         Condition condition;
+    }
+    
+    private static class Alerts {
+        List<Alert> alert;
+    }
+    
+    private static class Alert {
+        String headline;
+        String event;
+        String severity;
     }
 }

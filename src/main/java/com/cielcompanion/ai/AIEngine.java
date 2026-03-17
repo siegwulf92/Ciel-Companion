@@ -40,6 +40,8 @@ public class AIEngine {
     
     private static final Pattern EMOTION_TAG_PATTERN = Pattern.compile("\\[([a-zA-Z]+)\\]");
     private static final Pattern THINK_TAG_PATTERN = Pattern.compile("(?s)<think>.*?</think>");
+    private static final Pattern ALPHA_NUM_PATTERN = Pattern.compile("[a-zA-Z0-9]");
+    private static final Pattern ALPHA_PATTERN = Pattern.compile("[a-zA-Z]");
 
     private static final LinkedList<JsonObject> conversationHistory = new LinkedList<>();
     private static final int MAX_HISTORY = 10; 
@@ -52,56 +54,82 @@ public class AIEngine {
         memoryScheduler.scheduleWithFixedDelay(AIEngine::checkIdleMemoryDigestion, 60, 60, TimeUnit.SECONDS);
     }
 
-    private static synchronized void addHistory(String role, String content) {
+    private static void addHistory(String role, String content) {
         lastInteractionTime = System.currentTimeMillis();
         JsonObject msg = new JsonObject();
         msg.addProperty("role", role);
         msg.addProperty("content", content);
-        conversationHistory.add(msg);
-        if (conversationHistory.size() > MAX_HISTORY) {
-            conversationHistory.removeFirst();
+        
+        synchronized (conversationHistory) {
+            conversationHistory.add(msg);
+            if (conversationHistory.size() > MAX_HISTORY) {
+                conversationHistory.removeFirst();
+            }
         }
     }
 
-    // --- HIGH-SPEED TRANSLITERATION (PARALLEL) ---
+    // --- NEW: FORCES LM STUDIO & OLLAMA TO LOAD MODELS INTO VRAM ON BOOT ---
+    public static void warmUpModels() {
+        System.out.println("Ciel Debug: Sending silent pings to force-load AI models into VRAM...");
+        CompletableFuture.runAsync(() -> {
+            attemptTransliteration("Warmup ping."); 
+        });
+        CompletableFuture.runAsync(() -> {
+            generateSilentLogic("Warmup ping.", "System warmup."); 
+        });
+    }
+
+    // --- HIGH-SPEED TRANSLITERATION (PARALLEL LM STUDIO ROUTING) ---
     public static CompletableFuture<String> transliterateAsync(String englishText) {
         return CompletableFuture.supplyAsync(() -> {
-            if (!Pattern.compile("[a-zA-Z]").matcher(englishText).find()) return englishText;
+            if (!ALPHA_NUM_PATTERN.matcher(englishText).find()) return englishText;
 
-            String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
-            String systemContext = "You are a phonetic transliteration engine. Convert English to Katakana. JSON format: { \"katakana\": \"...\" }";
+            // Route DIRECTLY to LM Studio (Phi-4) to avoid blocking Ollama's generation stream
+            String fallbackResult = attemptTransliteration(englishText);
             
-            JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, englishText, false);
-            payload.addProperty("temperature", 0.0);
-            
-            try {
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(url))
-                        .header("Content-Type", "application/json")
-                        .timeout(Duration.ofSeconds(45))
-                        .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
-                        .build();
-
-                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-                if (response.statusCode() == 200) {
-                    String content = ModelManager.extractMessageContent(response.body());
-                    if (content != null) {
-                        String cleanJson = content.replace("```json", "").replace("```", "").trim();
-                        return JsonParser.parseString(cleanJson).getAsJsonObject().get("katakana").getAsString();
-                    }
-                }
-            } catch (Exception e) {
-                System.err.println("Ciel Warning: AI Transliteration failed. Falling back to PhonoKana.");
+            // Validation: Reject if it output English letters. (Numbers are fine).
+            if (fallbackResult != null && !ALPHA_PATTERN.matcher(fallbackResult).find()) {
+                return fallbackResult; 
             }
-            return com.cielcompanion.util.PhonoKana.getInstance().toKatakana(englishText);
+
+            System.err.println("Ciel Warning: Phi-4 Transliteration failed. Returning raw English text.");
+            return englishText; 
         }, translationExecutor);
+    }
+
+    private static String attemptTransliteration(String englishText) {
+        // UPDATED: Now routes directly to our new Python OpenJarvis Katakana Agent!
+        try {
+            String url = "http://localhost:8000/transliterate";
+            JsonObject payload = new JsonObject();
+            payload.addProperty("text", englishText);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofSeconds(45)) // Give LM Studio plenty of time to warm up
+                    .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                JsonObject jsonResponse = JsonParser.parseString(response.body()).getAsJsonObject();
+                if (jsonResponse.has("katakana")) {
+                    String result = jsonResponse.get("katakana").getAsString();
+                    if (!"エラー".equals(result)) return result;
+                }
+            }
+        } catch (Exception e) {
+            // Fail silently
+        }
+        return null;
     }
 
     public static String transliterateToKatakanaSync(String englishText) {
         try {
-            return transliterateAsync(englishText).get(15, TimeUnit.SECONDS);
+            return transliterateAsync(englishText).get(45, TimeUnit.SECONDS); 
         } catch (Exception e) {
-            return com.cielcompanion.util.PhonoKana.getInstance().toKatakana(englishText);
+            return englishText; 
         }
     }
 
@@ -199,7 +227,6 @@ public class AIEngine {
                 });
     }
 
-    // NEW: Dedicated, purely synchronous generation for critical OS-level shutdown hooks
     public static String generateDiaryEntrySync(String userMessage, String systemContext) {
         System.out.println("Ciel Debug: Generating diary entry synchronously (Fast Personality Tier)...");
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.PERSONALITY);
@@ -225,7 +252,7 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofSeconds(15)) // Hard timeout to prevent hanging the OS shutdown
+                .timeout(Duration.ofSeconds(15)) 
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -241,32 +268,35 @@ public class AIEngine {
         return null;
     }
 
-    private static synchronized void checkIdleMemoryDigestion() {
-        if (conversationHistory.isEmpty()) return;
-        
+    private static void checkIdleMemoryDigestion() {
         long idleTimeMs = System.currentTimeMillis() - lastInteractionTime;
         if (idleTimeMs > 5 * 60 * 1000) { 
-            System.out.println("Ciel Debug: Conversation idle. Digesting short-term buffer into Long-Term Episodic Memory...");
-            
             JsonArray historyArray = new JsonArray();
-            for (JsonObject obj : conversationHistory) historyArray.add(obj);
             
-            String prompt = "You are the memory core of Ciel. Review this conversation history array:\n" + 
-                            gson.toJson(historyArray) + 
-                            "\nExtract any meaningful facts, preferences, or narrative conclusions into a concise 1-sentence summary. " +
-                            "CRITICAL: Write the summary from Ciel's internal perspective. You MUST refer to the human strictly as 'Master' or 'Master Taylor', NEVER as 'the user'. " +
-                            "Reply strictly in JSON: { \"actionable\": true/false, \"summary\": \"the extracted fact\" }. " +
-                            "If it was just casual greetings or small talk, set actionable to false.";
-                            
-            evaluateBackground(prompt, "You are a memory extraction sub-process.").thenAccept(result -> {
-                if (result != null && result.has("actionable") && result.get("actionable").getAsBoolean()) {
-                    String summary = result.get("summary").getAsString();
-                    System.out.println("Ciel Debug: Memory Digested -> " + summary);
-                    String memoryKey = "Memory_" + System.currentTimeMillis();
-                    MemoryService.addFact(new Fact(memoryKey, summary, System.currentTimeMillis(), "episodic_memory", "auto-digestion", 1));
-                }
+            synchronized (conversationHistory) {
+                if (conversationHistory.isEmpty()) return;
+                System.out.println("Ciel Debug: Conversation idle. Digesting short-term buffer into Long-Term Episodic Memory...");
+                for (JsonObject obj : conversationHistory) historyArray.add(obj);
                 conversationHistory.clear(); 
-            });
+            }
+            
+            if (historyArray.size() > 0) {
+                String prompt = "You are the memory core of Ciel. Review this conversation history array:\n" + 
+                                gson.toJson(historyArray) + 
+                                "\nExtract any meaningful facts, preferences, or narrative conclusions into a concise 1-sentence summary. " +
+                                "CRITICAL: Write the summary from Ciel's internal perspective. You MUST refer to the human strictly as 'Master' or 'Master Taylor', NEVER as 'the user'. " +
+                                "Reply strictly in JSON: { \"actionable\": true/false, \"summary\": \"the extracted fact\" }. " +
+                                "If it was just casual greetings or small talk, set actionable to false.";
+                                
+                evaluateBackground(prompt, "You are a memory extraction sub-process.").thenAccept(result -> {
+                    if (result != null && result.has("actionable") && result.get("actionable").getAsBoolean()) {
+                        String summary = result.get("summary").getAsString();
+                        System.out.println("Ciel Debug: Memory Digested -> " + summary);
+                        String memoryKey = "Memory_" + System.currentTimeMillis();
+                        MemoryService.addFact(new Fact(memoryKey, summary, System.currentTimeMillis(), "episodic_memory", "auto-digestion", 1));
+                    }
+                });
+            }
         }
     }
 
@@ -325,7 +355,6 @@ public class AIEngine {
                     
                     addHistory("assistant", fullResponseBuffer.toString());
 
-                    // RESTORED: Privileged mode extra seconds calculation
                     long durationMs = SpeechService.estimateSpeechDuration(fullResponseBuffer.toString());
                     int extraSeconds = (int) (durationMs / 1000) + 20;
                     com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
@@ -335,7 +364,7 @@ public class AIEngine {
                     if (!isFallbackTriggered.get()) triggerFallback(userMessage, systemContext, onComplete);
                     return null;
                 })
-                .thenRun(() -> {
+                .whenComplete((res, ex) -> {
                     if (!isFallbackTriggered.get() && onComplete != null) onComplete.run();
                 });
     }
@@ -392,10 +421,27 @@ public class AIEngine {
     }
 
     private static void reasonDeeplyLocalFallback(String userMessage, String systemContext, Runnable onComplete) {
-        System.out.println("Ciel Debug: Routing to Local Fallback Logic Core (Phi-4)...");
+        System.out.println("Ciel Debug: Routing to Local Fallback Logic Core (LM Studio: Phi-4)...");
         
-        String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOCAL_LOGIC_FALLBACK);
-        JsonObject payload = buildPayloadWithHistory(ModelManager.ModelTier.LOCAL_LOGIC_FALLBACK, systemContext, false);
+        String url = Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
+        
+        JsonObject payload = new JsonObject();
+        payload.addProperty("model", "phi-4-reasoning-plus"); 
+        payload.addProperty("temperature", 0.3); 
+        payload.addProperty("stream", false);
+        
+        JsonArray messages = new JsonArray();
+        JsonObject sysMsg = new JsonObject();
+        sysMsg.addProperty("role", "system");
+        sysMsg.addProperty("content", systemContext);
+        messages.add(sysMsg);
+        
+        JsonObject usrMsg = new JsonObject();
+        usrMsg.addProperty("role", "user");
+        usrMsg.addProperty("content", userMessage);
+        messages.add(usrMsg);
+        
+        payload.add("messages", messages);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -432,7 +478,6 @@ public class AIEngine {
         
         addHistory("assistant", cleanContent);
 
-        // RESTORED: Privileged mode extra seconds calculation
         long durationMs = SpeechService.estimateSpeechDuration(cleanContent);
         int extraSeconds = (int) (durationMs / 1000) + 20;
         com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
@@ -441,20 +486,32 @@ public class AIEngine {
     }
 
     private static void triggerFallback(String userMessage, String systemContext, Runnable onComplete) {
-        String key = Settings.getLlmOnlineFallbackKey();
-        if (key == null || key.isBlank()) {
-            SpeechService.speakPreformatted("[Glitched] My cognitive matrix is offline. I cannot process that request.");
-            if (onComplete != null) onComplete.run();
-            return;
-        }
+        System.out.println("Ciel Debug: Triggering final fallback core (LM Studio: Phi-4)...");
         
-        JsonObject payload = buildPayloadWithHistory(ModelManager.ModelTier.PERSONALITY, systemContext, false);
-        payload.addProperty("model", "gpt-4o-mini"); 
+        String url = Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
+        
+        JsonObject payload = new JsonObject();
+        payload.addProperty("model", "phi-4-reasoning-plus"); 
+        payload.addProperty("temperature", 0.3); 
+        payload.addProperty("stream", false);
+        
+        JsonArray messages = new JsonArray();
+        JsonObject sysMsg = new JsonObject();
+        sysMsg.addProperty("role", "system");
+        sysMsg.addProperty("content", systemContext);
+        messages.add(sysMsg);
+        
+        JsonObject usrMsg = new JsonObject();
+        usrMsg.addProperty("role", "user");
+        usrMsg.addProperty("content", userMessage);
+        messages.add(usrMsg);
+        
+        payload.add("messages", messages);
         
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(Settings.getLlmOnlineFallbackUrl() + "/chat/completions"))
+                .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + key)
+                .timeout(Duration.ofSeconds(60))
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -463,12 +520,12 @@ public class AIEngine {
                     if (response.statusCode() == 200) {
                         String content = ModelManager.extractMessageContent(response.body());
                         if (content != null) {
-                            for (String s : content.split("(?<=[.!?])\\s+")) processAndSpeakChunk(s);
+                            String cleanContent = THINK_TAG_PATTERN.matcher(content).replaceAll("").trim();
+                            for (String s : cleanContent.split("(?<=[.!?])\\s+")) processAndSpeakChunk(s);
                             
-                            addHistory("assistant", content);
+                            addHistory("assistant", cleanContent);
 
-                            // RESTORED: Privileged mode extra seconds calculation
-                            long durationMs = SpeechService.estimateSpeechDuration(content);
+                            long durationMs = SpeechService.estimateSpeechDuration(cleanContent);
                             int extraSeconds = (int) (durationMs / 1000) + 20;
                             com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
                         }
@@ -476,7 +533,7 @@ public class AIEngine {
                         SpeechService.speakPreformatted("[Glitched] Fallback cognitive matrix also unavailable.");
                     }
                 })
-                .thenRun(() -> {
+                .whenComplete((res, ex) -> {
                     if (onComplete != null) onComplete.run();
                 });
     }
@@ -539,7 +596,7 @@ public class AIEngine {
         }
 
         transliterateAsync(textToProcess).thenAccept(katakana -> {
-            SpeechService.speakChunk(katakana); // Uses the new streaming queue method
+            SpeechService.speakChunk(katakana); 
         });
     }
 }

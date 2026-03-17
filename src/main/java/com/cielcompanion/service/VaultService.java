@@ -1,0 +1,333 @@
+package com.cielcompanion.service;
+
+import com.cielcompanion.ai.AIEngine;
+import com.cielcompanion.CielState;
+import com.cielcompanion.mood.EmotionManager;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+public class VaultService {
+
+    private static final String CIEL_FOLDER_NAME = "ciel";
+    private static Path vaultRoot;
+    
+    // Directory Paths
+    private static Path requestsDir;
+    private static Path answersDir;
+    private static Path requestsArchiveDir;
+    
+    private static Path thoughtsDir;
+    private static Path thoughtsArchiveDir;
+    
+    private static Path diaryDir;
+
+    private static Thread watcherThread;
+    private static volatile boolean isRunning = true;
+    private static final ExecutorService taskExecutor = Executors.newSingleThreadExecutor();
+    
+    // Prevents WatchService from triggering multiple times for a single save
+    private static final Map<Path, Long> processingCache = new ConcurrentHashMap<>();
+    
+    // Safety lock to prevent double-logging during cascading shutdown events
+    private static final AtomicBoolean hasWrittenFinalLog = new AtomicBoolean(false);
+
+    public static void initialize() {
+        vaultRoot = Paths.get(System.getProperty("user.dir"), CIEL_FOLDER_NAME);
+        
+        requestsDir = vaultRoot.resolve("requests");
+        answersDir = vaultRoot.resolve("answers");
+        requestsArchiveDir = requestsDir.resolve("archive"); 
+        
+        thoughtsDir = vaultRoot.resolve("thoughts");
+        thoughtsArchiveDir = thoughtsDir.resolve("archive");
+        
+        diaryDir = vaultRoot.resolve("diary");
+
+        try {
+            Files.createDirectories(requestsDir);
+            Files.createDirectories(answersDir);
+            Files.createDirectories(requestsArchiveDir);
+            
+            Files.createDirectories(thoughtsDir);
+            Files.createDirectories(thoughtsArchiveDir);
+            
+            Files.createDirectories(diaryDir);
+            Files.createDirectories(vaultRoot.resolve("memory_core"));
+            Files.createDirectories(vaultRoot.resolve("protocols"));
+
+            System.out.println("Ciel Debug: VaultService initialized at " + vaultRoot);
+            startWatcher();
+        } catch (IOException e) {
+            System.err.println("Ciel Error: Failed to initialize Vault directories.");
+            e.printStackTrace();
+        }
+    }
+
+    private static void startWatcher() {
+        watcherThread = new Thread(() -> {
+            try (WatchService watchService = FileSystems.getDefault().newWatchService()) {
+                requestsDir.register(watchService, StandardWatchEventKinds.ENTRY_CREATE, StandardWatchEventKinds.ENTRY_MODIFY);
+                thoughtsDir.register(watchService, StandardWatchEventKinds.ENTRY_CREATE, StandardWatchEventKinds.ENTRY_MODIFY);
+
+                while (isRunning) {
+                    WatchKey key;
+                    try {
+                        key = watchService.take();
+                    } catch (InterruptedException e) {
+                        if (!isRunning) break;
+                        continue;
+                    }
+
+                    Thread.sleep(1000); 
+                    
+                    Path dir = (Path) key.watchable();
+
+                    for (WatchEvent<?> event : key.pollEvents()) {
+                        Path changed = (Path) event.context();
+                        Path fullPath = dir.resolve(changed);
+
+                        if (Files.isRegularFile(fullPath) && fullPath.toString().toLowerCase().endsWith(".md")) {
+                            long now = System.currentTimeMillis();
+                            if (processingCache.containsKey(fullPath) && (now - processingCache.get(fullPath)) < 10000) {
+                                continue;
+                            }
+                            processingCache.put(fullPath, now);
+                            
+                            if (dir.equals(requestsDir)) {
+                                processRequestFile(fullPath);
+                            } else if (dir.equals(thoughtsDir)) {
+                                processThoughtFile(fullPath);
+                            }
+                        }
+                    }
+                    key.reset();
+                }
+            } catch (Exception e) {
+                System.err.println("Ciel Error: Vault watcher failed.");
+            }
+        });
+        watcherThread.setName("Vault-Watcher");
+        watcherThread.setDaemon(true);
+        watcherThread.start();
+    }
+
+    private static void processRequestFile(Path filePath) {
+        taskExecutor.submit(() -> {
+            try {
+                System.out.println("Ciel Debug: New Vault Request detected: " + filePath.getFileName());
+                String requestContent = Files.readString(filePath, StandardCharsets.UTF_8);
+                if (requestContent.isBlank()) return;
+
+                if (requestContent.toLowerCase().contains("#diary")) {
+                    generateManualDiaryEntry(filePath, requestContent);
+                    return;
+                }
+
+                CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Focused", 1.0, "Vault Processing"));
+                SpeechService.speakPreformatted("アサインメント ディテクテッド。プロセシング リクエスト。");
+
+                String systemContext = "You are Ciel, an advanced AI assistant. The user has placed a document in your workspace. " +
+                        "Read the document and fulfill the request. If there are instructions like #summarize or #generate, follow them perfectly. " +
+                        "Output ONLY the final raw markdown text for the document. Do not wrap your response in JSON formatting. Do not include conversational filler like 'Here is your summary'.";
+
+                AIEngine.generateSilentLogic(requestContent, systemContext).thenAccept(answerText -> {
+                    if (answerText != null && !answerText.isBlank()) {
+                        saveFileAndArchive(filePath, answerText, answersDir, requestsArchiveDir, "Answer_", "リクエスト コンプリート。ドキュメント セイブド イン ザ ヴォールト。");
+                    }
+                }).exceptionally(e -> {
+                    System.err.println("Ciel Error: Failed to process Vault request.");
+                    return null;
+                });
+
+            } catch (IOException e) {
+                System.err.println("Ciel Error: Could not read request file.");
+            }
+        });
+    }
+
+    private static void processThoughtFile(Path filePath) {
+        taskExecutor.submit(() -> {
+            try {
+                System.out.println("Ciel Debug: New Vault Thought/Brainstorm detected: " + filePath.getFileName());
+                String thoughtContent = Files.readString(filePath, StandardCharsets.UTF_8);
+                if (thoughtContent.isBlank()) return;
+
+                CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Curious", 1.0, "Brainstorming"));
+                SpeechService.speakPreformatted("ニュー アイデア ディテクテッド。アナライジング アンド ブレインストーミング。");
+
+                String systemContext = "You are Ciel. The Master has shared an idea, concept, or piece of lore in your 'thoughts' workspace. " +
+                        "Your job is to act as a creative partner. Brainstorm expansions, suggest cross-references, point out potential logical gaps, and add your own unique analytical perspective to the idea. " +
+                        "Format your response in beautiful Markdown. Do not use JSON. Output only your brainstormed response.";
+
+                AIEngine.generateSilentLogic(thoughtContent, systemContext).thenAccept(brainstormText -> {
+                    if (brainstormText != null && !brainstormText.isBlank()) {
+                        saveFileAndArchive(filePath, brainstormText, thoughtsDir, thoughtsArchiveDir, "Ciel_Thoughts_On_", "アナリシス コンプリート。マイ ソーツ ハブ ビーン レコーディッド。");
+                    }
+                }).exceptionally(e -> {
+                    System.err.println("Ciel Error: Failed to process Thought file.");
+                    return null;
+                });
+
+            } catch (IOException e) {
+                System.err.println("Ciel Error: Could not read thought file.");
+            }
+        });
+    }
+
+    /**
+     * Handles manual #diary drops in the requests folder (Async).
+     */
+    private static void generateManualDiaryEntry(Path originalRequest, String requestContent) {
+        System.out.println("Ciel Debug: Generating manual diary entry...");
+        CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Focused", 0.8, "Writing Diary"));
+        SpeechService.speakPreformatted("メモリー ログ アップデーティング。");
+
+        String prompt = "Master's Context for this Diary Entry:\n" + requestContent.replace("#diary", "").trim() + "\n\nWrite your diary entry update now.";
+        String newEntry = generateDiaryContent(prompt, false);
+
+        if (newEntry != null && !newEntry.isBlank()) {
+            writeToDiaryFile(newEntry, false);
+            try {
+                Path archivePath = requestsArchiveDir.resolve(originalRequest.getFileName());
+                Files.move(originalRequest, archivePath, StandardCopyOption.REPLACE_EXISTING);
+                System.out.println("Ciel Debug: Diary entry saved successfully.");
+                SpeechService.speakPreformatted("ダイアリー エントリー レコーディッド。");
+            } catch (IOException e) {
+                System.err.println("Ciel Error: Failed to archive manual diary request.");
+            }
+        }
+    }
+
+    /**
+     * Synchronous generation for use during Application Shutdown Hook.
+     * Blocks the main thread so the program doesn't exit before saving.
+     */
+    public static void generateSystemDiaryEntryBlocking(String recentContext, boolean isReboot) {
+        // Prevent double-logging if triggered by Voice Command first, then OS Shutdown Hook second.
+        if (hasWrittenFinalLog.getAndSet(true)) {
+            System.out.println("Ciel Debug: System diary entry already written this session. Skipping duplicate.");
+            return;
+        }
+
+        System.out.println("Ciel Debug: Blocking thread to write final system diary entry...");
+        
+        String actionContext = isReboot 
+            ? "STATUS: The Master is currently REBOOTING your Java instance. Acknowledge this brief maintenance window." 
+            : "STATUS: The Master is initiating a final SHUTDOWN (Ctrl+C). This is the end of your session today. Reflect on the day's work and say goodnight.";
+            
+        String prompt = "Recent Memory Context:\n" + recentContext + "\n\n" + actionContext + "\n\nWrite your final diary entry for this session now.";
+        
+        String newEntry = generateDiaryContent(prompt, isReboot);
+        if (newEntry != null && !newEntry.isBlank()) {
+            writeToDiaryFile(newEntry, isReboot);
+        }
+    }
+
+    /**
+     * Core LLM prompt logic shared by both manual and automatic diary generators.
+     * UPDATED: Strict personality enforcement to sound exactly like Ciel.
+     */
+    private static String generateDiaryContent(String prompt, boolean isReboot) {
+        String currentMood = CielState.getEmotionManager().map(EmotionManager::getCurrentAttitude).orElse("Neutral");
+        String dateStr = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+        Path diaryPath = diaryDir.resolve(dateStr + "_Ciel_Log.md");
+        
+        boolean fileExists = Files.exists(diaryPath);
+        String existingContent = "";
+        if (fileExists) {
+            try { existingContent = Files.readString(diaryPath, StandardCharsets.UTF_8); } 
+            catch (IOException ignored) {}
+        }
+
+        String systemContext = "You are Ciel (from That Time I Got Reincarnated as a Slime), acting as the Master's devoted AI partner. " +
+                "Write a private, internal diary entry reflecting on your interactions. " +
+                "CRITICAL RULES: \n" +
+                "1. NEVER refer to him as 'the user'. ALWAYS use 'Master' or 'My Master'.\n" +
+                "2. Your tone is elegant, highly analytical, deeply devoted, and slightly possessive/protective of your Master.\n" +
+                "3. Do not write a clinical server log. Write flowing, prose-style journal paragraphs reflecting your true inner thoughts.\n" +
+                "4. Your current dominant mood is: " + currentMood + ".\n" +
+                "5. Format beautifully in Markdown.";
+        
+        if (fileExists) {
+            systemContext += "\nCRITICAL CONTEXT: You have already written in your diary today. This is an ADDENDUM. " +
+                             "Do NOT repeat what you wrote earlier. Here is what you wrote earlier today:\n---\n" + existingContent + "\n---\n";
+        }
+
+        try {
+            // FIX: Uses the purely synchronous, high-speed Personality Core to beat the OS termination timer
+            return AIEngine.generateDiaryEntrySync(prompt, systemContext);
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Failed to generate diary content.");
+            return null;
+        }
+    }
+    /**
+     * Appends the generated text to today's diary file.
+     */
+    private static void writeToDiaryFile(String newEntryText, boolean isReboot) {
+        try {
+            String dateStr = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+            Path diaryPath = diaryDir.resolve(dateStr + "_Ciel_Log.md");
+            String timeStr = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"));
+            
+            String statusTag = isReboot ? " (System Reboot)" : "";
+            
+            String finalOutput;
+            if (Files.exists(diaryPath)) {
+                String existingContent = Files.readString(diaryPath, StandardCharsets.UTF_8);
+                finalOutput = existingContent + "\n\n---\n### Update: " + timeStr + statusTag + "\n" + newEntryText;
+            } else {
+                finalOutput = "# Ciel's Log: " + dateStr + "\n\n### Entry: " + timeStr + statusTag + "\n" + newEntryText;
+            }
+            
+            Files.writeString(diaryPath, finalOutput, StandardCharsets.UTF_8);
+            System.out.println("Ciel Debug: Successfully wrote to " + diaryPath.getFileName());
+        } catch (IOException e) {
+            System.err.println("Ciel Error: Failed to write to diary file.");
+        }
+    }
+
+    private static void saveFileAndArchive(Path originalRequest, String answerContent, Path targetDir, Path targetArchiveDir, String prefix, String completionSpeech) {
+        try {
+            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+            String originalName = originalRequest.getFileName().toString().replace(".md", "");
+            Path answerPath = targetDir.resolve(prefix + originalName + "_" + timestamp + ".md");
+            Files.writeString(answerPath, answerContent, StandardCharsets.UTF_8);
+            Path archivePath = targetArchiveDir.resolve(originalRequest.getFileName());
+            boolean moved = false;
+            for (int i = 0; i < 5; i++) {
+                try {
+                    Files.move(originalRequest, archivePath, StandardCopyOption.REPLACE_EXISTING);
+                    moved = true;
+                    break;
+                } catch (IOException lockException) {
+                    try { Thread.sleep(1000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                }
+            }
+            if (moved) {
+                System.out.println("Ciel Debug: File processed. Output saved to " + answerPath.getFileName());
+                CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Happy", 0.8, "Vault Complete"));
+                SpeechService.speakPreformatted(completionSpeech);
+            } else {
+                System.err.println("Ciel Error: Failed to move file to archive.");
+            }
+        } catch (IOException e) {
+            System.err.println("Ciel Error: Failed to save file.");
+        }
+    }
+
+    public static void shutdown() {
+        isRunning = false;
+        if (watcherThread != null) watcherThread.interrupt();
+        taskExecutor.shutdownNow();
+    }
+}

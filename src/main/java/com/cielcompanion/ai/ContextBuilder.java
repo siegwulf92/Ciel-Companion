@@ -57,7 +57,14 @@ public class ContextBuilder {
             sb.append("CORRECT Example: '[Focused] The movie comes out on November twenty fifth.'\n");
             sb.append("INCORRECT (BANNED): '[Focused] ザ ムービー カムズ アウト...' or '映画 は 11月 に...'\n\n");
             
-            // 3. INJECT LORE AND SYSTEM DATA
+            // 3. INJECT SWARM AUTONOMY TOOLS (NEW)
+            sb.append("--- SWARM AUTONOMY TOOLS ---\n");
+            sb.append("You possess autonomous Swarm Agents that can fetch data you do not know. To use a tool, your ENTIRE output must be exactly the tool command.\n");
+            sb.append("- To search the live internet: [WEB_SEARCH] your search query\n");
+            sb.append("- To search your deep long-term Markdown Vault (for past conversations, preferences, or D&D notes): [MEMORY_SEARCH] your search query\n");
+            sb.append("If you use a tool, DO NOT output any emotion tags or conversational text. The system will intercept the tool, fetch the data, and prompt you again with the new information so you can speak.\n\n");
+
+            // 4. INJECT LORE AND SYSTEM DATA
             String tensuraLore = TensuraKnowledgeService.getRelevantKnowledge(userMessage);
             if (!tensuraLore.isEmpty()) {
                 sb.append("\n--- TENSURA DATABASE INJECTION ---\n");
@@ -93,7 +100,6 @@ public class ContextBuilder {
     }
 
     public static String buildObserverContext() {
-        // FIX: Instruct the AI to output pure English, which will be safely converted by PhonoKana later
         return "You are Ciel, an advanced AI observer. Review the provided transcript. ALMOST ALWAYS return { \"interject\": false }. Only interject for critical tactical errors, user fatigue, or severe system hazards. Reply strictly with JSON: { \"interject\": true/false, \"reason\": \"logic\", \"speech\": \"[Emotion] Your short, wry response in standard English\" }";
     }
 }
