@@ -64,6 +64,11 @@ public class AppProfilerService {
         return profiles.get(processName.toLowerCase());
     }
 
+    // Exposes the profiles so the Habit Tracker can iterate through them
+    public static java.util.Collection<AppProfile> getAllProfiles() {
+        return profiles.values();
+    }
+
     /**
      * Smart Identification: Tries exact process match first, then falls back to Window Title Regex.
      */

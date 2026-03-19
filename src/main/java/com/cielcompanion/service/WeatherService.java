@@ -42,11 +42,11 @@ public class WeatherService {
             }
             weatherProps.load(new InputStreamReader(is, StandardCharsets.UTF_8));
             
-            // Start the background emergency weather heartbeat (Every 30 mins)
+            // UPDATED: Strictly poll every 15 minutes
             weatherScheduler = Executors.newSingleThreadScheduledExecutor();
-            weatherScheduler.scheduleWithFixedDelay(WeatherService::proactiveWeatherCheck, 5, 30, TimeUnit.MINUTES);
+            weatherScheduler.scheduleWithFixedDelay(WeatherService::proactiveWeatherCheck, 1, 15, TimeUnit.MINUTES);
             
-            System.out.println("Ciel Debug: WeatherService initialized. Proactive emergency weather alerts active.");
+            System.out.println("Ciel Debug: WeatherService initialized. Proactive emergency weather alerts active (15m interval).");
         } catch (Exception e) {
             System.err.println("Ciel Error: Failed to initialize WeatherService.");
             e.printStackTrace();
@@ -93,8 +93,8 @@ public class WeatherService {
             return "My weather functionality has not been configured with a valid API key.";
         }
 
-        // Default to a 30-minute cache loop for high accuracy and proactive alerts
-        long cacheDurationMinutes = Long.parseLong(weatherProps.getProperty("weather.cacheDurationMinutes", "30"));
+        // UPDATED: Hardcoded to 15 minutes, ignoring the properties file to ensure fresh emergency alerts
+        long cacheDurationMinutes = 15;
 
         if (cachedWeatherData != null && cachedWeatherData.fetchTimeEpochSeconds > 0) {
             Duration duration = Duration.between(Instant.ofEpochSecond(cachedWeatherData.fetchTimeEpochSeconds), Instant.now());

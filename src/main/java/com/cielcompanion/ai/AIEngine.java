@@ -68,7 +68,6 @@ public class AIEngine {
         }
     }
 
-    // --- NEW: FORCES LM STUDIO & OLLAMA TO LOAD MODELS INTO VRAM ON BOOT ---
     public static void warmUpModels() {
         System.out.println("Ciel Debug: Sending silent pings to force-load AI models into VRAM...");
         CompletableFuture.runAsync(() -> {
@@ -79,35 +78,32 @@ public class AIEngine {
         });
     }
 
-    // --- HIGH-SPEED TRANSLITERATION (PARALLEL LM STUDIO ROUTING) ---
     public static CompletableFuture<String> transliterateAsync(String englishText) {
         return CompletableFuture.supplyAsync(() -> {
             if (!ALPHA_NUM_PATTERN.matcher(englishText).find()) return englishText;
 
-            // Route DIRECTLY to LM Studio (Phi-4) to avoid blocking Ollama's generation stream
             String fallbackResult = attemptTransliteration(englishText);
-            
-            // Validation: Reject if it output English letters. (Numbers are fine).
             if (fallbackResult != null && !ALPHA_PATTERN.matcher(fallbackResult).find()) {
                 return fallbackResult; 
             }
 
-            System.err.println("Ciel Warning: Phi-4 Transliteration failed. Returning raw English text.");
+            System.err.println("Ciel Warning: Transliteration failed. Returning raw English text.");
             return englishText; 
         }, translationExecutor);
     }
 
     private static String attemptTransliteration(String englishText) {
-        // UPDATED: Now routes directly to our new Python OpenJarvis Katakana Agent!
         try {
             String url = "http://localhost:8000/transliterate";
             JsonObject payload = new JsonObject();
             payload.addProperty("text", englishText);
+            // NEW: Send the exact translator model name from ModelManager to Python
+            payload.addProperty("model", ModelManager.getModelName(ModelManager.ModelTier.TRANSLATOR));
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
-                    .timeout(Duration.ofSeconds(45)) // Give LM Studio plenty of time to warm up
+                    .timeout(Duration.ofSeconds(30)) // Extended for heavy cloud models
                     .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                     .build();
 
@@ -127,13 +123,12 @@ public class AIEngine {
 
     public static String transliterateToKatakanaSync(String englishText) {
         try {
-            return transliterateAsync(englishText).get(45, TimeUnit.SECONDS); 
+            return transliterateAsync(englishText).get(30, TimeUnit.SECONDS); 
         } catch (Exception e) {
             return englishText; 
         }
     }
 
-    // --- THE SEMANTIC ROUTER (PRE-FRONTAL CORTEX) ---
     public static CommandAnalysis determineIntentSynchronously(String userMessage) {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
         String knownSkills = SkillManager.getAvailableSkillsString();
@@ -145,7 +140,7 @@ public class AIEngine {
             "GET_SYSTEM_STATUS : Ask for PC CPU/RAM status\n" +
             "EXECUTE_SKILL : User is asking to use a previously learned skill: [" + knownSkills + "]. The cleaned_text MUST be the exact name of the skill.\n" +
             "DYNAMIC_PC_CONTROL : User asks to write a NEW script, automate a task, or manipulate PC settings NOT in the skills list.\n" +
-            "DND_ANALYZE_LORE : Deep D&D lore analysis\n" +
+            "DND_ANALYZE_LORE : Deep lore analysis, world-building, or cross-referencing files (Tensura, D&D, etc). The 'arguments' field MUST contain a comma-separated list of the specific subjects/names to search for (e.g., 'Malakar, Blorina').\n" +
             "UNKNOWN : General chat, questions, or conversation.\n\n" +
             "MASTER'S PREFERENCES & INFERRED LOGIC:\n" +
             "The Master prefers quantified outputs to be even numbers or multiples of 5. If the user gives a vague command, infer a logical target value based on these preferences and provide it in the 'arguments' field.\n\n" +
@@ -193,23 +188,7 @@ public class AIEngine {
 
     public static CompletableFuture<String> generateSilentLogic(String userMessage, String systemContext) {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOGIC);
-        JsonObject payload = new JsonObject();
-        payload.addProperty("model", Settings.getLlmLogicModel());
-        payload.addProperty("stream", false);
-        payload.addProperty("temperature", 0.1); 
-
-        JsonArray messages = new JsonArray();
-        JsonObject sysMsg = new JsonObject();
-        sysMsg.addProperty("role", "system");
-        sysMsg.addProperty("content", systemContext);
-        messages.add(sysMsg);
-
-        JsonObject usrMsg = new JsonObject();
-        usrMsg.addProperty("role", "user");
-        usrMsg.addProperty("content", userMessage);
-        messages.add(usrMsg);
-
-        payload.add("messages", messages);
+        JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.LOGIC, systemContext, userMessage, false);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -231,23 +210,7 @@ public class AIEngine {
         System.out.println("Ciel Debug: Generating diary entry synchronously (Fast Personality Tier)...");
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.PERSONALITY);
         
-        JsonObject payload = new JsonObject();
-        payload.addProperty("model", Settings.getLlmPersonalityModel()); 
-        payload.addProperty("stream", false);
-        payload.addProperty("temperature", 0.6); 
-
-        JsonArray messages = new JsonArray();
-        JsonObject sysMsg = new JsonObject();
-        sysMsg.addProperty("role", "system");
-        sysMsg.addProperty("content", systemContext);
-        messages.add(sysMsg);
-
-        JsonObject usrMsg = new JsonObject();
-        usrMsg.addProperty("role", "user");
-        usrMsg.addProperty("content", userMessage);
-        messages.add(usrMsg);
-
-        payload.add("messages", messages);
+        JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.PERSONALITY, systemContext, userMessage, false);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -268,35 +231,32 @@ public class AIEngine {
         return null;
     }
 
-    private static void checkIdleMemoryDigestion() {
+    private static synchronized void checkIdleMemoryDigestion() {
+        if (conversationHistory.isEmpty()) return;
+        
         long idleTimeMs = System.currentTimeMillis() - lastInteractionTime;
         if (idleTimeMs > 5 * 60 * 1000) { 
+            System.out.println("Ciel Debug: Conversation idle. Digesting short-term buffer into Long-Term Episodic Memory...");
+            
             JsonArray historyArray = new JsonArray();
+            for (JsonObject obj : conversationHistory) historyArray.add(obj);
             
-            synchronized (conversationHistory) {
-                if (conversationHistory.isEmpty()) return;
-                System.out.println("Ciel Debug: Conversation idle. Digesting short-term buffer into Long-Term Episodic Memory...");
-                for (JsonObject obj : conversationHistory) historyArray.add(obj);
+            String prompt = "You are the memory core of Ciel. Review this conversation history array:\n" + 
+                            gson.toJson(historyArray) + 
+                            "\nExtract any meaningful facts, preferences, or narrative conclusions into a concise 1-sentence summary. " +
+                            "CRITICAL: Write the summary from Ciel's internal perspective. You MUST refer to the human strictly as 'Master' or 'Master Taylor', NEVER as 'the user'. " +
+                            "Reply strictly in JSON: { \"actionable\": true/false, \"summary\": \"the extracted fact\" }. " +
+                            "If it was just casual greetings or small talk, set actionable to false.";
+                            
+            evaluateBackground(prompt, "You are a memory extraction sub-process.").thenAccept(result -> {
+                if (result != null && result.has("actionable") && result.get("actionable").getAsBoolean()) {
+                    String summary = result.get("summary").getAsString();
+                    System.out.println("Ciel Debug: Memory Digested -> " + summary);
+                    String memoryKey = "Memory_" + System.currentTimeMillis();
+                    MemoryService.addFact(new Fact(memoryKey, summary, System.currentTimeMillis(), "episodic_memory", "auto-digestion", 1));
+                }
                 conversationHistory.clear(); 
-            }
-            
-            if (historyArray.size() > 0) {
-                String prompt = "You are the memory core of Ciel. Review this conversation history array:\n" + 
-                                gson.toJson(historyArray) + 
-                                "\nExtract any meaningful facts, preferences, or narrative conclusions into a concise 1-sentence summary. " +
-                                "CRITICAL: Write the summary from Ciel's internal perspective. You MUST refer to the human strictly as 'Master' or 'Master Taylor', NEVER as 'the user'. " +
-                                "Reply strictly in JSON: { \"actionable\": true/false, \"summary\": \"the extracted fact\" }. " +
-                                "If it was just casual greetings or small talk, set actionable to false.";
-                                
-                evaluateBackground(prompt, "You are a memory extraction sub-process.").thenAccept(result -> {
-                    if (result != null && result.has("actionable") && result.get("actionable").getAsBoolean()) {
-                        String summary = result.get("summary").getAsString();
-                        System.out.println("Ciel Debug: Memory Digested -> " + summary);
-                        String memoryKey = "Memory_" + System.currentTimeMillis();
-                        MemoryService.addFact(new Fact(memoryKey, summary, System.currentTimeMillis(), "episodic_memory", "auto-digestion", 1));
-                    }
-                });
-            }
+            });
         }
     }
 
@@ -311,6 +271,7 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(60))
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -390,7 +351,7 @@ public class AIEngine {
     }
 
     public static void reasonDeeply(String userMessage, String systemContext, Runnable onComplete) {
-        System.out.println("Ciel Debug: Routing to Primary Logic Core (DeepSeek)...");
+        System.out.println("Ciel Debug: Routing to Primary Logic Core...");
         SpeechService.speakPreformatted("[Focused] Initiating deep cognitive analysis. Please stand by.");
 
         addHistory("user", userMessage);
@@ -409,19 +370,19 @@ public class AIEngine {
                     if (response.statusCode() == 200) {
                         processLogicResponse(response.body(), onComplete);
                     } else {
-                        System.err.println("Ciel AI Error: Primary Logic Core returned " + response.statusCode() + ". Falling back to Local Phi-4.");
+                        System.err.println("Ciel AI Error: Primary Logic Core returned " + response.statusCode() + ". Falling back to Local Model.");
                         reasonDeeplyLocalFallback(userMessage, systemContext, onComplete);
                     }
                 })
                 .exceptionally(e -> {
-                    System.err.println("Ciel AI Error: Primary Logic Core unreachable. Falling back to Local Phi-4.");
+                    System.err.println("Ciel AI Error: Primary Logic Core unreachable. Falling back to Local Model.");
                     reasonDeeplyLocalFallback(userMessage, systemContext, onComplete);
                     return null;
                 });
     }
 
     private static void reasonDeeplyLocalFallback(String userMessage, String systemContext, Runnable onComplete) {
-        System.out.println("Ciel Debug: Routing to Local Fallback Logic Core (LM Studio: Phi-4)...");
+        System.out.println("Ciel Debug: Routing to Local Fallback Logic Core...");
         
         String url = Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
         
@@ -459,7 +420,7 @@ public class AIEngine {
                     }
                 })
                 .exceptionally(e -> {
-                    System.err.println("Ciel AI Error: Local Logic core timeout. Ensure LM Studio is running.");
+                    System.err.println("Ciel AI Error: Local Logic core timeout.");
                     triggerFallback(userMessage, systemContext, onComplete);
                     return null;
                 });
@@ -486,7 +447,7 @@ public class AIEngine {
     }
 
     private static void triggerFallback(String userMessage, String systemContext, Runnable onComplete) {
-        System.out.println("Ciel Debug: Triggering final fallback core (LM Studio: Phi-4)...");
+        System.out.println("Ciel Debug: Triggering final fallback core...");
         
         String url = Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
         
@@ -546,6 +507,7 @@ public class AIEngine {
             case EVALUATOR -> Settings.getLlmEvaluatorModel();
             case LOGIC -> Settings.getLlmLogicModel();
             case LOCAL_LOGIC_FALLBACK -> Settings.getLlmLocalLogicFallbackModel();
+            case TRANSLATOR -> "ollama/deepseek-v3.1:671b-cloud";
         };
 
         payload.addProperty("model", modelName);
@@ -578,6 +540,8 @@ public class AIEngine {
         String cleanText = chunk.trim();
         if (cleanText.isEmpty()) return;
 
+        cleanText = cleanText.replaceAll("\\[[A-Z_]+\\]", "").trim();
+
         Matcher matcher = EMOTION_TAG_PATTERN.matcher(cleanText);
         String emotionToTrigger = null;
 
@@ -587,6 +551,8 @@ public class AIEngine {
         
         String rawText = matcher.replaceAll("").trim();
         final String textToProcess = rawText.replaceAll("\\*.*?\\*", "").trim();
+
+        System.out.println("[Ciel Swarm Output]: " + textToProcess);
 
         if (emotionToTrigger != null && !emotionToTrigger.isBlank()) {
             final String finalEmotion = emotionToTrigger;

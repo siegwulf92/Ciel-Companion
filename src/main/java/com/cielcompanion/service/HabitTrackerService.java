@@ -18,6 +18,9 @@ public class HabitTrackerService {
     private static final Map<String, Long> dailyHabits = new HashMap<>();
     private static String currentCategory = "Idle";
     private static LocalDate currentDate = LocalDate.now();
+    
+    // Tracks if Ciel has already autonomously built a script today to prevent spamming the Swarm
+    private static boolean proactiveTriggeredToday = false;
 
     public static void initialize() {
         habitScheduler = Executors.newSingleThreadScheduledExecutor();
@@ -32,6 +35,7 @@ public class HabitTrackerService {
             summarizeAndSaveToMemory();
             dailyHabits.clear();
             currentDate = LocalDate.now();
+            proactiveTriggeredToday = false; // Reset the daily trigger
         }
 
         SystemMetrics metrics = SystemMonitor.getSystemMetrics();
@@ -68,6 +72,38 @@ public class HabitTrackerService {
                 System.out.println("Ciel Debug (Habit): Master is highly productive today. Mood shifted to Happy.");
             }
         });
+        
+        // Autonomous Skill Generation Trigger
+        if (gamingMins > 120) {
+            triggerProactiveSkillGeneration();
+        }
+    }
+
+    private static void triggerProactiveSkillGeneration() {
+        // FIX: Removed the invalid CommandService check. Background generation is thread-safe.
+        if (proactiveTriggeredToday) return;
+
+        for (AppProfilerService.AppProfile profile : AppProfilerService.getAllProfiles()) {
+            if ("Game".equalsIgnoreCase(profile.category())) {
+                
+                // Use a fuzzy match to see if the skill already exists in her encrypted vault
+                String fuzzyName = profile.displayName().toLowerCase().replace(" ", "_");
+                if (com.cielcompanion.ai.SkillManager.matchSkill(fuzzyName) == null) {
+                    
+                    System.out.println("Ciel Debug (Habit): Proactively generating launch skill for " + profile.displayName());
+                    
+                    // Force the Python Swarm to search your specific massive drives
+                    String prompt = "Write a batch script to launch the game '" + profile.displayName() + "'. " +
+                                    "The executable is '" + profile.processName() + "'. " +
+                                    "The script must dynamically search drives C:\\, E:\\, I:\\, and J:\\ (specifically checking standard Steam, Epic, and Blizzard directories) " +
+                                    "to find the executable, start it, and exit.";
+                    
+                    SkillCrafterService.synthesizeNewSkill(prompt);
+                    proactiveTriggeredToday = true;
+                    break; // Only trigger one build per day
+                }
+            }
+        }
     }
 
     private static void summarizeAndSaveToMemory() {

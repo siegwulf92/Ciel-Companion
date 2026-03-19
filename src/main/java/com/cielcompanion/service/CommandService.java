@@ -120,9 +120,25 @@ public class CommandService {
         return isBusy.get();
     }
 
+    private String sanitizeSttInput(String raw) {
+        if (raw == null) return "";
+        String corrected = raw.toLowerCase();
+        
+        // STT Dictionary Corrections: Maps common mishearings to their correct names
+        corrected = corrected.replaceAll("\\bsale\\b", "ciel");
+        corrected = corrected.replaceAll("\\bseal\\b", "ciel");
+        corrected = corrected.replaceAll("\\bvarina\\b", "blorina");
+        corrected = corrected.replace("d and d", "dnd");
+        corrected = corrected.replace("no game no life", "ngnl");
+        
+        return corrected;
+    }
+
     public void handleCommand(String originalText, boolean hasWakeWord, Runnable onComplete) {
+        String correctedText = sanitizeSttInput(originalText);
+        
         // NEW: Check if the command is critical. If it is, pierce the 'isBusy' lock!
-        CommandAnalysis preAnalysis = intentService.analyze(originalText);
+        CommandAnalysis preAnalysis = intentService.analyze(correctedText);
         boolean isCriticalOverride = (
             preAnalysis.intent() == Intent.INITIATE_REBOOT || 
             preAnalysis.intent() == Intent.INITIATE_SHUTDOWN || 
@@ -142,11 +158,14 @@ public class CommandService {
         commandExecutor.submit(() -> {
             boolean releaseBusySynchronously = true;
             try {
-                if (originalText == null || originalText.isBlank()) return;
+                if (correctedText == null || correctedText.isBlank()) return;
                 
                 System.out.printf("Ciel STT [Raw]: \"%s\"%n", originalText);
+                if (!originalText.equalsIgnoreCase(correctedText)) {
+                    System.out.printf("Ciel STT [Corrected]: \"%s\"%n", correctedText);
+                }
                 
-                String activeText = originalText;
+                String activeText = correctedText;
 
                 emotionManager.recordUserInteraction();
 
@@ -189,19 +208,20 @@ public class CommandService {
                         if (onComplete != null) onComplete.run();
                         return; 
                     } else if (semanticAnalysis.intent() == Intent.DND_ANALYZE_LORE) {
-                        System.out.println("Ciel Debug: Routing deep analysis to Logic Core (Phi-4).");
-                        String subject = semanticAnalysis.entities().get("query");
+                        System.out.println("Ciel Debug: Routing deep analysis to Logic Core (DeepSeek).");
                         
-                        // Fetch the Obsidian-crawled lore using our new method
-                        String loreData = loreService.getExpandedNoteContent(subject)
-                                                      .orElse("No specific campaign notes found for: " + subject);
-
-                        String context = ContextBuilder.buildActiveContext(loreService, activeText) +
-                                         "\n\n[D&D CAMPAIGN NOTES FOR ANALYSIS]\n" + loreData +
-                                         "\n\nINSTRUCTION: Analyze the provided campaign notes and answer the user's query.";
+                        // Extract the comma-separated list of characters/locations
+                        String searchKeywords = semanticAnalysis.entities().get("arguments");
+                        if (searchKeywords == null || searchKeywords.isBlank()) {
+                            searchKeywords = semanticAnalysis.entities().get("query");
+                        }
+                        
+                        // Format the Swarm trigger: [KNOWLEDGE_SEARCH] Keyword1, Keyword2 | The actual question
+                        String promptForPython = "[KNOWLEDGE_SEARCH] " + searchKeywords + " | " + activeText;
+                        String context = ContextBuilder.buildActiveContext(loreService, activeText);
                         
                         ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
-                        AIEngine.reasonDeeply(semanticAnalysis.entities().get("query"), context, () -> isBusy.set(false));
+                        AIEngine.reasonDeeply(promptForPython, context, () -> isBusy.set(false));
                         releaseBusySynchronously = false;
                         if (onComplete != null) onComplete.run();
                         return;
@@ -271,9 +291,8 @@ public class CommandService {
                 return false;
                 
             case EXECUTE_SKILL: 
-                // UPGRADED: Extracts the inferred arguments out of the Semantic Router
                 String skillName = analysis.entities().get("query");
-                if (skillName == null || skillName.isBlank()) skillName = analysis.entities().get("skill"); // Fallback check
+                if (skillName == null || skillName.isBlank()) skillName = analysis.entities().get("skill");
                 String arguments = analysis.entities().get("arguments");
                 
                 com.cielcompanion.ai.SkillManager.executeSkill(skillName, arguments, () -> isBusy.set(false));
@@ -318,9 +337,14 @@ public class CommandService {
             case DND_REVEAL_LORE: loreService.revealLore(analysis.entities().get("subject")); return true;
             case DND_ANALYZE_LORE: 
                 String subject = analysis.entities().get("subject");
-                if (subject == null) subject = userText;
-                String loreData = loreService.getExpandedNoteContent(subject).orElse("No specific notes found.");
-                return sendToAiWithData(userText, "[D&D CAMPAIGN NOTES]\n" + loreData + "\n\nINSTRUCTION: Analyze these notes to answer the user.");
+                if (subject == null || subject.isBlank()) subject = analysis.entities().get("arguments");
+                if (subject == null || subject.isBlank()) subject = userText;
+                
+                String promptForPython = "[KNOWLEDGE_SEARCH] " + subject + " | " + userText;
+                String context = ContextBuilder.buildActiveContext(loreService, userText);
+                ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
+                AIEngine.reasonDeeply(promptForPython, context, () -> isBusy.set(false));
+                return false;
             case TOGGLE_LISTENING: 
                 if (voiceListener != null) {
                     voiceListener.toggleListening();
@@ -412,8 +436,6 @@ public class CommandService {
         String data = String.join(" ", linesToSpeak);
         if (data.isBlank()) data = "No significant daily events detected.";
         
-        // FIX: Qwen3 was interpreting bullet points as system instructions to memorize.
-        // Rewritten as a direct conversational request.
         String prompt = "Master has asked for the Daily Report. Here is the local astronomy data:\n" + data + "\n\n" +
             "Please deliver a smooth, elegant morning briefing. Start with an appropriate [Emotion] tag. " +
             "Summarize the astronomy data, and also analyze today's date. If today is a major holiday, a notable historical event, or a pop-culture anniversary, briefly mention it. If not, just deliver the astronomy report.";
@@ -482,13 +504,22 @@ public class CommandService {
     private boolean handleRecallCommand(CommandAnalysis analysis, String userText) {
         final String key = analysis.entities().get("key");
         if (key == null) {
-            speakRandomLine(LineManager.getUnrecognizedLines());
-            return true;
+            String context = ContextBuilder.buildActiveContext(loreService, userText);
+            ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
+            AIEngine.chatFast(userText, context, () -> isBusy.set(false));
+            return false;
         }
         Optional<Fact> factOpt = MemoryService.getFact(key);
-        String data = factOpt.map(fact -> "Fact retrieved from memory core regarding '" + fact.key() + "': " + fact.value())
-            .orElse("No data found in memory core for '" + key + "'.");
-        return sendToAiWithData(userText, data);
+        if (factOpt.isPresent()) {
+            String data = "Fact retrieved from memory core regarding '" + factOpt.get().key() + "': " + factOpt.get().value();
+            return sendToAiWithData(userText, data);
+        } else {
+            // Memory not found locally, rerouting to the general swarm for autonomous tool usage
+            String context = ContextBuilder.buildActiveContext(loreService, userText);
+            ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
+            AIEngine.chatFast(userText, context, () -> isBusy.set(false));
+            return false;
+        }
     }
 
     private boolean handleApiSearch(CommandAnalysis analysis, String userText) {
@@ -630,26 +661,20 @@ public class CommandService {
             LineManager.getDiceRollResultLine().ifPresent(line -> {
                 String fullText = line.text();
                 
-                // If the static line contains {result}, split it so we can cache the number independently
                 if (fullText.contains("{result}")) {
                     String[] parts = fullText.split("\\{result\\}");
                     
-                    // 1. Speak the flavor prefix (e.g. "The result is ")
                     if (parts.length > 0 && !parts[0].isBlank()) {
-                        SpeechService.speakPreformatted(parts[0], line.key() + "_prefix", false, true); // Flush queue to stop other speech
+                        SpeechService.speakPreformatted(parts[0], line.key() + "_prefix", false, true);
                     }
                     
-                    // 2. Speak the NUMBER using a permanent cache key
                     String numberStr = String.valueOf(finalTotal);
-                    // Pass "number_X" as the key so Azure automatically caches and reuses it permanently!
-                    SpeechService.speakPreformatted(numberStr, "number_" + finalTotal, false, false); // Queue it
+                    SpeechService.speakPreformatted(numberStr, "number_" + finalTotal, false, false);
                     
-                    // 3. Speak the suffix if it exists
                     if (parts.length > 1 && !parts[1].isBlank()) {
-                        SpeechService.speakPreformatted(parts[1], line.key() + "_suffix", false, false); // Queue it
+                        SpeechService.speakPreformatted(parts[1], line.key() + "_suffix", false, false);
                     }
                 } else {
-                    // Fallback if the formatting is missing the {result} tag
                     String finalLine = fullText.replace("{result}", String.valueOf(finalTotal));
                     SpeechService.speakPreformatted(finalLine, null, false, true);
                 }
@@ -705,14 +730,10 @@ public class CommandService {
             SpeechService.speakPreformatted(LineManager.getRebootConfirmLine().text(), LineManager.getRebootConfirmLine().key());
         }
         
-        // Trigger the Diary Entry Generation. We pass the command type so she knows why she is logging.
         String contextSummary = "The Master initiated a " + commandType + " sequence via voice command.";
         
-        // FIX: Updated to match the new method name in VaultService
         VaultService.generateSystemDiaryEntryBlocking(contextSummary, isReboot);
 
-        // The 30-second delay ensures the LLM has enough time to finish writing the diary 
-        // before the OS forces the application to close.
         shutdownScheduler = Executors.newSingleThreadScheduledExecutor();
         shutdownScheduler.schedule(() -> {
             try {

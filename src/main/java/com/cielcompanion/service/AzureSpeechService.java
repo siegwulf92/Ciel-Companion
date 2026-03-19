@@ -106,7 +106,8 @@ public class AzureSpeechService {
     private static boolean generateAndPlayFile(String text, String style, String pitch, String lang, File destination) {
         AudioConfig fileOutput = null;
         try {
-            System.out.println("[Azure TTS] Generating new static file: " + destination.getName() + " [Style: " + style + ", Lang: " + lang + "]");
+            // UPDATED: Now logs the exact text being written to the file
+            System.out.println("[Azure TTS] Generating new static file: " + destination.getName() + " | Text: \"" + text + "\" [Style: " + style + ", Lang: " + lang + "]");
             
             fileOutput = AudioConfig.fromWavFileOutput(destination.getAbsolutePath());
             activeSynthesizer = new SpeechSynthesizer(config, fileOutput);
@@ -145,7 +146,8 @@ public class AzureSpeechService {
 
     private static boolean streamDirectly(String text, String style, String pitch, String lang) {
         try {
-            System.out.println("[Azure TTS] Streaming dynamic content (Style: " + style + ", Lang: " + lang + ")...");
+            // UPDATED: Now logs the exact text being streamed
+            System.out.println("[Azure TTS] Streaming dynamic content: \"" + text + "\" (Style: " + style + ", Lang: " + lang + ")");
             
             AudioConfig audioConfig = AudioConfig.fromDefaultSpeakerOutput();
             activeSynthesizer = new SpeechSynthesizer(config, audioConfig);
