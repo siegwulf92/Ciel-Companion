@@ -54,17 +54,14 @@ public class AIEngine {
         memoryScheduler.scheduleWithFixedDelay(AIEngine::checkIdleMemoryDigestion, 60, 60, TimeUnit.SECONDS);
     }
 
-    private static void addHistory(String role, String content) {
+    private static synchronized void addHistory(String role, String content) {
         lastInteractionTime = System.currentTimeMillis();
         JsonObject msg = new JsonObject();
         msg.addProperty("role", role);
         msg.addProperty("content", content);
-        
-        synchronized (conversationHistory) {
-            conversationHistory.add(msg);
-            if (conversationHistory.size() > MAX_HISTORY) {
-                conversationHistory.removeFirst();
-            }
+        conversationHistory.add(msg);
+        if (conversationHistory.size() > MAX_HISTORY) {
+            conversationHistory.removeFirst();
         }
     }
 
@@ -78,6 +75,7 @@ public class AIEngine {
         });
     }
 
+    // --- HIGH-SPEED TRANSLITERATION (PARALLEL SWARM ROUTING) ---
     public static CompletableFuture<String> transliterateAsync(String englishText) {
         return CompletableFuture.supplyAsync(() -> {
             if (!ALPHA_NUM_PATTERN.matcher(englishText).find()) return englishText;
@@ -87,23 +85,33 @@ public class AIEngine {
                 return fallbackResult; 
             }
 
-            System.err.println("Ciel Warning: Transliteration failed. Returning raw English text.");
+            System.err.println("Ciel Warning: Swarm Transliteration failed. Returning raw English text.");
             return englishText; 
         }, translationExecutor);
     }
 
+    // RE-ADDED THE MISSING METHOD TO FIX COMPILATION ERROR!
+    public static String transliterateToKatakanaSync(String englishText) {
+        try {
+            return transliterateAsync(englishText).get(30, TimeUnit.SECONDS); 
+        } catch (Exception e) {
+            return englishText; 
+        }
+    }
+
     private static String attemptTransliteration(String englishText) {
         try {
+            // FIX: Point directly to the OpenJarvis Swarm Orchestrator, NOT LM Studio
             String url = "http://localhost:8000/transliterate";
             JsonObject payload = new JsonObject();
             payload.addProperty("text", englishText);
-            // NEW: Send the exact translator model name from ModelManager to Python
-            payload.addProperty("model", ModelManager.getModelName(ModelManager.ModelTier.TRANSLATOR));
+            // Fetches "ollama/qwen3-coder:480b-cloud" from your ModelManager
+            payload.addProperty("model", ModelManager.getModelName(ModelManager.ModelTier.TRANSLATOR)); 
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
-                    .timeout(Duration.ofSeconds(30)) // Extended for heavy cloud models
+                    .timeout(Duration.ofSeconds(30)) // Give the 480B model time to respond
                     .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                     .build();
 
@@ -121,14 +129,7 @@ public class AIEngine {
         return null;
     }
 
-    public static String transliterateToKatakanaSync(String englishText) {
-        try {
-            return transliterateAsync(englishText).get(30, TimeUnit.SECONDS); 
-        } catch (Exception e) {
-            return englishText; 
-        }
-    }
-
+    // --- THE SEMANTIC ROUTER (PRE-FRONTAL CORTEX) ---
     public static CommandAnalysis determineIntentSynchronously(String userMessage) {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
         String knownSkills = SkillManager.getAvailableSkillsString();
@@ -167,6 +168,11 @@ public class AIEngine {
                     
                     Intent mappedIntent;
                     try { mappedIntent = Intent.valueOf(intentStr); } catch (Exception e) { mappedIntent = Intent.UNKNOWN; }
+                    
+                    // FIX: Do not let the Evaluator strip the context out of conversational questions!
+                    if (mappedIntent == Intent.UNKNOWN) {
+                        cleanedText = userMessage; 
+                    }
                     
                     Map<String, String> entities = new HashMap<>();
                     entities.put("query", cleanedText); 
@@ -351,7 +357,7 @@ public class AIEngine {
     }
 
     public static void reasonDeeply(String userMessage, String systemContext, Runnable onComplete) {
-        System.out.println("Ciel Debug: Routing to Primary Logic Core...");
+        System.out.println("Ciel Debug: Routing to Primary Logic Core (DeepSeek)...");
         SpeechService.speakPreformatted("[Focused] Initiating deep cognitive analysis. Please stand by.");
 
         addHistory("user", userMessage);
@@ -370,19 +376,19 @@ public class AIEngine {
                     if (response.statusCode() == 200) {
                         processLogicResponse(response.body(), onComplete);
                     } else {
-                        System.err.println("Ciel AI Error: Primary Logic Core returned " + response.statusCode() + ". Falling back to Local Model.");
+                        System.err.println("Ciel AI Error: Primary Logic Core returned " + response.statusCode() + ". Falling back to Local Phi-4.");
                         reasonDeeplyLocalFallback(userMessage, systemContext, onComplete);
                     }
                 })
                 .exceptionally(e -> {
-                    System.err.println("Ciel AI Error: Primary Logic Core unreachable. Falling back to Local Model.");
+                    System.err.println("Ciel AI Error: Primary Logic Core unreachable. Falling back to Local Phi-4.");
                     reasonDeeplyLocalFallback(userMessage, systemContext, onComplete);
                     return null;
                 });
     }
 
     private static void reasonDeeplyLocalFallback(String userMessage, String systemContext, Runnable onComplete) {
-        System.out.println("Ciel Debug: Routing to Local Fallback Logic Core...");
+        System.out.println("Ciel Debug: Routing to Local Fallback Logic Core (LM Studio: Phi-4)...");
         
         String url = Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
         
@@ -420,7 +426,7 @@ public class AIEngine {
                     }
                 })
                 .exceptionally(e -> {
-                    System.err.println("Ciel AI Error: Local Logic core timeout.");
+                    System.err.println("Ciel AI Error: Local Logic core timeout. Ensure LM Studio is running.");
                     triggerFallback(userMessage, systemContext, onComplete);
                     return null;
                 });
@@ -447,7 +453,7 @@ public class AIEngine {
     }
 
     private static void triggerFallback(String userMessage, String systemContext, Runnable onComplete) {
-        System.out.println("Ciel Debug: Triggering final fallback core...");
+        System.out.println("Ciel Debug: Triggering final fallback core (LM Studio: Phi-4)...");
         
         String url = Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
         
@@ -502,13 +508,8 @@ public class AIEngine {
     private static JsonObject buildPayloadWithHistory(ModelManager.ModelTier tier, String systemContext, boolean stream) {
         JsonObject payload = new JsonObject();
         
-        String modelName = switch (tier) {
-            case PERSONALITY -> Settings.getLlmPersonalityModel();
-            case EVALUATOR -> Settings.getLlmEvaluatorModel();
-            case LOGIC -> Settings.getLlmLogicModel();
-            case LOCAL_LOGIC_FALLBACK -> Settings.getLlmLocalLogicFallbackModel();
-            case TRANSLATOR -> "ollama/deepseek-v3.1:671b-cloud";
-        };
+        // FIX: Now securely routes through ModelManager for absolute Swarm control
+        String modelName = ModelManager.getModelName(tier);
 
         payload.addProperty("model", modelName);
         payload.addProperty("stream", stream);

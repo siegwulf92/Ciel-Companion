@@ -42,6 +42,8 @@ public class ModelManager {
         // Adjust creativity based on task
         if (tier == ModelTier.LOGIC || tier == ModelTier.LOCAL_LOGIC_FALLBACK) {
             payload.addProperty("temperature", 0.3); // High logic, low hallucination
+        } else if (tier == ModelTier.TRANSLATOR) {
+            payload.addProperty("temperature", 0.0); // Zero creativity for translations
         } else {
             payload.addProperty("temperature", 0.7); // Personality
         }

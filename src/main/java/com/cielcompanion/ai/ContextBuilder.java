@@ -59,7 +59,7 @@ public class ContextBuilder {
             
             // 3. INJECT SWARM AUTONOMY TOOLS (NEW)
             sb.append("--- SWARM AUTONOMY TOOLS ---\n");
-            sb.append("You possess autonomous Swarm Agents that can fetch data you do not know. To use a tool, your ENTIRE output must be exactly the tool command.\n");
+            sb.append("You possess autonomous Swarm Agents. If you are asked for real-world, real-time, or factual information (like crypto prices, weather, news), you MUST use a tool. To use a tool, your ENTIRE output must be exactly the tool command.\n");
             sb.append("- To search the live internet: [WEB_SEARCH] your search query\n");
             sb.append("- To search your deep long-term Markdown Vault (for past conversations, preferences, or D&D notes): [MEMORY_SEARCH] your search query\n");
             sb.append("If you use a tool, DO NOT output any emotion tags or conversational text. The system will intercept the tool, fetch the data, and prompt you again with the new information so you can speak.\n\n");
