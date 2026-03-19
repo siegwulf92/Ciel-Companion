@@ -90,7 +90,6 @@ public class AIEngine {
         }, translationExecutor);
     }
 
-    // RE-ADDED THE MISSING METHOD TO FIX COMPILATION ERROR!
     public static String transliterateToKatakanaSync(String englishText) {
         try {
             return transliterateAsync(englishText).get(30, TimeUnit.SECONDS); 
@@ -101,17 +100,15 @@ public class AIEngine {
 
     private static String attemptTransliteration(String englishText) {
         try {
-            // FIX: Point directly to the OpenJarvis Swarm Orchestrator, NOT LM Studio
             String url = "http://localhost:8000/transliterate";
             JsonObject payload = new JsonObject();
             payload.addProperty("text", englishText);
-            // Fetches "ollama/qwen3-coder:480b-cloud" from your ModelManager
             payload.addProperty("model", ModelManager.getModelName(ModelManager.ModelTier.TRANSLATOR)); 
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
-                    .timeout(Duration.ofSeconds(30)) // Give the 480B model time to respond
+                    .timeout(Duration.ofSeconds(30)) 
                     .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                     .build();
 
@@ -120,11 +117,18 @@ public class AIEngine {
                 JsonObject jsonResponse = JsonParser.parseString(response.body()).getAsJsonObject();
                 if (jsonResponse.has("katakana")) {
                     String result = jsonResponse.get("katakana").getAsString();
-                    if (!"エラー".equals(result)) return result;
+                    // UPGRADED: Prints the exact Python exception if LiteLLM crashes
+                    if (result.startsWith("エラー")) {
+                        System.err.println("Ciel Katakana Swarm Error: " + result);
+                        return null; 
+                    }
+                    return result;
                 }
+            } else {
+                System.err.println("Ciel Katakana Error: HTTP Status " + response.statusCode() + " - " + response.body());
             }
         } catch (Exception e) {
-            // Fail silently
+            System.err.println("Ciel Katakana Network Error: " + e.getMessage());
         }
         return null;
     }
@@ -134,11 +138,13 @@ public class AIEngine {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
         String knownSkills = SkillManager.getAvailableSkillsString();
         
+        // UPGRADED: Taught the semantic router about SEARCH_WEB
         String systemContext = "You are the NLU intent router for Ciel. Analyze the user's STT text, correct phonetic typos, and map it to an intent.\n" +
             "Available Intents:\n" +
             "GET_WEATHER : Ask about current weather\n" +
             "GET_TIME : Ask for time or date\n" +
             "GET_SYSTEM_STATUS : Ask for PC CPU/RAM status\n" +
+            "SEARCH_WEB : User asks for real-world facts, current events, prices, or general internet knowledge.\n" +
             "EXECUTE_SKILL : User is asking to use a previously learned skill: [" + knownSkills + "]. The cleaned_text MUST be the exact name of the skill.\n" +
             "DYNAMIC_PC_CONTROL : User asks to write a NEW script, automate a task, or manipulate PC settings NOT in the skills list.\n" +
             "DND_ANALYZE_LORE : Deep lore analysis, world-building, or cross-referencing files (Tensura, D&D, etc). The 'arguments' field MUST contain a comma-separated list of the specific subjects/names to search for (e.g., 'Malakar, Blorina').\n" +
@@ -169,7 +175,7 @@ public class AIEngine {
                     Intent mappedIntent;
                     try { mappedIntent = Intent.valueOf(intentStr); } catch (Exception e) { mappedIntent = Intent.UNKNOWN; }
                     
-                    // FIX: Do not let the Evaluator strip the context out of conversational questions!
+                    // FIX: Prevent the Evaluator from stripping out conversational context
                     if (mappedIntent == Intent.UNKNOWN) {
                         cleanedText = userMessage; 
                     }
@@ -376,19 +382,19 @@ public class AIEngine {
                     if (response.statusCode() == 200) {
                         processLogicResponse(response.body(), onComplete);
                     } else {
-                        System.err.println("Ciel AI Error: Primary Logic Core returned " + response.statusCode() + ". Falling back to Local Phi-4.");
+                        System.err.println("Ciel AI Error: Primary Logic Core returned " + response.statusCode() + ". Falling back to Local Model.");
                         reasonDeeplyLocalFallback(userMessage, systemContext, onComplete);
                     }
                 })
                 .exceptionally(e -> {
-                    System.err.println("Ciel AI Error: Primary Logic Core unreachable. Falling back to Local Phi-4.");
+                    System.err.println("Ciel AI Error: Primary Logic Core unreachable. Falling back to Local Model.");
                     reasonDeeplyLocalFallback(userMessage, systemContext, onComplete);
                     return null;
                 });
     }
 
     private static void reasonDeeplyLocalFallback(String userMessage, String systemContext, Runnable onComplete) {
-        System.out.println("Ciel Debug: Routing to Local Fallback Logic Core (LM Studio: Phi-4)...");
+        System.out.println("Ciel Debug: Routing to Local Fallback Logic Core...");
         
         String url = Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
         
@@ -508,7 +514,6 @@ public class AIEngine {
     private static JsonObject buildPayloadWithHistory(ModelManager.ModelTier tier, String systemContext, boolean stream) {
         JsonObject payload = new JsonObject();
         
-        // FIX: Now securely routes through ModelManager for absolute Swarm control
         String modelName = ModelManager.getModelName(tier);
 
         payload.addProperty("model", modelName);

@@ -66,36 +66,11 @@ public class ContextBuilder {
 
             // 4. INJECT LORE AND SYSTEM DATA
             String tensuraLore = TensuraKnowledgeService.getRelevantKnowledge(userMessage);
-            if (!tensuraLore.isEmpty()) {
-                sb.append("\n--- TENSURA DATABASE INJECTION ---\n");
+            if (tensuraLore != null && !tensuraLore.isBlank()) {
                 sb.append(tensuraLore).append("\n");
             }
-
-            sb.append("--- CURRENT SYSTEM STATE ---\n");
-            sb.append("Current Date: ").append(PhonoKanaSanitizer.getCurrentDateKatakana()).append("\n");
-            sb.append("Current Time: ").append(PhonoKanaSanitizer.getCurrentTimeKatakana()).append("\n");
-            
-            SystemMonitor.SystemMetrics metrics = SystemMonitor.getSystemMetrics();
-            sb.append("Active Application: ").append(metrics.activeWindowTitle()).append("\n");
-            
-            if (ShortTermMemoryService.getMemory().isInGamingSession()) {
-                sb.append("State: Master is currently playing a game. Feel free to comment on it if relevant.\n");
-            } else {
-                sb.append("State: Master is in idle/work phase.\n");
-            }
         }
-
-        CielState.getEmotionManager().ifPresent(em -> {
-            sb.append("Your Current Attitude: ").append(em.getCurrentAttitude()).append("\n");
-        });
-
-        List<String> memories = MemoryService.getRecentEpisodicMemories(3);
-        if (!memories.isEmpty()) {
-            sb.append("\n--- PAST MEMORIES & CONTEXT ---\n");
-            for (String mem : memories) {
-                sb.append("- ").append(mem).append("\n");
-            }
-        }
+        
         return sb.toString();
     }
 
