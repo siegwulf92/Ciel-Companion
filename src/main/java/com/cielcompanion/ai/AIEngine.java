@@ -65,6 +65,16 @@ public class AIEngine {
         }
     }
 
+    // HELPER: Ensures LiteLLM always has a provider prefix
+    private static void ensureLiteLlmProvider(JsonObject payload) {
+        if (payload != null && payload.has("model")) {
+            String model = payload.get("model").getAsString();
+            if (!model.contains("/")) {
+                payload.addProperty("model", "ollama/" + model);
+            }
+        }
+    }
+
     public static void warmUpModels() {
         System.out.println("Ciel Debug: Sending silent pings to force-load AI models into VRAM...");
         CompletableFuture.runAsync(() -> {
@@ -99,16 +109,16 @@ public class AIEngine {
 
     private static String attemptTransliteration(String englishText) {
         try {
-            // FIX: Uses Port 8000 (OpenJarvis Swarm) to leverage the Python Dictionary & Qwen3
             String url = "http://localhost:8000/transliterate";
             JsonObject payload = new JsonObject();
             payload.addProperty("text", englishText);
             payload.addProperty("model", ModelManager.getModelName(ModelManager.ModelTier.TRANSLATOR)); 
+            ensureLiteLlmProvider(payload);
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
-                    .timeout(Duration.ofSeconds(30)) // Safely bumped to 30 seconds
+                    .timeout(Duration.ofSeconds(30))
                     .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                     .build();
 
@@ -142,15 +152,17 @@ public class AIEngine {
             "GET_TIME : Ask for time or date\n" +
             "GET_SYSTEM_STATUS : Ask for PC CPU/RAM status\n" +
             "SEARCH_WEB : User asks for real-world facts, current events, prices, or general internet knowledge.\n" +
+            "GET_DAILY_REPORT : User asks for a daily briefing, stock portfolio update, or morning report.\n" +
             "EXECUTE_SKILL : User is asking to use a previously learned skill: [" + knownSkills + "]. The cleaned_text MUST be the exact name of the skill.\n" +
             "DYNAMIC_PC_CONTROL : User asks to write a NEW script, automate a task, or manipulate PC settings NOT in the skills list.\n" +
-            "DND_ANALYZE_LORE : Deep lore analysis, world-building, or cross-referencing files (Tensura, D&D, etc). The 'arguments' field MUST contain a comma-separated list of the specific subjects/names to search for (e.g., 'Malakar, Blorina').\n" +
+            "DND_ANALYZE_LORE : Deep lore analysis, world-building, or cross-referencing files (Tensura, D&D, etc). The 'arguments' field MUST contain a comma-separated list of the specific subjects/names to search for.\n" +
             "UNKNOWN : General chat, questions, or conversation.\n\n" +
             "MASTER'S PREFERENCES & INFERRED LOGIC:\n" +
             "The Master prefers quantified outputs to be even numbers or multiples of 5. If the user gives a vague command, infer a logical target value based on these preferences and provide it in the 'arguments' field.\n\n" +
             "Return strictly JSON: { \"intent\": \"THE_INTENT\", \"cleaned_text\": \"Corrected query or skill name\", \"arguments\": \"Inferred parameters separated by spaces, or empty string\" }";
 
         JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, userMessage, false);
+        ensureLiteLlmProvider(payload);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -197,6 +209,7 @@ public class AIEngine {
     public static CompletableFuture<String> generateSilentLogic(String userMessage, String systemContext) {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOGIC);
         JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.LOGIC, systemContext, userMessage, false);
+        ensureLiteLlmProvider(payload);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -215,10 +228,9 @@ public class AIEngine {
     }
 
     public static String generateDiaryEntrySync(String userMessage, String systemContext) {
-        System.out.println("Ciel Debug: Generating diary entry synchronously (Fast Personality Tier)...");
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.PERSONALITY);
-        
         JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.PERSONALITY, systemContext, userMessage, false);
+        ensureLiteLlmProvider(payload);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -279,7 +291,6 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofSeconds(60))
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -308,9 +319,23 @@ public class AIEngine {
                                         sentenceBuffer.append(textDelta);
                                         fullResponseBuffer.append(textDelta);
 
-                                        if (isSentenceBoundary(sentenceBuffer.toString())) {
-                                            processAndSpeakChunk(sentenceBuffer.toString());
-                                            sentenceBuffer.setLength(0);
+                                        // ROBUST STREAMING CHUNKER: Protects decimals ($646.58) by waiting for space after punctuation
+                                        String bufferStr = sentenceBuffer.toString();
+                                        int splitIndex = -1;
+                                        String[] boundaries = {". ", "! ", "? ", "\n", "。", "！", "？"};
+                                        for (String b : boundaries) {
+                                            int idx = bufferStr.indexOf(b);
+                                            if (idx != -1) {
+                                                if (splitIndex == -1 || idx < splitIndex) {
+                                                    splitIndex = idx + b.length();
+                                                }
+                                            }
+                                        }
+
+                                        if (splitIndex != -1) {
+                                            String chunkToSpeak = bufferStr.substring(0, splitIndex);
+                                            processAndSpeakChunk(chunkToSpeak);
+                                            sentenceBuffer.delete(0, splitIndex);
                                         }
                                     }
                                 }
@@ -318,6 +343,7 @@ public class AIEngine {
                         }
                     });
                     
+                    // Flush the final remaining sentence in the buffer
                     if (sentenceBuffer.length() > 0 && sentenceBuffer.toString().trim().length() > 0) {
                         processAndSpeakChunk(sentenceBuffer.toString());
                     }
@@ -341,6 +367,7 @@ public class AIEngine {
     public static CompletableFuture<JsonObject> evaluateBackground(String transcriptBuffer, String systemContext) {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
         JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, "TRANSCRIPT:\n" + transcriptBuffer, false);
+        ensureLiteLlmProvider(payload);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -398,6 +425,7 @@ public class AIEngine {
         payload.addProperty("model", "phi-4-reasoning-plus"); 
         payload.addProperty("temperature", 0.3); 
         payload.addProperty("stream", false);
+        ensureLiteLlmProvider(payload);
         
         JsonArray messages = new JsonArray();
         JsonObject sysMsg = new JsonObject();
@@ -457,13 +485,13 @@ public class AIEngine {
     private static void triggerFallback(String userMessage, String systemContext, Runnable onComplete) {
         System.out.println("Ciel Debug: Triggering final fallback core (LM Studio: Phi-4)...");
         
-        // FIX: Direct LM Studio routing to prevent OpenJarvis mapping errors
         String url = Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
         
         JsonObject payload = new JsonObject();
         payload.addProperty("model", "phi-4-reasoning-plus"); 
         payload.addProperty("temperature", 0.3); 
         payload.addProperty("stream", false);
+        ensureLiteLlmProvider(payload);
         
         JsonArray messages = new JsonArray();
         JsonObject sysMsg = new JsonObject();
@@ -503,7 +531,6 @@ public class AIEngine {
                         SpeechService.speakPreformatted("[Glitched] Fallback cognitive matrix also unavailable.");
                     }
                 })
-                // FIX: whenComplete ensures the isBusy lock is always released
                 .whenComplete((res, ex) -> {
                     if (onComplete != null) onComplete.run();
                 });
@@ -517,12 +544,14 @@ public class AIEngine {
             case EVALUATOR -> Settings.getLlmEvaluatorModel();
             case LOGIC -> Settings.getLlmLogicModel();
             case LOCAL_LOGIC_FALLBACK -> Settings.getLlmLocalLogicFallbackModel();
-            default -> Settings.getLlmPersonalityModel(); // FIX: Exhaustive switch requirement satisfied
+            default -> Settings.getLlmPersonalityModel(); 
         };
 
         payload.addProperty("model", modelName);
         payload.addProperty("stream", stream);
         payload.addProperty("temperature", (tier == ModelManager.ModelTier.LOGIC || tier == ModelManager.ModelTier.LOCAL_LOGIC_FALLBACK) ? 0.3 : 0.7);
+
+        ensureLiteLlmProvider(payload);
 
         JsonArray messages = new JsonArray();
         
@@ -539,11 +568,6 @@ public class AIEngine {
 
         payload.add("messages", messages);
         return payload;
-    }
-
-    private static boolean isSentenceBoundary(String text) {
-        String t = text.trim();
-        return t.endsWith("。") || t.endsWith("？") || t.endsWith("！") || t.endsWith(".") || t.endsWith("!") || t.endsWith("?") || t.endsWith("\n");
     }
 
     private static void processAndSpeakChunk(String chunk) {

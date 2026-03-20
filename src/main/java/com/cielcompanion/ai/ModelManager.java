@@ -1,5 +1,6 @@
 package com.cielcompanion.ai;
 
+import com.cielcompanion.service.Settings;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -11,31 +12,40 @@ import com.google.gson.JsonParser;
 public class ModelManager {
 
     public enum ModelTier {
-        PERSONALITY, // Fast chat (Local Qwen)
-        EVALUATOR,   // Background observer/emotions (Local Qwen)
-        LOGIC,       // Deep reasoning/Orchestrator (Cloud DeepSeek)
-        LOCAL_LOGIC_FALLBACK, // Deep reasoning (Local Phi-4)
-        TRANSLATOR   // Phonetic translation (Local Qwen to guarantee zero timeout)
+        PERSONALITY, 
+        EVALUATOR,   
+        LOGIC,       
+        LOCAL_LOGIC_FALLBACK, 
+        TRANSLATOR   
     }
 
     private static final String JARVIS_URL = "http://localhost:8000/v1/chat/completions";
 
     public static String getModelName(ModelTier tier) {
         return switch (tier) {
-            case PERSONALITY -> "ollama/qwen3:8b";
-            case EVALUATOR -> "ollama/qwen3:8b";
-            case LOGIC -> "ollama/deepseek-v3.1:671b-cloud"; 
-            case LOCAL_LOGIC_FALLBACK -> "openai/phi-4-reasoning-plus"; 
-            case TRANSLATOR -> "ollama/qwen3:8b"; // Switched back to local to prevent 15-second cloud timeouts
+            case PERSONALITY -> Settings.getLlmPersonalityModel();
+            case EVALUATOR -> Settings.getLlmEvaluatorModel();
+            case LOGIC -> Settings.getLlmLogicModel();
+            case LOCAL_LOGIC_FALLBACK -> Settings.getLlmLocalLogicFallbackModel();
+            case TRANSLATOR -> Settings.getLlmPersonalityModel(); // Map translator to the fast local personality model
         };
+    }
+
+    // Ensures LiteLLM always has a provider prefix (e.g., ollama/, openai/, deepseek/)
+    private static String applyProviderPrefix(String modelName) {
+        if (modelName != null && !modelName.isBlank() && !modelName.contains("/")) {
+            return "ollama/" + modelName;
+        }
+        return modelName;
     }
 
     public static JsonObject buildPayload(ModelTier tier, String systemContext, String userMessage, boolean stream) {
         JsonObject payload = new JsonObject();
         
-        String modelName = getModelName(tier);
+        String rawModelName = getModelName(tier);
+        String routedModelName = applyProviderPrefix(rawModelName);
 
-        payload.addProperty("model", modelName);
+        payload.addProperty("model", routedModelName);
         payload.addProperty("stream", stream);
         
         // Adjust creativity based on task
@@ -53,6 +63,7 @@ public class ModelManager {
             options.addProperty("num_gpu", 0); 
             payload.add("options", options);
             
+            // Standard JSON enforcement compatible with both Ollama and OpenAI specs
             JsonObject responseFormat = new JsonObject();
             responseFormat.addProperty("type", "json_object");
             payload.add("response_format", responseFormat);
