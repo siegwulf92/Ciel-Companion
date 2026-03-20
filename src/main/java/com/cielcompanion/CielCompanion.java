@@ -37,7 +37,7 @@ public class CielCompanion {
     private static ScheduledExecutorService scheduler;
     private static VoiceListener voiceListener;
     private static CielGui cielGui;
-    private static final int SINGLE_INSTANCE_PORT = 54321; // New port to ensure clean start
+    private static final int SINGLE_INSTANCE_PORT = 54321; 
     private static ServerSocket instanceSocket;
     private static final String COMMAND_TRIGGER_PASSPHRASE = "ciel_privileged_access_protocol_-alpha-";
     private static final String SEARCH_TRIGGER_PASSPHRASE = "ciel_web_search_protocol-beta-";
@@ -47,13 +47,11 @@ public class CielCompanion {
     public static void main(String[] args) {
         System.setProperty("jdk.http.auth.tunneling.disabledSchemes", "");
 
-        // 1. LOCK FIRST (Prevents double logs)
         if (!acquireInstanceLock()) {
             System.err.println("Ciel Companion is already running. Exiting.");
             System.exit(0);
         }
 
-        // 2. LOG SECOND
         FileLogger.initialize();
         System.out.println("Ciel Companion starting... (Clean Lock Acquired)");
 
@@ -80,7 +78,6 @@ public class CielCompanion {
             AppProfilerService.initialize();
             PhoneticsService.initialize();
             
-            // ... Initialize Services ...
             IntentService intentService = new IntentService();
             AppLauncherService appLauncherService = new AppLauncherService();
             ConversationService conversationService = new ConversationService(intentService);
@@ -90,17 +87,13 @@ public class CielCompanion {
             AppScannerService appScannerService = new AppScannerService(appLauncherService);
             SoundService soundService = new SoundService();
             
-            // D&D Services Initialization
             LoreService loreService = new LoreService();
             RulebookService rulebookService = new RulebookService();
             MasteryService masteryService = new MasteryService();
             DndCampaignService dndCampaignService = new DndCampaignService();
-            
-            // NEW SERVICES
             CombatTrackerService combatTrackerService = new CombatTrackerService();
             SpellCheckService spellCheckService = new SpellCheckService(); 
             
-            // UPDATED: CommandService now accepts ALL D&D services including spellCheckService
             CommandService commandService = new CommandService(
                 intentService, appLauncherService, conversationService, routineService, 
                 webService, appFinderService, appScannerService, emotionManager, 
@@ -113,20 +106,15 @@ public class CielCompanion {
             commandService.setVoiceListener(voiceListener);
             
             SpeechService.initialize(voiceListener); 
-            
-            // Initialize Skill Crafter
             SkillCrafterService.initialize();
-
-            // Initialize background Swarm services for Autonomy, Habits, and Skill Merging
             HabitTrackerService.initialize();
             com.cielcompanion.ai.SkillEvolutionEngine.initialize();
-            
+            FinanceService.initialize();
             com.cielcompanion.memory.stwm.ShortTermMemoryService.initialize();
 
             startMainLoop(emotionManager);
             System.out.println("Ciel Companion initialized successfully.");
 
-            // Pass services to background init
             startBackgroundInitialization(intentService, appLauncherService, routineService, conversationService, webService, appFinderService, appScannerService, soundService, loreService, rulebookService, commandService);
 
         } catch (Exception e) {
@@ -134,18 +122,12 @@ public class CielCompanion {
             System.exit(1);
         }
 
-        // --- UPDATED SHUTDOWN HOOK ---
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("Ciel Companion shutting down...");
 
-            // Fetch the last 5 episodic memories to give her context on what happened this session
             List<String> recentMemories = MemoryService.getRecentEpisodicMemories(5);
             String contextSummary = recentMemories.isEmpty() ? "No significant interactions recorded this session." : String.join("\n- ", recentMemories);
-
-            // Determine if it's a reboot (creating the flag file) or a full stop
             boolean isReboot = !CielState.isPerformingColdShutdown();
-            
-            // BLOCKING CALL: The terminal will pause here until the AI finishes generating the markdown text.
             VaultService.generateSystemDiaryEntryBlocking(contextSummary, isReboot);
 
             if (isReboot) {
@@ -159,13 +141,9 @@ public class CielCompanion {
             if (scheduler != null) scheduler.shutdown();
             SpeechService.cleanup();
             
-            // Clean up the background Python server if we started it this session
             if (jarvisProcess != null && jarvisProcess.isAlive()) {
                 System.out.println("Ciel Debug: Shutting down background OpenJarvis server...");
-                try {
-                    // Windows specific command to kill the entire process tree (cmd.exe + python)
-                    Runtime.getRuntime().exec("taskkill /F /T /PID " + jarvisProcess.pid());
-                } catch (IOException e) { e.printStackTrace(); }
+                try { Runtime.getRuntime().exec("taskkill /F /T /PID " + jarvisProcess.pid()); } catch (IOException e) {}
             }
             
             releaseInstanceLock();
@@ -207,12 +185,9 @@ public class CielCompanion {
 
         new Thread(() -> {
             try {
-                // ADDED: Wait for Windows to boot Ollama/LM Studio before trying to start OpenJarvis
                 waitForInferenceEngines();
-                com.cielcompanion.ai.AIEngine.warmUpModels();
-                
-                // Check and boot the AI Brain
                 ensureJarvisServerRunning();
+                com.cielcompanion.ai.AIEngine.warmUpModels();
 
                 LocationService.initialize();
                 AstronomyService.initializeApiState();
@@ -224,20 +199,17 @@ public class CielCompanion {
                 voiceListener.initialize();
                 voiceListener.initializeMicrophoneAsync();
                 
-                // FIX: Grant Privileged Mode and check for Pending Tasks
                 startTriggerListener(5555, COMMAND_TRIGGER_PASSPHRASE, () -> {
                     System.out.println("Ciel Debug: VoiceAttack Command Trigger received. Granting Privileged Mode.");
                     com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, 1);
                     
                     String pendingTask = com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().getPendingSystemTask();
-                    
                     if (pendingTask != null) {
                         System.out.println("Ciel Debug: Executing pending system task: " + pendingTask);
                         SpeechService.speakPreformatted("Authorization confirmed. Processing queued system directive.");
                         com.cielcompanion.service.SkillCrafterService.synthesizeNewSkill(pendingTask);
                         com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().clearPendingSystemTask();
                     } else {
-                        // If nothing is pending, open the mic normally
                         voiceListener.startListeningForCommand();
                     }
                 });
@@ -249,29 +221,64 @@ public class CielCompanion {
                     hotkeyService.initialize();
                 }
                 System.out.println("Ciel Debug: Background initialization complete.");
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
+            } catch (Exception e) { e.printStackTrace(); }
         }, "Ciel-Background-Initializer").start();
     }
 
+    private static boolean isPortInUse(int port) {
+        try (Socket ignored = new Socket("localhost", port)) {
+            return true; 
+        } catch (IOException e) {
+            return false; 
+        }
+    }
+
+    // --- UPGRADED OS-LEVEL ASSASSIN ---
+    // Uses PowerShell to violently kill the process holding the port without fragile text parsing.
+    private static void killProcessOnPort(int port) {
+        try {
+            String psCommand = "Get-Process -Id (Get-NetTCPConnection -LocalPort " + port + " -ErrorAction SilentlyContinue).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force";
+            ProcessBuilder pb = new ProcessBuilder("powershell.exe", "-Command", psCommand);
+            pb.start().waitFor();
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Failed to forcefully free port " + port);
+        }
+    }
+
     private static void ensureJarvisServerRunning() {
-        System.out.println("Ciel Debug: Checking if OpenJarvis Swarm server is running...");
+        System.out.println("Ciel Debug: Checking for existing OpenJarvis Swarm server on port 8000...");
+        
         if (isJarvisAlive()) {
-            System.out.println("Ciel Debug: OpenJarvis is already running on port 8000.");
-            return;
+            System.out.println("Ciel Debug: Stale OpenJarvis instance detected. Sending lethal HTTP shutdown signal...");
+            killJarvis();
+            
+            int killWait = 0;
+            // Wait for it to gracefully stop responding
+            while (isJarvisAlive() && killWait < 15) {
+                try { Thread.sleep(1000); } catch (InterruptedException e) {}
+                killWait++;
+            }
+            
+            // If it somehow survived or the port is still locked, drop the PowerShell hammer
+            if (isJarvisAlive() || isPortInUse(8000)) {
+                System.out.println("Ciel Debug: OpenJarvis resisted shutdown. Executing PowerShell termination...");
+                killProcessOnPort(8000);
+                try { Thread.sleep(3000); } catch (InterruptedException e) {}
+            } else {
+                System.out.println("Ciel Debug: Port 8000 successfully freed via HTTP shutdown.");
+                try { Thread.sleep(2000); } catch (InterruptedException e) {}
+            }
         }
 
-        System.out.println("Ciel Debug: OpenJarvis not detected. Auto-starting local AI Swarm server...");
+        System.out.println("Ciel Debug: Auto-starting local AI Swarm server...");
         try {
-            // UPDATED: Now runs your custom python Swarm orchestrator
-            ProcessBuilder pb = new ProcessBuilder("cmd.exe", "/c", "python openjarvis.py");
+            long javaPid = ProcessHandle.current().pid();
+            ProcessBuilder pb = new ProcessBuilder("cmd.exe", "/c", "python openjarvis.py " + javaPid);
             pb.directory(new File("C:\\Ciel Companion\\OpenJarvis-main"));
-            pb.redirectErrorStream(true); // Merge standard error and standard output
+            pb.redirectErrorStream(true);
             
             jarvisProcess = pb.start();
             
-            // Read the Python server's console output and print it directly into Ciel's Java log
             new Thread(() -> {
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(jarvisProcess.getInputStream(), StandardCharsets.UTF_8))) {
                     String line;
@@ -283,7 +290,6 @@ public class CielCompanion {
                 }
             }, "Jarvis-Console-Stream").start();
             
-            // Wait for it to boot (increased to 45 seconds to allow Ollama to load heavy models into VRAM)
             int attempts = 0;
             while (!isJarvisAlive() && attempts < 45) {
                 Thread.sleep(1000);
@@ -293,7 +299,7 @@ public class CielCompanion {
             if (isJarvisAlive()) {
                 System.out.println("Ciel Debug: OpenJarvis Swarm successfully auto-started in the background.");
             } else {
-                System.err.println("Ciel Error: OpenJarvis failed to respond after 45 seconds. Check the [OpenJarvis Swarm] logs above for errors.");
+                System.err.println("Ciel Error: OpenJarvis failed to respond after 45 seconds. Check the logs above for errors.");
             }
             
         } catch (Exception e) {
@@ -304,7 +310,6 @@ public class CielCompanion {
 
     private static boolean isJarvisAlive() {
         try {
-            // The OpenAPI /docs endpoint is standard for FastAPI (which our new openjarvis.py uses)
             java.net.HttpURLConnection connection = (java.net.HttpURLConnection) new java.net.URL("http://localhost:8000/docs").openConnection();
             connection.setRequestMethod("GET");
             connection.setConnectTimeout(1000);
@@ -316,11 +321,20 @@ public class CielCompanion {
         }
     }
 
-    // NEW METHOD: Patiently waits for Ollama or LM Studio to wake up
+    // RESTORED: The highly reliable HTTP shutdown endpoint
+    private static void killJarvis() {
+        try {
+            java.net.HttpURLConnection connection = (java.net.HttpURLConnection) new java.net.URL("http://localhost:8000/shutdown").openConnection();
+            connection.setRequestMethod("POST");
+            connection.setConnectTimeout(1000);
+            connection.setReadTimeout(1000);
+            connection.getResponseCode();
+        } catch (Exception e) {}
+    }
+
     private static boolean waitForInferenceEngines() {
         System.out.println("Ciel Debug: Waiting for Local Inference Engines (Ollama/LM Studio) to initialize...");
         int attempts = 0;
-        // Wait up to 3 minutes (18 attempts * 10 seconds) for Windows to boot the engines
         while (attempts < 18) { 
             boolean ollamaAlive = pingUrl("http://localhost:11434");
             boolean lmStudioAlive = pingUrl("http://localhost:1234/v1/models");
@@ -338,7 +352,6 @@ public class CielCompanion {
         return false;
     }
 
-    // NEW METHOD: Helper to check if a URL is active
     private static boolean pingUrl(String urlStr) {
         try {
             java.net.HttpURLConnection connection = (java.net.HttpURLConnection) new java.net.URL(urlStr).openConnection();
@@ -364,7 +377,6 @@ public class CielCompanion {
                         try (Socket clientSocket = serverSocket.accept();
                              BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream(), StandardCharsets.UTF_8))) {
                             
-                            // FIX: Robust read that does NOT require a newline character from VoiceAttack
                             char[] buffer = new char[256];
                             int charsRead = reader.read(buffer);
                             

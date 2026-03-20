@@ -57,7 +57,7 @@ public class ContextBuilder {
             sb.append("CORRECT Example: '[Focused] The movie comes out on November twenty fifth.'\n");
             sb.append("INCORRECT (BANNED): '[Focused] ザ ムービー カムズ アウト...' or '映画 は 11月 に...'\n\n");
             
-            // 3. INJECT SWARM AUTONOMY TOOLS (NEW)
+            // 3. INJECT SWARM AUTONOMY TOOLS (RESTORED)
             sb.append("--- SWARM AUTONOMY TOOLS ---\n");
             sb.append("You possess autonomous Swarm Agents. If you are asked for real-world, real-time, or factual information (like crypto prices, weather, news), you MUST use a tool. To use a tool, your ENTIRE output must be exactly the tool command.\n");
             sb.append("- To search the live internet: [WEB_SEARCH] your search query\n");

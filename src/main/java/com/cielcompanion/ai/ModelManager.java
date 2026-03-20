@@ -12,22 +12,21 @@ public class ModelManager {
 
     public enum ModelTier {
         PERSONALITY, // Fast chat (Local Qwen)
-        EVALUATOR,   // Background observer/emotions (Local Gemma)
-        LOGIC,       // Deep D&D reasoning/Orchestrator (Cloud DeepSeek 671b)
-        LOCAL_LOGIC_FALLBACK, // Deep reasoning (Local Phi-4 via LM Studio)
-        TRANSLATOR   // Phonetic translation (Cloud Qwen 480b)
+        EVALUATOR,   // Background observer/emotions (Local Qwen)
+        LOGIC,       // Deep reasoning/Orchestrator (Cloud DeepSeek)
+        LOCAL_LOGIC_FALLBACK, // Deep reasoning (Local Phi-4)
+        TRANSLATOR   // Phonetic translation (Local Qwen to guarantee zero timeout)
     }
 
-    // The universal endpoint for the OpenJarvis Swarm
     private static final String JARVIS_URL = "http://localhost:8000/v1/chat/completions";
 
     public static String getModelName(ModelTier tier) {
         return switch (tier) {
             case PERSONALITY -> "ollama/qwen3:8b";
-            case EVALUATOR -> "ollama/gemma3:12b";
-            case LOGIC -> "ollama/deepseek-v3.1:671b-cloud";
-            case LOCAL_LOGIC_FALLBACK -> "openai/phi-4-reasoning-plus"; // Routes to LM Studio
-            case TRANSLATOR -> "ollama/qwen3-coder:480b-cloud"; // Alibaba's massive model for flawless CJK Katakana
+            case EVALUATOR -> "ollama/qwen3:8b";
+            case LOGIC -> "ollama/deepseek-v3.1:671b-cloud"; 
+            case LOCAL_LOGIC_FALLBACK -> "openai/phi-4-reasoning-plus"; 
+            case TRANSLATOR -> "ollama/qwen3:8b"; // Switched back to local to prevent 15-second cloud timeouts
         };
     }
 
@@ -41,20 +40,19 @@ public class ModelManager {
         
         // Adjust creativity based on task
         if (tier == ModelTier.LOGIC || tier == ModelTier.LOCAL_LOGIC_FALLBACK) {
-            payload.addProperty("temperature", 0.3); // High logic, low hallucination
+            payload.addProperty("temperature", 0.3); 
         } else if (tier == ModelTier.TRANSLATOR) {
-            payload.addProperty("temperature", 0.0); // Zero creativity for translations
+            payload.addProperty("temperature", 0.1); 
         } else {
-            payload.addProperty("temperature", 0.7); // Personality
+            payload.addProperty("temperature", 0.7); 
         }
 
-        // Force CPU isolation for the background observer so it doesn't interrupt gaming
+        // Force CPU isolation for the background observer
         if (tier == ModelTier.EVALUATOR) {
             JsonObject options = new JsonObject();
-            options.addProperty("num_gpu", 0); // Applies to local Ollama only
+            options.addProperty("num_gpu", 0); 
             payload.add("options", options);
             
-            // Force JSON output for the evaluator
             JsonObject responseFormat = new JsonObject();
             responseFormat.addProperty("type", "json_object");
             payload.add("response_format", responseFormat);
@@ -77,13 +75,9 @@ public class ModelManager {
     }
 
     public static String getUrlForTier(ModelTier tier) {
-        // All tiers now route to the OpenJarvis orchestrator
         return JARVIS_URL;
     }
 
-    /**
-     * Utility method to safely extract the standard OpenAI-compatible text response.
-     */
     public static String extractMessageContent(String jsonBody) {
         try {
             JsonObject jsonResponse = JsonParser.parseString(jsonBody).getAsJsonObject();

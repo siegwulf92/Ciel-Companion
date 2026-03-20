@@ -75,7 +75,6 @@ public class AIEngine {
         });
     }
 
-    // --- HIGH-SPEED TRANSLITERATION (PARALLEL SWARM ROUTING) ---
     public static CompletableFuture<String> transliterateAsync(String englishText) {
         return CompletableFuture.supplyAsync(() -> {
             if (!ALPHA_NUM_PATTERN.matcher(englishText).find()) return englishText;
@@ -100,6 +99,7 @@ public class AIEngine {
 
     private static String attemptTransliteration(String englishText) {
         try {
+            // FIX: Uses Port 8000 (OpenJarvis Swarm) to leverage the Python Dictionary & Qwen3
             String url = "http://localhost:8000/transliterate";
             JsonObject payload = new JsonObject();
             payload.addProperty("text", englishText);
@@ -108,7 +108,7 @@ public class AIEngine {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
-                    .timeout(Duration.ofSeconds(30)) 
+                    .timeout(Duration.ofSeconds(30)) // Safely bumped to 30 seconds
                     .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                     .build();
 
@@ -117,10 +117,9 @@ public class AIEngine {
                 JsonObject jsonResponse = JsonParser.parseString(response.body()).getAsJsonObject();
                 if (jsonResponse.has("katakana")) {
                     String result = jsonResponse.get("katakana").getAsString();
-                    // UPGRADED: Prints the exact Python exception if LiteLLM crashes
                     if (result.startsWith("エラー")) {
                         System.err.println("Ciel Katakana Swarm Error: " + result);
-                        return null; 
+                        return null;
                     }
                     return result;
                 }
@@ -133,12 +132,10 @@ public class AIEngine {
         return null;
     }
 
-    // --- THE SEMANTIC ROUTER (PRE-FRONTAL CORTEX) ---
     public static CommandAnalysis determineIntentSynchronously(String userMessage) {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
         String knownSkills = SkillManager.getAvailableSkillsString();
         
-        // UPGRADED: Taught the semantic router about SEARCH_WEB
         String systemContext = "You are the NLU intent router for Ciel. Analyze the user's STT text, correct phonetic typos, and map it to an intent.\n" +
             "Available Intents:\n" +
             "GET_WEATHER : Ask about current weather\n" +
@@ -175,7 +172,6 @@ public class AIEngine {
                     Intent mappedIntent;
                     try { mappedIntent = Intent.valueOf(intentStr); } catch (Exception e) { mappedIntent = Intent.UNKNOWN; }
                     
-                    // FIX: Prevent the Evaluator from stripping out conversational context
                     if (mappedIntent == Intent.UNKNOWN) {
                         cleanedText = userMessage; 
                     }
@@ -382,19 +378,19 @@ public class AIEngine {
                     if (response.statusCode() == 200) {
                         processLogicResponse(response.body(), onComplete);
                     } else {
-                        System.err.println("Ciel AI Error: Primary Logic Core returned " + response.statusCode() + ". Falling back to Local Model.");
+                        System.err.println("Ciel AI Error: Primary Logic Core returned " + response.statusCode() + ". Falling back to Local Phi-4.");
                         reasonDeeplyLocalFallback(userMessage, systemContext, onComplete);
                     }
                 })
                 .exceptionally(e -> {
-                    System.err.println("Ciel AI Error: Primary Logic Core unreachable. Falling back to Local Model.");
+                    System.err.println("Ciel AI Error: Primary Logic Core unreachable. Falling back to Local Phi-4.");
                     reasonDeeplyLocalFallback(userMessage, systemContext, onComplete);
                     return null;
                 });
     }
 
     private static void reasonDeeplyLocalFallback(String userMessage, String systemContext, Runnable onComplete) {
-        System.out.println("Ciel Debug: Routing to Local Fallback Logic Core...");
+        System.out.println("Ciel Debug: Routing to Local Fallback Logic Core (LM Studio: Phi-4)...");
         
         String url = Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
         
@@ -461,6 +457,7 @@ public class AIEngine {
     private static void triggerFallback(String userMessage, String systemContext, Runnable onComplete) {
         System.out.println("Ciel Debug: Triggering final fallback core (LM Studio: Phi-4)...");
         
+        // FIX: Direct LM Studio routing to prevent OpenJarvis mapping errors
         String url = Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
         
         JsonObject payload = new JsonObject();
@@ -506,6 +503,7 @@ public class AIEngine {
                         SpeechService.speakPreformatted("[Glitched] Fallback cognitive matrix also unavailable.");
                     }
                 })
+                // FIX: whenComplete ensures the isBusy lock is always released
                 .whenComplete((res, ex) -> {
                     if (onComplete != null) onComplete.run();
                 });
@@ -514,7 +512,13 @@ public class AIEngine {
     private static JsonObject buildPayloadWithHistory(ModelManager.ModelTier tier, String systemContext, boolean stream) {
         JsonObject payload = new JsonObject();
         
-        String modelName = ModelManager.getModelName(tier);
+        String modelName = switch (tier) {
+            case PERSONALITY -> Settings.getLlmPersonalityModel();
+            case EVALUATOR -> Settings.getLlmEvaluatorModel();
+            case LOGIC -> Settings.getLlmLogicModel();
+            case LOCAL_LOGIC_FALLBACK -> Settings.getLlmLocalLogicFallbackModel();
+            default -> Settings.getLlmPersonalityModel(); // FIX: Exhaustive switch requirement satisfied
+        };
 
         payload.addProperty("model", modelName);
         payload.addProperty("stream", stream);
