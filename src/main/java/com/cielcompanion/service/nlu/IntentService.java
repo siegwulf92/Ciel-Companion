@@ -80,15 +80,15 @@ public class IntentService {
         intentPatterns.put(Intent.TERMINATE_PROCESS_FORCE, Pattern.compile("(?i)(force close|force quit|force terminate|horse close) (?<appName>.+)"));
         intentPatterns.put(Intent.TERMINATE_PROCESS, Pattern.compile("(?i)(close|quit|terminate) (?<appName>.+)"));
         
-        intentPatterns.put(Intent.INITIATE_REBOOT, Pattern.compile("(?i).*(reboot|restart).*(pc|computer|system).*"));
-        intentPatterns.put(Intent.INITIATE_SHUTDOWN, Pattern.compile("(?i).*(shut\\s*down|turn\\s*off|power\\s*off).*(pc|computer|system|peace).*"));
+        // RELAXED: Allows "reboot" or "shut down" without needing "pc" or "system" appended.
+        intentPatterns.put(Intent.INITIATE_REBOOT, Pattern.compile("(?i).*(reboot|restart).*"));
+        intentPatterns.put(Intent.INITIATE_SHUTDOWN, Pattern.compile("(?i).*(shut\\s*down|turn\\s*off|power\\s*off).*"));
         
         intentPatterns.put(Intent.CANCEL_SHUTDOWN, Pattern.compile("(?i)cancel (shutdown|reboot)"));
         intentPatterns.put(Intent.SCAN_FOR_APPS, Pattern.compile("(?i).*scan for new (apps|applications|games).*"));
         intentPatterns.put(Intent.FIND_APP_PATH, Pattern.compile("(?i)(find|locate|learn|save path for) (?<appName>.+)"));
         intentPatterns.put(Intent.START_ROUTINE, Pattern.compile("(?i)(start|initiate|begin|run) (?<routineName>\\w+) routine"));
         
-        // NEW: Chat Mode Triggers
         intentPatterns.put(Intent.START_CHAT_MODE, Pattern.compile("(?i)(let's chat|start conversation|talk to me|open chat mode)"));
         intentPatterns.put(Intent.END_CHAT_MODE, Pattern.compile("(?i)(end conversation|stop chatting|that's all|close chat mode)"));
         
@@ -136,8 +136,6 @@ public class IntentService {
             return new CommandAnalysis(Intent.EASTER_EGG, entities);
         }
 
-        // NEW: Check assimilated skills BEFORE checking generic regex patterns!
-        // This stops "OPEN_APPLICATION" from hijacking your skills.
         String matchedSkill = com.cielcompanion.ai.SkillManager.matchSkill(lowerText);
         if (matchedSkill != null) {
             entities.put("skill", matchedSkill);
@@ -169,7 +167,6 @@ public class IntentService {
         double bestRatio = 0.0;
 
         for (String key : LineManager.getEasterEggKeys()) {
-            // If the user's sentence physically contains the exact easter egg phrase, return it immediately
             if (heardText.contains(key.toLowerCase())) {
                 return key;
             }
@@ -180,8 +177,6 @@ public class IntentService {
             long currentScore = heardKeywords.stream().filter(keyKeywords::contains).count();
             double keyMatchRatio = (double) currentScore / keyKeywords.size();
             
-            // CRITICAL FIX: Prevent long conversational queries from triggering short easter eggs.
-            // If the user spoke a 14-word sentence, lengthRatio is 2/14 = 0.14. We require >= 0.4.
             double lengthRatio = (double) currentScore / heardKeywords.size();
 
             if (keyMatchRatio > bestRatio && lengthRatio >= 0.4) {

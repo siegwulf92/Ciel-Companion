@@ -143,7 +143,7 @@ public class CielCompanion {
             
             if (jarvisProcess != null && jarvisProcess.isAlive()) {
                 System.out.println("Ciel Debug: Shutting down background OpenJarvis server...");
-                try { Runtime.getRuntime().exec("taskkill /F /T /PID " + jarvisProcess.pid()); } catch (IOException e) {}
+                try { Runtime.getRuntime().exec("taskkill /F /T /PID " + jarvisProcess.pid()); } catch (IOException e) { e.printStackTrace(); }
             }
             
             releaseInstanceLock();
@@ -186,8 +186,9 @@ public class CielCompanion {
         new Thread(() -> {
             try {
                 waitForInferenceEngines();
-                ensureJarvisServerRunning();
                 com.cielcompanion.ai.AIEngine.warmUpModels();
+                
+                ensureJarvisServerRunning();
 
                 LocationService.initialize();
                 AstronomyService.initializeApiState();
@@ -204,6 +205,7 @@ public class CielCompanion {
                     com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, 1);
                     
                     String pendingTask = com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().getPendingSystemTask();
+                    
                     if (pendingTask != null) {
                         System.out.println("Ciel Debug: Executing pending system task: " + pendingTask);
                         SpeechService.speakPreformatted("Authorization confirmed. Processing queued system directive.");
@@ -221,45 +223,25 @@ public class CielCompanion {
                     hotkeyService.initialize();
                 }
                 System.out.println("Ciel Debug: Background initialization complete.");
-            } catch (Exception e) { e.printStackTrace(); }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         }, "Ciel-Background-Initializer").start();
-    }
-
-    private static boolean isPortInUse(int port) {
-        try (Socket ignored = new Socket("localhost", port)) {
-            return true; 
-        } catch (IOException e) {
-            return false; 
-        }
-    }
-
-    // --- UPGRADED OS-LEVEL ASSASSIN ---
-    // Uses PowerShell to violently kill the process holding the port without fragile text parsing.
-    private static void killProcessOnPort(int port) {
-        try {
-            String psCommand = "Get-Process -Id (Get-NetTCPConnection -LocalPort " + port + " -ErrorAction SilentlyContinue).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force";
-            ProcessBuilder pb = new ProcessBuilder("powershell.exe", "-Command", psCommand);
-            pb.start().waitFor();
-        } catch (Exception e) {
-            System.err.println("Ciel Error: Failed to forcefully free port " + port);
-        }
     }
 
     private static void ensureJarvisServerRunning() {
         System.out.println("Ciel Debug: Checking for existing OpenJarvis Swarm server on port 8000...");
         
-        if (isJarvisAlive()) {
+        if (isJarvisAlive() || isPortInUse(8000)) {
             System.out.println("Ciel Debug: Stale OpenJarvis instance detected. Sending lethal HTTP shutdown signal...");
             killJarvis();
             
             int killWait = 0;
-            // Wait for it to gracefully stop responding
-            while (isJarvisAlive() && killWait < 15) {
+            while ((isJarvisAlive() || isPortInUse(8000)) && killWait < 15) {
                 try { Thread.sleep(1000); } catch (InterruptedException e) {}
                 killWait++;
             }
             
-            // If it somehow survived or the port is still locked, drop the PowerShell hammer
             if (isJarvisAlive() || isPortInUse(8000)) {
                 System.out.println("Ciel Debug: OpenJarvis resisted shutdown. Executing PowerShell termination...");
                 killProcessOnPort(8000);
@@ -275,7 +257,7 @@ public class CielCompanion {
             long javaPid = ProcessHandle.current().pid();
             ProcessBuilder pb = new ProcessBuilder("cmd.exe", "/c", "python openjarvis.py " + javaPid);
             pb.directory(new File("C:\\Ciel Companion\\OpenJarvis-main"));
-            pb.redirectErrorStream(true);
+            pb.redirectErrorStream(true); 
             
             jarvisProcess = pb.start();
             
@@ -299,13 +281,41 @@ public class CielCompanion {
             if (isJarvisAlive()) {
                 System.out.println("Ciel Debug: OpenJarvis Swarm successfully auto-started in the background.");
             } else {
-                System.err.println("Ciel Error: OpenJarvis failed to respond after 45 seconds. Check the logs above for errors.");
+                System.err.println("Ciel Error: OpenJarvis failed to respond after 45 seconds. Check the [OpenJarvis Swarm] logs above for errors.");
             }
             
         } catch (Exception e) {
             System.err.println("Ciel Error: Failed to auto-launch OpenJarvis process.");
             e.printStackTrace();
         }
+    }
+
+    private static boolean isPortInUse(int port) {
+        try (Socket ignored = new Socket("localhost", port)) {
+            return true; 
+        } catch (IOException e) {
+            return false; 
+        }
+    }
+
+    private static void killProcessOnPort(int port) {
+        try {
+            String psCommand = "Get-NetTCPConnection -LocalPort " + port + " -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }";
+            ProcessBuilder pb = new ProcessBuilder("powershell.exe", "-Command", psCommand);
+            pb.start().waitFor();
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Failed to forcefully free port " + port);
+        }
+    }
+
+    private static void killJarvis() {
+        try {
+            java.net.HttpURLConnection connection = (java.net.HttpURLConnection) new java.net.URL("http://localhost:8000/shutdown").openConnection();
+            connection.setRequestMethod("POST");
+            connection.setConnectTimeout(1000);
+            connection.setReadTimeout(1000);
+            connection.getResponseCode();
+        } catch (Exception e) {}
     }
 
     private static boolean isJarvisAlive() {
@@ -319,17 +329,6 @@ public class CielCompanion {
         } catch (Exception e) {
             return false;
         }
-    }
-
-    // RESTORED: The highly reliable HTTP shutdown endpoint
-    private static void killJarvis() {
-        try {
-            java.net.HttpURLConnection connection = (java.net.HttpURLConnection) new java.net.URL("http://localhost:8000/shutdown").openConnection();
-            connection.setRequestMethod("POST");
-            connection.setConnectTimeout(1000);
-            connection.setReadTimeout(1000);
-            connection.getResponseCode();
-        } catch (Exception e) {}
     }
 
     private static boolean waitForInferenceEngines() {

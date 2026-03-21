@@ -65,7 +65,6 @@ public class AIEngine {
         }
     }
 
-    // HELPER: Ensures LiteLLM always has a provider prefix
     private static void ensureLiteLlmProvider(JsonObject payload) {
         if (payload != null && payload.has("model")) {
             String model = payload.get("model").getAsString();
@@ -155,6 +154,8 @@ public class AIEngine {
             "GET_DAILY_REPORT : User asks for a daily briefing, stock portfolio update, or morning report.\n" +
             "EXECUTE_SKILL : User is asking to use a previously learned skill: [" + knownSkills + "]. The cleaned_text MUST be the exact name of the skill.\n" +
             "DYNAMIC_PC_CONTROL : User asks to write a NEW script, automate a task, or manipulate PC settings NOT in the skills list.\n" +
+            "INITIATE_SHUTDOWN : User tells you to turn off, shut down, or power off the PC.\n" +
+            "INITIATE_REBOOT : User tells you to restart or reboot the PC.\n" +
             "DND_ANALYZE_LORE : Deep lore analysis, world-building, or cross-referencing files (Tensura, D&D, etc). The 'arguments' field MUST contain a comma-separated list of the specific subjects/names to search for.\n" +
             "UNKNOWN : General chat, questions, or conversation.\n\n" +
             "MASTER'S PREFERENCES & INFERRED LOGIC:\n" +
@@ -235,7 +236,7 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofSeconds(15)) 
+                .timeout(Duration.ofSeconds(90)) // FIX: Increased from 15s to 90s to give the LLM enough time to write
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -319,7 +320,6 @@ public class AIEngine {
                                         sentenceBuffer.append(textDelta);
                                         fullResponseBuffer.append(textDelta);
 
-                                        // ROBUST STREAMING CHUNKER: Protects decimals ($646.58) by waiting for space after punctuation
                                         String bufferStr = sentenceBuffer.toString();
                                         int splitIndex = -1;
                                         String[] boundaries = {". ", "! ", "? ", "\n", "。", "！", "？"};
@@ -343,7 +343,6 @@ public class AIEngine {
                         }
                     });
                     
-                    // Flush the final remaining sentence in the buffer
                     if (sentenceBuffer.length() > 0 && sentenceBuffer.toString().trim().length() > 0) {
                         processAndSpeakChunk(sentenceBuffer.toString());
                     }
