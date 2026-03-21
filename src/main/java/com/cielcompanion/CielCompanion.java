@@ -109,7 +109,6 @@ public class CielCompanion {
             SkillCrafterService.initialize();
             HabitTrackerService.initialize();
             com.cielcompanion.ai.SkillEvolutionEngine.initialize();
-            FinanceService.initialize();
             com.cielcompanion.memory.stwm.ShortTermMemoryService.initialize();
 
             startMainLoop(emotionManager);
@@ -186,9 +185,12 @@ public class CielCompanion {
         new Thread(() -> {
             try {
                 waitForInferenceEngines();
-                com.cielcompanion.ai.AIEngine.warmUpModels();
                 
+                // CRITICAL FIX: Ensure the Swarm boots BEFORE sending the warmup pings
                 ensureJarvisServerRunning();
+                
+                com.cielcompanion.ai.AIEngine.warmUpModels();
+                FinanceService.initialize();
 
                 LocationService.initialize();
                 AstronomyService.initializeApiState();
