@@ -126,7 +126,8 @@ public class CommandService {
         boolean isCriticalOverride = (
             preAnalysis.intent() == Intent.INITIATE_REBOOT || 
             preAnalysis.intent() == Intent.INITIATE_SHUTDOWN || 
-            preAnalysis.intent() == Intent.CANCEL_SHUTDOWN
+            preAnalysis.intent() == Intent.CANCEL_SHUTDOWN ||
+            preAnalysis.intent() == Intent.UPDATE_SYSTEM
         );
 
         if (!isCriticalOverride) {
@@ -286,6 +287,7 @@ public class CommandService {
             case INITIATE_SHUTDOWN: handleShutdownRebootCommand("shutdown"); return true;
             case INITIATE_REBOOT: handleShutdownRebootCommand("reboot"); return true;
             case CANCEL_SHUTDOWN: handleCancelShutdownCommand(); return true;
+            case UPDATE_SYSTEM: handleUpdateSelfCommand(); return true; 
             case REMEMBER_FACT: case REMEMBER_FACT_SIMPLE: handleRememberCommand(analysis); return true;
             case OPEN_APPLICATION: handleOpenApplicationCommand(analysis); return true;
             case START_ROUTINE: handleStartRoutineCommand(analysis); return true;
@@ -624,30 +626,23 @@ public class CommandService {
             }
             int finalTotal = total + bonus;
             
-            // --- NEW CACHED DICE ROLL LOGIC ---
             LineManager.getDiceRollResultLine().ifPresent(line -> {
                 String fullText = line.text();
                 
-                // If the static line contains {result}, split it so we can cache the number independently
                 if (fullText.contains("{result}")) {
                     String[] parts = fullText.split("\\{result\\}");
                     
-                    // 1. Speak the flavor prefix (e.g. "The result is ")
                     if (parts.length > 0 && !parts[0].isBlank()) {
-                        SpeechService.speakPreformatted(parts[0], line.key() + "_prefix", false, true); // Flush queue to stop other speech
+                        SpeechService.speakPreformatted(parts[0], line.key() + "_prefix", false, true); 
                     }
                     
-                    // 2. Speak the NUMBER using a permanent cache key
                     String numberStr = String.valueOf(finalTotal);
-                    // Pass "number_X" as the key so Azure automatically caches and reuses it permanently!
-                    SpeechService.speakPreformatted(numberStr, "number_" + finalTotal, false, false); // Queue it
+                    SpeechService.speakPreformatted(numberStr, "number_" + finalTotal, false, false); 
                     
-                    // 3. Speak the suffix if it exists
                     if (parts.length > 1 && !parts[1].isBlank()) {
-                        SpeechService.speakPreformatted(parts[1], line.key() + "_suffix", false, false); // Queue it
+                        SpeechService.speakPreformatted(parts[1], line.key() + "_suffix", false, false); 
                     }
                 } else {
-                    // Fallback if the formatting is missing the {result} tag
                     String finalLine = fullText.replace("{result}", String.valueOf(finalTotal));
                     SpeechService.speakPreformatted(finalLine, null, false, true);
                 }
@@ -703,14 +698,10 @@ public class CommandService {
             SpeechService.speakPreformatted(LineManager.getRebootConfirmLine().text(), LineManager.getRebootConfirmLine().key());
         }
         
-        // Trigger the Diary Entry Generation. We pass the command type so she knows why she is logging.
         String contextSummary = "The Master initiated a " + commandType + " sequence via voice command.";
         
-        // FIX: Updated to match the new method name in VaultService
         VaultService.generateSystemDiaryEntryBlocking(contextSummary, isReboot);
 
-        // The 30-second delay ensures the LLM has enough time to finish writing the diary 
-        // before the OS forces the application to close.
         shutdownScheduler = Executors.newSingleThreadScheduledExecutor();
         shutdownScheduler.schedule(() -> {
             try {
@@ -718,6 +709,25 @@ public class CommandService {
                 Runtime.getRuntime().exec(osCommand);
             } catch (IOException e) { e.printStackTrace(); }
         }, 30, TimeUnit.SECONDS);
+    }
+
+    private void handleUpdateSelfCommand() {
+        if (!ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
+            LineManager.getPrivilegedCommandRequiredLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
+            return;
+        }
+        
+        CielState.setPerformingColdShutdown(true); 
+        SpeechService.speakPreformatted("[Focused] Initiating self-update protocol. I will save my memories to the vault and temporarily disconnect from the interface.");
+        
+        String contextSummary = "The Master initiated a self-update sequence. I am shutting down my interface to assimilate new code, while leaving his PC running.";
+        VaultService.generateSystemDiaryEntryBlocking(contextSummary, false);
+
+        shutdownScheduler = Executors.newSingleThreadScheduledExecutor();
+        shutdownScheduler.schedule(() -> {
+            System.out.println("Ciel Debug: Self-update sequence complete. Exiting JVM.");
+            System.exit(0);
+        }, 15, TimeUnit.SECONDS);
     }
 
     private void handleCancelShutdownCommand() {

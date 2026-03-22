@@ -191,7 +191,7 @@ public class CielCompanion {
                 
                 com.cielcompanion.ai.AIEngine.warmUpModels();
                 FinanceService.initialize();
-
+                GameMonitorService.initialize();
                 LocationService.initialize();
                 AstronomyService.initializeApiState();
                 WeatherService.initialize();

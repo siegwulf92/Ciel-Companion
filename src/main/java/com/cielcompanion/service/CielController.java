@@ -50,7 +50,11 @@ public class CielController {
         int oldPhase = memory.getCurrentPhase();
         int newPhase = determinePhase(metrics.idleTimeMinutes(), memory.isInGamingSession());
 
-        boolean shouldBeMuted = metrics.isHardMuted() || metrics.isStreaming() || metrics.isPlayingMedia() || (metrics.isInFullScreen() && !metrics.isBrowserActive());
+        // --- NEW: GAMING MUTE OVERRIDE ---
+        boolean isGaming = memory.isInGamingSession();
+        boolean shouldBeMuted = metrics.isHardMuted() || metrics.isStreaming() || 
+                                (!isGaming && metrics.isPlayingMedia()) || 
+                                (!isGaming && metrics.isInFullScreen() && !metrics.isBrowserActive());
 
         if (shouldBeMuted && !CielState.isLockedOut()) {
             System.out.println("Ciel Debug: Muting. (Stream:" + metrics.isStreaming() + ", Media:" + metrics.isPlayingMedia() + ", FS:" + metrics.isInFullScreen() + ")");
@@ -101,7 +105,6 @@ public class CielController {
 
         SpeechService.getVoiceListener().ifPresent(VoiceListener::forceMicReinitialization);
 
-        // FIX: Hard-kill whatever audio clip is currently playing out loud right now
         SpeechService.stopCurrentPlayback();
         SpeechService.cancelSequentialSpeech();
 
@@ -188,7 +191,6 @@ public class CielController {
             CielState.setHasPlayedAstronomyReport(true); 
             AstronomyReport report = AstronomyService.getTodaysAstronomyReport();
             
-            // --- NEW: Route the report through the Logic Core weather filter ---
             com.cielcompanion.ai.WeatherAwareAstronomyEngine.processReport(report, finalReport -> {
                 List<String> linesToSpeak = new ArrayList<>(finalReport.sequentialEvents().values());
                 linesToSpeak.addAll(finalReport.reportAmbientLines()); 
@@ -367,7 +369,6 @@ public class CielController {
         List<DialogueLine> availableLines = potentialLines.stream().filter(line -> !recentLineKeys.contains(line.key())).collect(Collectors.toList());
         DialogueLine lineToSpeak = availableLines.isEmpty() ? potentialLines.get(random.nextInt(potentialLines.size())) : availableLines.get(random.nextInt(availableLines.size()));
         
-        // NEW: 5% chance to trigger Dynamic Thought Generation based on this line
         if (currentPhase >= 1 && currentPhase <= 3) {
             if (random.nextInt(100) < 5) {
                 com.cielcompanion.ai.DynamicThoughtEngine.generateAndAssimilateNewThought(currentPhase, lineToSpeak.text());

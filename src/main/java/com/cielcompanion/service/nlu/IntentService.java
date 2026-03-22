@@ -80,9 +80,9 @@ public class IntentService {
         intentPatterns.put(Intent.TERMINATE_PROCESS_FORCE, Pattern.compile("(?i)(force close|force quit|force terminate|horse close) (?<appName>.+)"));
         intentPatterns.put(Intent.TERMINATE_PROCESS, Pattern.compile("(?i)(close|quit|terminate) (?<appName>.+)"));
         
-        // RELAXED: Allows "reboot" or "shut down" without needing "pc" or "system" appended.
         intentPatterns.put(Intent.INITIATE_REBOOT, Pattern.compile("(?i).*(reboot|restart).*"));
         intentPatterns.put(Intent.INITIATE_SHUTDOWN, Pattern.compile("(?i).*(shut\\s*down|turn\\s*off|power\\s*off).*"));
+        intentPatterns.put(Intent.UPDATE_SYSTEM, Pattern.compile("(?i).*(update yourself|shut yourself down|close yourself|exit application|system update|update your code).*")); // NEW
         
         intentPatterns.put(Intent.CANCEL_SHUTDOWN, Pattern.compile("(?i)cancel (shutdown|reboot)"));
         intentPatterns.put(Intent.SCAN_FOR_APPS, Pattern.compile("(?i).*scan for new (apps|applications|games).*"));

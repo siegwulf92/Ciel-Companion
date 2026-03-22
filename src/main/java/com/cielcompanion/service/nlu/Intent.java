@@ -16,6 +16,7 @@ public enum Intent {
     INITIATE_SHUTDOWN,
     INITIATE_REBOOT,
     CANCEL_SHUTDOWN,
+    UPDATE_SYSTEM, // NEW: For Ciel-only shutdown protocol
     REMEMBER_FACT,
     REMEMBER_FACT_SIMPLE,
     RECALL_FACT,
@@ -48,7 +49,7 @@ public enum Intent {
     GET_CONSTELLATIONS,
     GET_ECLIPSES,
     DYNAMIC_PC_CONTROL, 
-    EXECUTE_SKILL, // NEW: Run a saved script
+    EXECUTE_SKILL, 
     START_CHAT_MODE,
     END_CHAT_MODE,
     EASTER_EGG,

@@ -111,18 +111,22 @@ public class ModelManager {
         }
     }
 
-    private static String getHeavyGameRunning() {
+    public static String getHeavyGameRunning() {
         for (ProcessHandle p : ProcessHandle.allProcesses().toList()) {
             String cmd = p.info().command().orElse("").toLowerCase();
             
-            // 1. Check if the process is running from a known game storefront directory
+            // 1. Check if the process is running from a known game storefront directory or mod launcher
             boolean inGameDir = cmd.contains("steamapps\\common") || 
                                 cmd.contains("epic games") || 
-                                cmd.contains("xboxgames");
+                                cmd.contains("xboxgames") ||
+                                cmd.contains(".minecraft") || 
+                                cmd.contains("curseforge") ||
+                                cmd.contains("prismlauncher");
                                 
             // 2. Check for specific standalone game executables
             boolean isKnownGameExe = cmd.endsWith("helldivers2.exe") || 
-                                     cmd.endsWith("eldenring.exe");
+                                     cmd.endsWith("eldenring.exe") ||
+                                     cmd.endsWith("minecraft.windows.exe"); // Catches Bedrock edition
 
             // If it's not in a game folder and not a known game, skip it quickly
             if (!inGameDir && !isKnownGameExe) {
@@ -134,24 +138,24 @@ public class ModelManager {
                 cmd.contains("wallpaper") || 
                 cmd.contains("soundpad") || 
                 cmd.contains("epicgameslauncher") || 
-                cmd.contains("epiconlineservices") || // Catches Epic background services
-                cmd.contains("epicwebhelper") ||      // Catches Epic Web Helper
-                cmd.contains("epic games\\launcher") || // Catches entire Epic Launcher directory
-                cmd.contains("unrealcefsubprocess") ||// Catches Epic UI renderer
+                cmd.contains("epiconlineservices") || 
+                cmd.contains("epicwebhelper") ||      
+                cmd.contains("epic games\\launcher") || 
+                cmd.contains("unrealcefsubprocess") ||
                 cmd.contains("gamingservices") ||
                 cmd.contains("steamwebhelper") ||
                 cmd.contains("steam.exe") ||
                 cmd.contains("steamclient") ||
-                cmd.contains("steamservice") ||       // Catches Steam service
-                cmd.contains("steamerrorreporter") || // Catches Steam error reporter
-                cmd.contains("steamworks shared") ||  // Catches Steam redistributables
+                cmd.contains("steamservice") ||       
+                cmd.contains("steamerrorreporter") || 
+                cmd.contains("steamworks shared") ||  
                 cmd.contains("overlay") || 
                 cmd.contains("eadesktop") ||
-                cmd.contains("eabackgroundservice") ||// Catches EA App background task
+                cmd.contains("eabackgroundservice") ||
                 cmd.contains("battle.net") ||
-                cmd.contains("agent.exe") ||          // Catches Blizzard update agent
+                cmd.contains("agent.exe") ||          
                 cmd.contains("gog galaxy") ||
-                cmd.contains("galaxyclient") ||       // Catches GOG background service
+                cmd.contains("galaxyclient") ||       
                 cmd.contains("crashreporter") ||
                 cmd.contains("cefsubprocess")) {
                 continue; // Safely ignore these background utilities

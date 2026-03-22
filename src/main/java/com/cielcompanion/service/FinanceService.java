@@ -11,6 +11,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -113,8 +114,6 @@ public class FinanceService {
 
     private static void silentMarketCheck() {
         System.out.println("Ciel Debug: Executing silent background market and portfolio analysis...");
-        
-        // Immediately save the timestamp so she doesn't accidentally run it again if the AI is slow
         saveLastFetchTime(System.currentTimeMillis());
         
         String portfolioPrompt = "You are Ciel, acting as the Master's elite, risk-averse financial advisor. Your core directive is SAFE, long-term wealth preservation and steady dividend/ETF growth.\n" +
@@ -131,18 +130,28 @@ public class FinanceService {
                 "4. Provide a clear 'Market Threat Level' (Low, Elevated, High, Critical) and actionable defensive strategies to protect his wealth.\n" +
                 "Output a concise, predictive macro-economic forecast.";
 
-        // Triggers the Python Portfolio CSV Updater silently
-        AIEngine.generateSilentLogic("[FINANCE_PORTFOLIO_UPDATE]", portfolioPrompt).thenAccept(result -> {
-            if (result != null && !result.isBlank()) {
-                latestPortfolioSummary = result;
-            }
-        });
+        CompletableFuture<String> portfolioFuture = AIEngine.generateSilentLogic("[FINANCE_PORTFOLIO_UPDATE]", portfolioPrompt);
+        CompletableFuture<String> marketFuture = AIEngine.generateSilentLogic("[FINANCE_MARKET_SCAN]", marketPrompt);
 
-        // Triggers the Python Undervalued Stock Scanner silently
-        AIEngine.generateSilentLogic("[FINANCE_MARKET_SCAN]", marketPrompt).thenAccept(result -> {
-            if (result != null && !result.isBlank()) {
-                latestMarketScan = result;
+        portfolioFuture.thenCombine(marketFuture, (portfolioResult, marketResult) -> {
+            if (portfolioResult != null && !portfolioResult.isBlank()) latestPortfolioSummary = portfolioResult;
+            if (marketResult != null && !marketResult.isBlank()) latestMarketScan = marketResult;
+            
+            // NEW: Automatically write the AI's advice to a beautifully formatted Markdown file
+            try {
+                String dateStr = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+                String content = "# Ciel's Financial Briefing (" + dateStr + ")\n\n" +
+                                 "## Portfolio Analysis & Recommendations\n" + latestPortfolioSummary + "\n\n" +
+                                 "## Macro-Economic Market Scan\n" + latestMarketScan + "\n";
+                                 
+                Path sharedPath = Paths.get("C:\\Ciel Companion\\ciel\\finance", "Latest_Financial_Briefing.md");
+                Files.createDirectories(sharedPath.getParent());
+                Files.writeString(sharedPath, content);
+                System.out.println("Ciel Debug: Financial briefing markdown written to " + sharedPath.toString());
+            } catch (Exception e) {
+                System.err.println("Ciel Error: Failed to save financial briefing markdown.");
             }
+            return null;
         });
     }
 

@@ -1,6 +1,8 @@
 package com.cielcompanion.memory.stwm;
 
 import com.cielcompanion.service.conversation.ConversationTopic;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * V3: Adds state tracking for gaming sessions, CPU alerts, and Pending Skills.
@@ -26,6 +28,9 @@ public class ShortTermMemory {
     // NEW: Holds unauthenticated skill creation requests
     private String pendingSystemTask = null;
 
+    // NEW: Session text context for AI ingestion
+    private List<String> sessionContext = new ArrayList<>();
+
     // --- Getters ---
     public int getCurrentPhase() { return currentPhase; }
     public boolean isInPhase4Monologue() { return inPhase4Monologue; }
@@ -41,6 +46,7 @@ public class ShortTermMemory {
     public long getLastCpuAlertTimestamp() { return lastCpuAlertTimestamp; }
     
     public String getPendingSystemTask() { return pendingSystemTask; }
+    public List<String> getSessionContext() { return sessionContext; }
 
     // --- Setters ---
     public void setCurrentPhase(int phase) { currentPhase = phase; }
@@ -57,6 +63,14 @@ public class ShortTermMemory {
     
     public void setPendingSystemTask(String task) { this.pendingSystemTask = task; }
     public void clearPendingSystemTask() { this.pendingSystemTask = null; }
+
+    // Adds a text event to her volatile working memory
+    public void addContext(String context) {
+        sessionContext.add(context);
+        if (sessionContext.size() > 50) { // Prevent memory leaks over long uptimes
+            sessionContext.remove(0);
+        }
+    }
 
     public void setPrivilegedMode(boolean active, int durationSeconds) {
         if (active) {
