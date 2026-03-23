@@ -156,6 +156,7 @@ public class AIEngine {
             "DYNAMIC_PC_CONTROL : User asks to write a NEW script, automate a task, or manipulate PC settings NOT in the skills list.\n" +
             "INITIATE_SHUTDOWN : User tells you to turn off, shut down, or power off the PC.\n" +
             "INITIATE_REBOOT : User tells you to restart or reboot the PC.\n" +
+            "UPDATE_SYSTEM : User asks you to update yourself, shut yourself down, or exit the application.\n" +
             "DND_ANALYZE_LORE : Deep lore analysis, world-building, or cross-referencing files (Tensura, D&D, etc). The 'arguments' field MUST contain a comma-separated list of the specific subjects/names to search for.\n" +
             "UNKNOWN : General chat, questions, or conversation.\n\n" +
             "MASTER'S PREFERENCES & INFERRED LOGIC:\n" +

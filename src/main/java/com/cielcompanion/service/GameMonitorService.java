@@ -67,6 +67,8 @@ public class GameMonitorService {
         if (cmd.contains("minecraft") || cmd.contains("curseforge") || cmd.contains("prismlauncher")) return "Minecraft";
         if (cmd.contains("helldivers2")) return "Helldivers 2";
         if (cmd.contains("eldenring")) return "Elden Ring";
+        if (cmd.contains("r5apex")) return "Apex Legends";
+        if (cmd.contains("rocketleague")) return "Rocket League";
         
         // Fallback: extract the raw executable name
         try {

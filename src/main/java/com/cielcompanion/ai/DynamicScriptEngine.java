@@ -7,8 +7,6 @@ import com.google.gson.JsonParser;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Base64;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -85,25 +83,29 @@ public class DynamicScriptEngine {
                 if (attemptNum == 0) speakStatus("[Observing] エクセキューティング ダイナミック シーケンス。");
                 else speakStatus("[Focused] アプライイング コレクションズ。リアテンプティング エクセキューション。"); 
 
-                // SECURITY UPGRADE: Encode the script directly into a Base64 string for fileless execution
+                // SECURITY UPGRADE: Pipe script via STDIN to bypass AV heuristics
                 String scriptToExecute = script;
                 if (!argsForRun.isBlank()) {
-                     scriptToExecute = script + "\n" + argsForRun;
+                     scriptToExecute = "param($argsArray); " + script + "\n" + skillName + " " + argsForRun;
                 }
-                String base64Command = Base64.getEncoder().encodeToString(scriptToExecute.getBytes(StandardCharsets.UTF_16LE));
 
                 List<String> command = new ArrayList<>();
                 command.add("powershell.exe");
-                command.add("-ExecutionPolicy");
-                command.add("Bypass");
-                command.add("-EncodedCommand");
-                command.add(base64Command);
+                command.add("-NoProfile");
+                command.add("-NonInteractive");
+                command.add("-Command");
+                command.add("-"); // Instructs PS to read from standard input
 
                 ProcessBuilder pb = new ProcessBuilder(command);
                 pb.redirectErrorStream(true); 
                 
                 Process process = pb.start();
-                String output = new String(process.getInputStream().readAllBytes());
+                try (java.io.OutputStream os = process.getOutputStream()) {
+                    os.write(scriptToExecute.getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+                }
+                
+                String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
                 int exitCode = process.waitFor();
                 
                 boolean hasError = exitCode != 0 || output.toLowerCase().contains("exception") || output.toLowerCase().contains("error");

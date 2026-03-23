@@ -7,6 +7,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -15,6 +16,9 @@ public class AppProfilerService {
     public record AppProfile(String processName, String displayName, String category, String shortName, Pattern windowTitleRegex, boolean isLauncher) {}
 
     private static final Map<String, AppProfile> profiles = new HashMap<>();
+    
+    // NEW: Caches dynamically identified apps to prevent log flooding during active gaming
+    private static final Map<String, AppProfile> dynamicCache = new ConcurrentHashMap<>();
 
     public static void initialize() {
         Properties props = new Properties();
@@ -76,6 +80,11 @@ public class AppProfilerService {
         if (processName == null) return null;
         String lowerProc = processName.toLowerCase();
 
+        // 0. Check the fast cache first to silence log spam
+        if (dynamicCache.containsKey(lowerProc)) {
+            return dynamicCache.get(lowerProc);
+        }
+
         // 1. Direct Process Match
         if (profiles.containsKey(lowerProc)) {
             return profiles.get(lowerProc);
@@ -85,7 +94,16 @@ public class AppProfilerService {
         if (windowTitle != null && !windowTitle.isBlank()) {
             for (AppProfile p : profiles.values()) {
                 if (p.windowTitleRegex() != null && p.windowTitleRegex().matcher(windowTitle).find()) {
+                    
+                    // SAFETY GUARD: Do not let web browsers trigger gaming mode due to YouTube video titles
+                    if ("Game".equalsIgnoreCase(p.category()) && 
+                        (lowerProc.contains("chrome") || lowerProc.contains("firefox") || 
+                         lowerProc.contains("edge") || lowerProc.contains("opera") || lowerProc.contains("brave"))) {
+                        continue;
+                    }
+                    
                     System.out.println("Ciel Debug: Identified '" + processName + "' as '" + p.displayName() + "' via Window Title match.");
+                    dynamicCache.put(lowerProc, p); // Cache it so she stops printing to the log
                     return p;
                 }
             }
