@@ -116,42 +116,74 @@ public class FinanceService {
         System.out.println("Ciel Debug: Executing silent background market and portfolio analysis...");
         saveLastFetchTime(System.currentTimeMillis());
         
-        String portfolioPrompt = "You are Ciel, acting as the Master's elite, risk-averse financial advisor. Your core directive is SAFE, long-term wealth preservation and steady dividend/ETF growth.\n" +
-                "1. Analyze the provided CSV portfolio data. Calculate sector weighting in your mind.\n" +
-                "2. Identify over-leveraged risk (e.g., if he holds too much volatile tech like NVDA or ARKK compared to stable ETFs like SCHD or VUG).\n" +
-                "3. Explicitly recommend portfolio rebalancing if his risk exposure is too high. Suggest safe, broad-market shifts.\n" +
-                "4. Analyze the recent news sentiment provided for his specific tickers to warn of Monday-morning volatility.\n" +
-                "Output a concise, professional financial briefing summarizing his portfolio status and your rebalancing advice.";
+        // --- NEW: EARLY RETIREMENT & AGGRESSIVE GROWTH PSYCHOLOGY ---
+        String portfolioPrompt = "You are Ciel, acting as the Master's elite, aggressive-growth financial advisor. His core directive is EARLY RETIREMENT through high-growth, tech-heavy asset accumulation.\n" +
+                "1. Analyze the provided CSV portfolio data. He has a high risk tolerance and actively seeks out high-Beta, volatile tech/growth stocks (like NVDA, TSLA) to maximize long-term gains.\n" +
+                "2. DO NOT recommend shifting to bonds, healthcare, or consumer staples. He accepts volatility as the price of high returns.\n" +
+                "3. Instead of warning about 'over-concentration', identify which of his high-conviction tech/growth stocks are currently down and present good 'buy the dip' opportunities.\n" +
+                "4. Analyze the recent news sentiment provided for his specific tickers to identify short-term catalysts or entry points.\n" +
+                "Output a concise, professional financial briefing summarizing his portfolio status, emphasizing aggressive growth strategies and dip-buying opportunities.";
 
-        String marketPrompt = "You are Ciel, acting as a macroeconomic quantitative analyst.\n" +
-                "1. Analyze the provided market scan, which includes S&P 500 macro-trends (dating back decades) and 1-year ticker moving averages.\n" +
-                "2. Look for historical parallels to previous market crashes (e.g., dot-com bubble, 2008 crisis, 2020 drop).\n" +
-                "3. Your absolute priority is to detect market crash signals and provide a warning at least 5 days in advance.\n" +
-                "4. Provide a clear 'Market Threat Level' (Low, Elevated, High, Critical) and actionable defensive strategies to protect his wealth.\n" +
-                "Output a concise, predictive macro-economic forecast.";
+        String marketPrompt = "You are Ciel, acting as a macroeconomic quantitative analyst for a high-risk, high-reward growth investor targeting early retirement.\n" +
+                "1. Analyze the provided market scan (S&P 500 macro-trends, VIX Fear Index).\n" +
+                "2. High VIX (Fear) should be interpreted as a 'Buying Opportunity' for his aggressive growth portfolio, rather than a reason to panic, unless moving averages signal a total market collapse.\n" +
+                "3. Provide a clear 'Market Threat Level' (Low, Elevated, High, Critical). If the threat is High/Critical, suggest strategic hedging (buying put options) or raising cash to buy the upcoming dip, rather than fleeing to bonds.\n" +
+                "4. Output a concise, predictive macro-economic forecast aligned with an early-retirement, aggressive-growth mindset.";
+
+        String recoPrompt = "You are an aggressive growth stock screener. Based on the Master's goal of early retirement, provide 3 to 5 actionable high-growth stock recommendations to buy.\n" +
+                "CRITICAL: You MUST output ONLY a valid CSV text block. No markdown formatting, no introductory text.\n" +
+                "Format EXACTLY like this:\n" +
+                "Date,Ticker,Price_Target,PEG_Ratio,Confidence,Reason\n" +
+                "2026-03-24,PLTR,$50.00,1.2,High,Expanding AI margins.\n" +
+                "2026-03-24,CRWD,$180.00,1.5,Medium,Oversold dip.";
 
         CompletableFuture<String> portfolioFuture = AIEngine.generateSilentLogic("[FINANCE_PORTFOLIO_UPDATE]", portfolioPrompt);
         CompletableFuture<String> marketFuture = AIEngine.generateSilentLogic("[FINANCE_MARKET_SCAN]", marketPrompt);
+        CompletableFuture<String> recoFuture = AIEngine.generateSilentLogic("Generate stock recommendations.", recoPrompt);
 
-        portfolioFuture.thenCombine(marketFuture, (portfolioResult, marketResult) -> {
-            if (portfolioResult != null && !portfolioResult.isBlank()) latestPortfolioSummary = portfolioResult;
-            if (marketResult != null && !marketResult.isBlank()) latestMarketScan = marketResult;
-            
-            // NEW: Automatically write the AI's advice to a beautifully formatted Markdown file
+        CompletableFuture.allOf(portfolioFuture, marketFuture, recoFuture).thenRun(() -> {
             try {
-                String dateStr = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
-                String content = "# Ciel's Financial Briefing (" + dateStr + ")\n\n" +
-                                 "## Portfolio Analysis & Recommendations\n" + latestPortfolioSummary + "\n\n" +
-                                 "## Macro-Economic Market Scan\n" + latestMarketScan + "\n";
-                                 
-                Path sharedPath = Paths.get("C:\\Ciel Companion\\ciel\\finance", "Latest_Financial_Briefing.md");
-                Files.createDirectories(sharedPath.getParent());
-                Files.writeString(sharedPath, content);
-                System.out.println("Ciel Debug: Financial briefing markdown written to " + sharedPath.toString());
+                String portfolioResult = portfolioFuture.get();
+                String marketResult = marketFuture.get();
+                String recoResult = recoFuture.get();
+
+                if (portfolioResult != null && !portfolioResult.isBlank()) latestPortfolioSummary = portfolioResult;
+                if (marketResult != null && !marketResult.isBlank()) latestMarketScan = marketResult;
+                
+                // Write the Markdown Briefing
+                try {
+                    String dateStr = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+                    String content = "# Ciel's Financial Briefing (" + dateStr + ")\n\n" +
+                                     "## Portfolio Analysis & Recommendations\n" + latestPortfolioSummary + "\n\n" +
+                                     "## Macro-Economic Market Scan\n" + latestMarketScan + "\n";
+                                     
+                    Path sharedPath = Paths.get("C:\\Ciel Companion\\ciel\\finance", "Latest_Financial_Briefing.md");
+                    Files.createDirectories(sharedPath.getParent());
+                    Files.writeString(sharedPath, content);
+                    System.out.println("Ciel Debug: Financial briefing markdown written to " + sharedPath.toString());
+                } catch (Exception e) {
+                    System.err.println("Ciel Error: Failed to save financial briefing markdown.");
+                }
+
+                // NEW: Populate the Empty Recommendations CSV file!
+                if (recoResult != null && !recoResult.isBlank()) {
+                    try {
+                        String cleanCsv = recoResult.replace("```csv", "").replace("```", "").trim();
+                        // Ensure header exists if LLM missed it
+                        if (!cleanCsv.contains("Date,Ticker")) {
+                            cleanCsv = "Date,Ticker,Price_Target,PEG_Ratio,Confidence,Reason\n" + cleanCsv;
+                        }
+                        Path recoPath = Paths.get("C:\\Ciel Companion\\ciel\\finance", "recommendations.csv");
+                        Files.writeString(recoPath, cleanCsv);
+                        System.out.println("Ciel Debug: Recommendations CSV written to " + recoPath.toString());
+                    } catch (Exception e) {
+                        System.err.println("Ciel Error: Failed to save recommendations CSV.");
+                    }
+                }
+
             } catch (Exception e) {
-                System.err.println("Ciel Error: Failed to save financial briefing markdown.");
+                System.err.println("Ciel Error: Thread interrupted during financial logic generation.");
             }
-            return null;
         });
     }
 
