@@ -184,12 +184,15 @@ public class CielCompanion {
 
         new Thread(() -> {
             try {
+                // ADDED: Wait for Windows to boot Ollama/LM Studio before trying to start OpenJarvis
                 waitForInferenceEngines();
-                
-                // CRITICAL FIX: Ensure the Swarm boots BEFORE sending the warmup pings
-                ensureJarvisServerRunning();
-                
                 com.cielcompanion.ai.AIEngine.warmUpModels();
+                
+                // Check and boot the AI Brain
+                ensureJarvisServerRunning();
+
+                // RESTORED: These were accidentally deleted during the Swarm boot fixes!
+                GameMonitorService.initialize();
                 FinanceService.initialize();
 
                 LocationService.initialize();
@@ -234,19 +237,25 @@ public class CielCompanion {
     private static void ensureJarvisServerRunning() {
         System.out.println("Ciel Debug: Checking for existing OpenJarvis Swarm server on port 8000...");
         
-        if (isJarvisAlive() || isPortInUse(8000)) {
+        if (isPortInUse(8000)) {
             System.out.println("Ciel Debug: Stale OpenJarvis instance detected. Sending HTTP shutdown signal...");
             killJarvis();
             
             int killWait = 0;
-            // Only wait 3 seconds for a graceful exit instead of 15
-            while ((isJarvisAlive() || isPortInUse(8000)) && killWait < 3) {
+            while (isPortInUse(8000) && killWait < 3) {
                 try { Thread.sleep(1000); } catch (InterruptedException e) {}
                 killWait++;
             }
             
             if (isPortInUse(8000)) {
-                System.out.println("Ciel Debug: Port 8000 still locked. Handing off lethal termination to Python Watchdog...");
+                System.out.println("Ciel Debug: Port 8000 still locked. Executing native process termination...");
+                killProcessOnPort(8000);
+                
+                int forceWait = 0;
+                while (isPortInUse(8000) && forceWait < 3) {
+                    try { Thread.sleep(1000); } catch (InterruptedException e) {}
+                    forceWait++;
+                }
             }
         }
 
@@ -296,7 +305,27 @@ public class CielCompanion {
         }
     }
 
-    // REMOVED killProcessOnPort() method completely!
+    private static void killProcessOnPort(int port) {
+        try {
+            Process netstat = new ProcessBuilder("cmd.exe", "/c", "netstat -ano | findstr :" + port).start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(netstat.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.contains("LISTENING")) {
+                        String[] parts = line.trim().split("\\s+");
+                        String pid = parts[parts.length - 1];
+                        if (!pid.equals("0")) {
+                            Process kill = new ProcessBuilder("cmd.exe", "/c", "taskkill /F /T /PID " + pid).start();
+                            kill.waitFor();
+                            System.out.println("Ciel Debug: Natively terminated ghost process (PID: " + pid + ").");
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Native port kill failed.");
+        }
+    }
 
     private static void killJarvis() {
         try {

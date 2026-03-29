@@ -110,6 +110,12 @@ public class ModelManager {
     public static String getHeavyGameRunning() {
         for (ProcessHandle p : ProcessHandle.allProcesses().toList()) {
             String cmd = p.info().command().orElse("").toLowerCase();
+            if (cmd.isBlank()) continue;
+
+            String exeName = cmd;
+            if (cmd.contains("\\")) {
+                exeName = cmd.substring(cmd.lastIndexOf("\\") + 1);
+            }
             
             boolean inGameDir = cmd.contains("steamapps\\common") || 
                                 cmd.contains("epic games") || 
@@ -122,9 +128,12 @@ public class ModelManager {
                                      cmd.endsWith("eldenring.exe") ||
                                      cmd.endsWith("minecraft.windows.exe") ||
                                      cmd.contains("r5apex") || 
-                                     cmd.endsWith("rocketleague.exe"); 
+                                     cmd.endsWith("rocketleague.exe") ||
+                                     cmd.endsWith("brutallegend.exe"); 
 
-            if (!inGameDir && !isKnownGameExe) {
+            boolean isAiClassifiedGame = "Gaming".equals(com.cielcompanion.service.HabitTrackerService.getProcessCategory(exeName));
+
+            if (!inGameDir && !isKnownGameExe && !isAiClassifiedGame) {
                 continue;
             }
 
@@ -152,7 +161,7 @@ public class ModelManager {
                 cmd.contains("galaxyclient") ||       
                 cmd.contains("crashreporter") ||
                 cmd.contains("cefsubprocess") ||
-                // --- NEW: Block Installers & Redistributables from triggering Gaming Mode ---
+                // Block Installers & Redistributables from triggering Gaming Mode
                 cmd.contains("vcredist") ||
                 cmd.contains("\\redist\\") ||
                 cmd.contains("dxsetup") ||

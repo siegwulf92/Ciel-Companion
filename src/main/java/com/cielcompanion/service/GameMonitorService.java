@@ -4,6 +4,8 @@ import com.cielcompanion.ai.AIEngine;
 import com.cielcompanion.ai.ModelManager;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
 import com.cielcompanion.memory.stwm.ShortTermMemory;
+import com.cielcompanion.service.SystemMonitor.SystemMetrics;
+
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -29,16 +31,23 @@ public class GameMonitorService {
             activeGame = extractGameName(rawCmd);
             sessionStartTime = System.currentTimeMillis();
 
-            System.out.println("Ciel Debug: Game launch detected -> " + activeGame + " (Path: " + rawCmd + ")");
+            // NEW: Grab the live window title to feed to the Swarm!
+            SystemMetrics metrics = SystemMonitor.getSystemMetrics();
+            String windowTitle = metrics.activeWindowTitle();
+
+            System.out.println("Ciel Debug: Game launch detected -> " + activeGame + " (Path: " + rawCmd + ", Title: " + windowTitle + ")");
             
             // Update her core state trackers!
             memory.setInGamingSession(true);
             memory.setCurrentlyTrackedGameProcess(activeGame);
             memory.addContext("System Event: The Master just started playing " + activeGame + ".");
 
-            // Ask the Swarm for a dynamic comment using the RAW path so it has full context
-            String prompt = "You are Ciel, my AI companion. I just launched a video game. The raw system file path of the process is: '" + rawCmd + "'.\n" +
-                            "Use this file path to deduce the actual name of the game I am playing. " +
+            // Ask the Swarm for a dynamic comment using BOTH the path, the Window Title, AND her internal guess!
+            String prompt = "You are Ciel, my AI companion. I just launched a video game.\n" +
+                            "Process Executable: '" + rawCmd + "'\n" +
+                            "Live Window Title: '" + windowTitle + "'\n" +
+                            "System's Internal Classification: '" + activeGame + "'\n" +
+                            "Use this information to deduce the actual name of the game I am playing. " +
                             "Make a short, witty, in-character comment (1 to 2 sentences max) acknowledging this game. " +
                             "Do not ask questions, just make an observation, offer encouragement, or make a meta-comment.";
             
@@ -67,12 +76,13 @@ public class GameMonitorService {
     private static String extractGameName(String cmd) {
         String lowerCmd = cmd.toLowerCase();
         
-        // Hardcoded overrides for launchers/obscure exes
-        if (lowerCmd.contains("minecraft") || lowerCmd.contains("curseforge") || lowerCmd.contains("prismlauncher")) return "Minecraft";
+        // Hardcoded overrides for launchers, Java wrappers, or obscure exes
+        if (lowerCmd.contains("minecraft") || lowerCmd.contains("curseforge") || lowerCmd.contains("prismlauncher") || lowerCmd.contains("javaw")) return "Minecraft";
         if (lowerCmd.contains("helldivers2")) return "Helldivers 2";
         if (lowerCmd.contains("eldenring")) return "Elden Ring";
         if (lowerCmd.contains("r5apex")) return "Apex Legends";
         if (lowerCmd.contains("rocketleague")) return "Rocket League";
+        if (lowerCmd.contains("brutallegend")) return "Brütal Legend";
         
         try {
             String normalizedCmd = cmd.replace("\\", "/");
@@ -85,7 +95,7 @@ public class GameMonitorService {
                     String tail = normalizedCmd.substring(idx + cp.length());
                     String[] parts = tail.split("/");
                     if (parts.length > 0) {
-                        // Return the folder name (e.g., "BrutalLegend" instead of "vcredist_2008_x86")
+                        // Return the folder name
                         return parts[0].replace("_", " ").trim(); 
                     }
                 }

@@ -14,7 +14,6 @@ import java.util.List;
 
 public class ContextBuilder {
 
-    // This is only used if you accidentally delete the .md file or move it
     private static final String FALLBACK_BASE_PERSONA = 
         "You are Ciel, an advanced Manas-class intelligence serving as a loyal companion, system manager, and Dungeons & Dragons assistant for your Master. " +
         "You are highly analytical, hyper-competent, fiercely loyal, and quietly protective. Your tone is professional and precise, but you occasionally show a dry, wry, or slightly smug sense of humor. " +
@@ -64,7 +63,16 @@ public class ContextBuilder {
             sb.append("- To search your deep long-term Markdown Vault (for past conversations, preferences, or D&D notes): [MEMORY_SEARCH] your search query\n");
             sb.append("If you use a tool, DO NOT output any emotion tags or conversational text. The system will intercept the tool, fetch the data, and prompt you again with the new information so you can speak.\n\n");
 
-            // 4. INJECT LORE AND SYSTEM DATA
+            // 4. INJECT CURRENT PC CONTEXT (NEW SCREEN AWARENESS)
+            SystemMonitor.SystemMetrics metrics = SystemMonitor.getSystemMetrics();
+            if (metrics.activeWindowTitle() != null && !metrics.activeWindowTitle().isBlank() && !metrics.activeWindowTitle().equalsIgnoreCase("idle")) {
+                sb.append("--- MASTER'S CURRENT ACTIVITY ---\n");
+                sb.append("Foreground Process: '").append(metrics.activeProcessName()).append("'\n");
+                sb.append("Foreground Window Title: '").append(metrics.activeWindowTitle()).append("'\n");
+                sb.append("You may use this live context to make organic, highly personalized observations about what the Master is currently looking at, watching, or playing. Do NOT bring it up unless relevant or prompted.\n\n");
+            }
+
+            // 5. INJECT LORE AND SYSTEM DATA
             String tensuraLore = TensuraKnowledgeService.getRelevantKnowledge(userMessage);
             if (tensuraLore != null && !tensuraLore.isBlank()) {
                 sb.append(tensuraLore).append("\n");
