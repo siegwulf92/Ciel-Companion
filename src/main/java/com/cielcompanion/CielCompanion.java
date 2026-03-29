@@ -191,7 +191,7 @@ public class CielCompanion {
                 
                 com.cielcompanion.ai.AIEngine.warmUpModels();
                 FinanceService.initialize();
-                GameMonitorService.initialize();
+
                 LocationService.initialize();
                 AstronomyService.initializeApiState();
                 WeatherService.initialize();
@@ -235,22 +235,18 @@ public class CielCompanion {
         System.out.println("Ciel Debug: Checking for existing OpenJarvis Swarm server on port 8000...");
         
         if (isJarvisAlive() || isPortInUse(8000)) {
-            System.out.println("Ciel Debug: Stale OpenJarvis instance detected. Sending lethal HTTP shutdown signal...");
+            System.out.println("Ciel Debug: Stale OpenJarvis instance detected. Sending HTTP shutdown signal...");
             killJarvis();
             
             int killWait = 0;
-            while ((isJarvisAlive() || isPortInUse(8000)) && killWait < 15) {
+            // Only wait 3 seconds for a graceful exit instead of 15
+            while ((isJarvisAlive() || isPortInUse(8000)) && killWait < 3) {
                 try { Thread.sleep(1000); } catch (InterruptedException e) {}
                 killWait++;
             }
             
-            if (isJarvisAlive() || isPortInUse(8000)) {
-                System.out.println("Ciel Debug: OpenJarvis resisted shutdown. Executing PowerShell termination...");
-                killProcessOnPort(8000);
-                try { Thread.sleep(3000); } catch (InterruptedException e) {}
-            } else {
-                System.out.println("Ciel Debug: Port 8000 successfully freed via HTTP shutdown.");
-                try { Thread.sleep(2000); } catch (InterruptedException e) {}
+            if (isPortInUse(8000)) {
+                System.out.println("Ciel Debug: Port 8000 still locked. Handing off lethal termination to Python Watchdog...");
             }
         }
 
@@ -300,15 +296,7 @@ public class CielCompanion {
         }
     }
 
-    private static void killProcessOnPort(int port) {
-        try {
-            String psCommand = "Get-NetTCPConnection -LocalPort " + port + " -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }";
-            ProcessBuilder pb = new ProcessBuilder("powershell.exe", "-Command", psCommand);
-            pb.start().waitFor();
-        } catch (Exception e) {
-            System.err.println("Ciel Error: Failed to forcefully free port " + port);
-        }
-    }
+    // REMOVED killProcessOnPort() method completely!
 
     private static void killJarvis() {
         try {
