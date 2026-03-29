@@ -29,16 +29,17 @@ public class GameMonitorService {
             activeGame = extractGameName(rawCmd);
             sessionStartTime = System.currentTimeMillis();
 
-            System.out.println("Ciel Debug: Game launch detected -> " + activeGame);
+            System.out.println("Ciel Debug: Game launch detected -> " + activeGame + " (Path: " + rawCmd + ")");
             
             // Update her core state trackers!
             memory.setInGamingSession(true);
             memory.setCurrentlyTrackedGameProcess(activeGame);
             memory.addContext("System Event: The Master just started playing " + activeGame + ".");
 
-            // Ask the Swarm for a dynamic comment using the fast Personality Core
-            String prompt = "You are Ciel, my AI companion. I just launched the video game '" + activeGame + "'. " +
-                            "Make a short, witty, in-character comment (1 to 2 sentences max) acknowledging this. " +
+            // Ask the Swarm for a dynamic comment using the RAW path so it has full context
+            String prompt = "You are Ciel, my AI companion. I just launched a video game. The raw system file path of the process is: '" + rawCmd + "'.\n" +
+                            "Use this file path to deduce the actual name of the game I am playing. " +
+                            "Make a short, witty, in-character comment (1 to 2 sentences max) acknowledging this game. " +
                             "Do not ask questions, just make an observation, offer encouragement, or make a meta-comment.";
             
             AIEngine.generateSilentLogic("[GAME_LAUNCH]", prompt).thenAccept(response -> {
@@ -62,17 +63,36 @@ public class GameMonitorService {
         }
     }
 
-    // Helper to turn raw folder paths into clean spoken words
+    // Helper to turn raw folder paths into clean spoken words for internal logging
     private static String extractGameName(String cmd) {
-        if (cmd.contains("minecraft") || cmd.contains("curseforge") || cmd.contains("prismlauncher")) return "Minecraft";
-        if (cmd.contains("helldivers2")) return "Helldivers 2";
-        if (cmd.contains("eldenring")) return "Elden Ring";
-        if (cmd.contains("r5apex")) return "Apex Legends";
-        if (cmd.contains("rocketleague")) return "Rocket League";
+        String lowerCmd = cmd.toLowerCase();
         
-        // Fallback: extract the raw executable name
+        // Hardcoded overrides for launchers/obscure exes
+        if (lowerCmd.contains("minecraft") || lowerCmd.contains("curseforge") || lowerCmd.contains("prismlauncher")) return "Minecraft";
+        if (lowerCmd.contains("helldivers2")) return "Helldivers 2";
+        if (lowerCmd.contains("eldenring")) return "Elden Ring";
+        if (lowerCmd.contains("r5apex")) return "Apex Legends";
+        if (lowerCmd.contains("rocketleague")) return "Rocket League";
+        
         try {
-            String[] parts = cmd.replace("\\", "/").split("/");
+            String normalizedCmd = cmd.replace("\\", "/");
+            
+            // Smart extraction: Look for common storefront folders and grab the game folder name right after it
+            String[] commonPaths = {"/steamapps/common/", "/epic games/", "/xboxgames/"};
+            for (String cp : commonPaths) {
+                int idx = normalizedCmd.toLowerCase().indexOf(cp);
+                if (idx != -1) {
+                    String tail = normalizedCmd.substring(idx + cp.length());
+                    String[] parts = tail.split("/");
+                    if (parts.length > 0) {
+                        // Return the folder name (e.g., "BrutalLegend" instead of "vcredist_2008_x86")
+                        return parts[0].replace("_", " ").trim(); 
+                    }
+                }
+            }
+            
+            // Fallback: extract the raw executable name
+            String[] parts = normalizedCmd.split("/");
             String exe = parts[parts.length - 1].replace(".exe", "");
             return exe.substring(0, 1).toUpperCase() + exe.substring(1);
         } catch (Exception e) {

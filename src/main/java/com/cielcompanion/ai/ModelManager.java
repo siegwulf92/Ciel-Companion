@@ -91,13 +91,9 @@ public class ModelManager {
     }
 
     public static String getUrlForTier(ModelTier tier) {
-        // All tiers now route to the OpenJarvis orchestrator
         return JARVIS_URL;
     }
 
-    /**
-     * Utility method to safely extract the standard OpenAI-compatible text response.
-     */
     public static String extractMessageContent(String jsonBody) {
         try {
             JsonObject jsonResponse = JsonParser.parseString(jsonBody).getAsJsonObject();
@@ -115,7 +111,6 @@ public class ModelManager {
         for (ProcessHandle p : ProcessHandle.allProcesses().toList()) {
             String cmd = p.info().command().orElse("").toLowerCase();
             
-            // 1. Check if the process is running from a known game storefront directory or mod launcher
             boolean inGameDir = cmd.contains("steamapps\\common") || 
                                 cmd.contains("epic games") || 
                                 cmd.contains("xboxgames") ||
@@ -123,17 +118,16 @@ public class ModelManager {
                                 cmd.contains("curseforge") ||
                                 cmd.contains("prismlauncher");
                                 
-            // 2. Check for specific standalone game executables
             boolean isKnownGameExe = cmd.endsWith("helldivers2.exe") || 
                                      cmd.endsWith("eldenring.exe") ||
-                                     cmd.endsWith("minecraft.windows.exe"); // Catches Bedrock edition
+                                     cmd.endsWith("minecraft.windows.exe") ||
+                                     cmd.contains("r5apex") || 
+                                     cmd.endsWith("rocketleague.exe"); 
 
-            // If it's not in a game folder and not a known game, skip it quickly
             if (!inGameDir && !isKnownGameExe) {
                 continue;
             }
 
-            // 3. COMPREHENSIVE WHITELIST: Ignore background tools, launchers, and helpers
             if (cmd.contains("voiceattack") || 
                 cmd.contains("wallpaper") || 
                 cmd.contains("soundpad") || 
@@ -157,11 +151,20 @@ public class ModelManager {
                 cmd.contains("gog galaxy") ||
                 cmd.contains("galaxyclient") ||       
                 cmd.contains("crashreporter") ||
-                cmd.contains("cefsubprocess")) {
-                continue; // Safely ignore these background utilities
+                cmd.contains("cefsubprocess") ||
+                // --- NEW: Block Installers & Redistributables from triggering Gaming Mode ---
+                cmd.contains("vcredist") ||
+                cmd.contains("\\redist\\") ||
+                cmd.contains("dxsetup") ||
+                cmd.contains("dxwebsetup") ||
+                cmd.contains("install") ||
+                cmd.contains("setup.exe") ||
+                cmd.contains("physx") ||
+                cmd.contains("dotnet") ||
+                cmd.contains("easetup")) {
+                continue; 
             }
 
-            // If it survived the whitelist and is in a game directory, assume a heavy game is running
             return cmd;
         }
         return null;

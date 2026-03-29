@@ -1,5 +1,6 @@
 package com.cielcompanion.service;
 
+import com.cielcompanion.ai.AIEngine;
 import com.cielcompanion.memory.Fact;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.service.LineManager.DialogueLine;
@@ -42,7 +43,7 @@ public class WeatherService {
             }
             weatherProps.load(new InputStreamReader(is, StandardCharsets.UTF_8));
             
-            // UPDATED: Strictly poll every 15 minutes
+            // Strictly poll every 15 minutes
             weatherScheduler = Executors.newSingleThreadScheduledExecutor();
             weatherScheduler.scheduleWithFixedDelay(WeatherService::proactiveWeatherCheck, 1, 15, TimeUnit.MINUTES);
             
@@ -93,7 +94,7 @@ public class WeatherService {
             return "My weather functionality has not been configured with a valid API key.";
         }
 
-        // UPDATED: Hardcoded to 15 minutes, ignoring the properties file to ensure fresh emergency alerts
+        // Hardcoded to 15 minutes, ignoring the properties file to ensure fresh emergency alerts
         long cacheDurationMinutes = 15;
 
         if (cachedWeatherData != null && cachedWeatherData.fetchTimeEpochSeconds > 0) {
@@ -144,30 +145,56 @@ public class WeatherService {
             Fact weatherFact = new Fact(CACHED_WEATHER_KEY, gson.toJson(newWeatherData), System.currentTimeMillis(), "system_cache", "system", 1);
             MemoryService.addFact(weatherFact);
             
-            // PROACTIVE ALERT CHECK WITH PERSISTENT MEMORY CACHING
+            // PROACTIVE ALERT CHECK WITH AI EVALUATION
             if (newWeatherData.alerts != null && newWeatherData.alerts.alert != null && !newWeatherData.alerts.alert.isEmpty()) {
-                List<String> newAlerts = new ArrayList<>();
+                List<Alert> newAlerts = new ArrayList<>();
                 String today = LocalDate.now().toString();
 
                 for (Alert alert : newWeatherData.alerts.alert) {
                     // Create a safe, unique key for this specific alert today
                     String alertKey = "weather_alert_" + today + "_" + alert.event.replaceAll("[^a-zA-Z0-9]", "");
                     
-                    // Check if we've already announced this specific alert today (survives reboots)
+                    // Check if we've already announced this specific alert today
                     if (MemoryService.getFact(alertKey).isEmpty()) {
-                        newAlerts.add(alert.event);
-                        // Save to long-term database so she remembers it
+                        newAlerts.add(alert);
                         MemoryService.addFact(new Fact(alertKey, "Announced", System.currentTimeMillis(), "system_alert", "system", 1));
                     }
                 }
 
                 if (!newAlerts.isEmpty()) {
-                    String events = String.join(" and ", newAlerts);
-                    System.out.println("Ciel Debug (WeatherService): Announcing consolidated Emergency Weather Alerts -> " + events);
-                    
-                    // By combining them into one string, we prevent Azure from crashing due to overlapping cancel signals!
-                    String warningText = "[Concerned] Master, a severe weather alert has been issued for our area: " + events + ". Please be advised.";
-                    SpeechService.speakPreformatted(warningText, null, false, true); 
+                    System.out.println("Ciel Debug (WeatherService): Detected " + newAlerts.size() + " new NWS alerts. Dispatching to AI Evaluator Core...");
+
+                    // Build contextual prompt for the Swarm
+                    StringBuilder alertContext = new StringBuilder();
+                    for (Alert alert : newAlerts) {
+                        alertContext.append("- Alert: ").append(alert.event).append("\n");
+                        alertContext.append("  Severity: ").append(alert.severity).append("\n");
+                        if (alert.effective != null) alertContext.append("  Effective: ").append(alert.effective).append("\n");
+                        if (alert.expires != null) alertContext.append("  Expires: ").append(alert.expires).append("\n");
+                        if (alert.desc != null) {
+                            // Truncate massively long NWS paragraphs to save tokens
+                            String safeDesc = alert.desc.length() > 500 ? alert.desc.substring(0, 500) + "..." : alert.desc;
+                            alertContext.append("  Description: ").append(safeDesc).append("\n");
+                        }
+                    }
+
+                    String currentCondition = newWeatherData.current.condition != null ? newWeatherData.current.condition.text : "Unknown";
+
+                    String prompt = "You are Ciel, my protective AI companion. The National Weather Service just issued the following alerts for our area:\n\n" +
+                            alertContext.toString() + "\n" +
+                            "Current actual weather outside: " + currentCondition + "\n\n" +
+                            "INSTRUCTION: Evaluate the true urgency of these alerts using the descriptions and current weather. " +
+                            "If it is an immediate physical threat (like a Tornado or Flash Flood), give a short, urgent [Concerned] warning. " +
+                            "If it is a lingering or non-immediate issue (like a river flood warning when it's sunny, or a generic watch), give a casual [Observing] advisory so I am aware but not alarmed. " +
+                            "Keep your spoken response to 1 or 2 concise sentences, in character. Address me as Master. Do not use markdown, just the emotion tag followed by the text.";
+
+                    // Ask the Swarm to intelligently judge the NWS alert
+                    AIEngine.generateSilentLogic("[WEATHER_EVALUATION]", prompt).thenAccept(response -> {
+                        if (response != null && !response.isBlank()) {
+                            System.out.println("Ciel Debug (WeatherService): AI Evaluated Alert -> " + response.trim());
+                            SpeechService.speakPreformatted(response.trim(), null, false, true); 
+                        }
+                    });
                 }
             }
 
@@ -268,9 +295,13 @@ public class WeatherService {
         List<Alert> alert;
     }
     
+    // EXTENDED: Added deeper data capture for AI evaluation
     private static class Alert {
         String headline;
         String event;
         String severity;
+        String desc;
+        String effective;
+        String expires;
     }
 }
