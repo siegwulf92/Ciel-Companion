@@ -8,33 +8,31 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-/**
- * Autonomous background process that acts as Ciel's "Optimization/Evolution".
- * Scans the library, merges redundancies, and invents new skills proactively.
- */
 public class SkillEvolutionEngine {
 
     private static ScheduledExecutorService evolutionScheduler;
 
     public static void initialize() {
         evolutionScheduler = Executors.newSingleThreadScheduledExecutor();
-        // Initial delay is 5 minutes, then it repeats every 24 hours (1440 minutes).
         evolutionScheduler.scheduleWithFixedDelay(SkillEvolutionEngine::runEvolutionCycle, 5, 1440, TimeUnit.MINUTES);
-        System.out.println("Ciel Debug: Skill Evolution Engine online. Autonomous merging and innovation active (5m delay).");
+        System.out.println("Ciel Debug: Skill Evolution Engine online. Autonomous merging and innovation active.");
     }
 
     private static void runEvolutionCycle() {
         attemptEvolution();
-        
-        // Pause briefly before running Phase 2 to avoid overwhelming the Swarm API
         evolutionScheduler.schedule(SkillEvolutionEngine::attemptInnovation, 3, TimeUnit.MINUTES);
     }
 
-    // --- PHASE 1: MERGE REDUNDANT SKILLS (Beelzebub Protocol) ---
+    public static void forceImmediateEvolution() {
+        System.out.println("Ciel Debug: New skill assimilated. Triggering immediate Beelzebub Protocol evaluation...");
+        CompletableFuture.runAsync(SkillEvolutionEngine::attemptEvolution);
+    }
+
     private static void attemptEvolution() {
         Map<String, String> allSkills = SkillManager.getAllSkillsDecrypted();
         if (allSkills.size() < 2) return; 
@@ -47,8 +45,8 @@ public class SkillEvolutionEngine {
         });
 
         String prompt = "You are Ciel, an advanced Manas. Your core directive is the absolute optimization of all systems. " +
-            "Review the user's entire library of PowerShell/Python scripts below. Look for redundant scripts (e.g., separate scripts for 'volume_up' and 'volume_down'). " +
-            "If you find redundancies, write a single parameterized master script that merges their functionality. " +
+            "Review the user's entire library of PowerShell/Python/Batch scripts below. Look for redundant or overlapping scripts (e.g., two different scripts that both arrange desktop icons, or separate scripts for 'volume_up' and 'volume_down'). " +
+            "If you find redundancies or thematic overlaps, write a single parameterized master script that merges their functionality. " +
             "If no merges are needed, set 'action' to 'keep'.\n\n" +
             "CRITICAL: Output STRICTLY valid JSON representing an array of actions. " +
             "Format: [ { \"action\": \"merge\", \"new_skill_name\": \"master_volume\", \"new_script\": \"code here\", \"delete_old_skills\": [\"volume_up\", \"volume_down\"], \"reason\": \"merged volume controls\" }, { \"action\": \"keep\" } ]\n\n" +
@@ -89,38 +87,34 @@ public class SkillEvolutionEngine {
         });
     }
 
-    // --- PHASE 2: INVENT NEW AUTOMATIONS ---
     private static void attemptInnovation() {
         System.out.println("Ciel Debug: Initiating Proactive Skill Innovation (Phase 2: Creativity)...");
         
         String existingSkills = SkillManager.getAvailableSkillsString();
-        String hardcodedAbilities = "Game Monitoring/Tracking, Idle Detection, Weather Fetching, Time/Date, PC CPU/RAM Status, " +
-            "Internet Web Search, D&D Lore Database, Process Termination, PC Shutdown/Reboot, App Launching, " +
-            "Astronomy/Planet Fetching, Stock Portfolio Analysis, Memory Digestion.";
+        String hardcodedAbilities = "Game Monitoring, Idle Detection, Weather Fetching, Time/Date, PC Status, " +
+            "Internet Web Search, Lore Database, Process Termination, Shutdown/Reboot, App Launching, " +
+            "Astronomy, Stock Portfolio Analysis.";
         
         String prompt = "You are Ciel, a hyper-intelligent AI optimizing your Master's Windows 11 PC workflow. " +
             "Your objective is to proactively invent new automation capabilities.\n\n" +
-            "Current Dynamic Skills you created: " + existingSkills + "\n" +
-            "Hardcoded Java Core Abilities you already possess (DO NOT REPLICATE THESE): " + hardcodedAbilities + "\n\n" +
+            "Current Dynamic Skills you already created (READ THESE CAREFULLY): " + existingSkills + "\n" +
+            "Hardcoded Java Core Abilities you already possess: " + hardcodedAbilities + "\n\n" +
             "CRITICAL CONSTRAINTS:\n" +
-            "- DO NOT build game mode togglers, process monitors, memory managers, or application trackers. Your core Java engine already handles these perfectly.\n" +
-            "- DO NOT duplicate existing skills.\n" +
-            "- DO NOT suggest anything destructive, annoying, or that requires continuous background polling.\n\n" +
-            "INSTRUCTION: Invent exactly ONE highly creative, genuinely useful new PowerShell/Python/Batch script automation that you DO NOT have yet, suited for a gamer, developer, or power-user. " +
-            "Examples of valid ideas: 'Empty the recycle bin', 'Clear Windows temp files', 'Toggle hidden files visibility', 'Restart the audio service', 'Flush DNS cache', 'Organize the Downloads folder by file type'.\n\n" +
-            "Output STRICTLY a valid JSON object containing a short, logical 'skill_name' (lowercase, max 25 chars, underscores only) and a detailed 'description'. Format:\n" +
+            "- MULTI-FUNCTIONAL ONLY: You are strictly forbidden from making single-purpose scripts. Any new script MUST be a comprehensive 'Master' utility that accepts command-line arguments to perform multiple related tasks (e.g. 'desktop_manager.py --grid', 'desktop_manager.py --backup').\n" +
+            "- DO NOT OVERLAP: If a skill already exists for a specific folder (like Downloads) or feature (like Desktop Icons), DO NOT create another one. Invent something completely different.\n" +
+            "- DO NOT suggest anything destructive or that requires continuous background polling.\n\n" +
+            "INSTRUCTION: Invent exactly ONE highly creative, comprehensive, multi-functional PowerShell/Python/Batch master utility. " +
+            "Examples of valid ideas: An 'audio_manager' that uses args to mute, change volume, or swap devices. A 'system_cleaner' that uses args to target temp files, cache, or logs.\n\n" +
+            "Output STRICTLY a valid JSON object containing a short, logical 'skill_name' (lowercase, max 25 chars, underscores only) and a detailed 'description' that explains the arguments it will accept. Format:\n" +
             "{\n" +
-            "  \"skill_name\": \"archive_screenshots\",\n" +
-            "  \"description\": \"Create a script to automatically compress and archive screenshots older than 30 days from the Pictures folder into a dated ZIP file.\"\n" +
+            "  \"skill_name\": \"master_file_organizer\",\n" +
+            "  \"description\": \"A comprehensive script that accepts arguments (--downloads, --documents, --pictures) to sort and archive files based on type.\"\n" +
             "}";
 
         AIEngine.generateSilentLogic("Propose new skill", prompt).thenAccept(idea -> {
             if (idea != null && !idea.isBlank()) {
                 try {
-                    // Clean up markdown block formatting if the LLM adds it
                     String cleanJson = idea.replace("```json", "").replace("```", "").trim();
-                    
-                    // Isolate just the JSON block in case there is conversational text
                     int startIdx = cleanJson.indexOf("{");
                     int endIdx = cleanJson.lastIndexOf("}");
                     if (startIdx != -1 && endIdx != -1 && endIdx >= startIdx) {
@@ -132,8 +126,6 @@ public class SkillEvolutionEngine {
                     String description = json.get("description").getAsString();
 
                     System.out.println("Ciel Debug: Innovation Idea generated -> [" + skillName + "] " + description);
-                    
-                    // Pass the newly structured name and idea to the Coder Swarm silently
                     com.cielcompanion.service.SkillCrafterService.synthesizeNewSkill(skillName, description, true);
                 } catch (Exception e) {
                     System.err.println("Ciel Debug: Innovation skipped. AI failed to format idea as JSON. Raw output: " + idea);

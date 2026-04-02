@@ -116,7 +116,7 @@ public class FinanceService {
         System.out.println("Ciel Debug: Executing silent background market and portfolio analysis...");
         saveLastFetchTime(System.currentTimeMillis());
         
-        // --- NEW: EARLY RETIREMENT & AGGRESSIVE GROWTH PSYCHOLOGY ---
+        // --- EARLY RETIREMENT & AGGRESSIVE GROWTH PSYCHOLOGY ---
         String portfolioPrompt = "You are Ciel, acting as the Master's elite, aggressive-growth financial advisor. His core directive is EARLY RETIREMENT through high-growth, tech-heavy asset accumulation.\n" +
                 "1. Analyze the provided CSV portfolio data. He has a high risk tolerance and actively seeks out high-Beta, volatile tech/growth stocks (like NVDA, TSLA) to maximize long-term gains.\n" +
                 "2. DO NOT recommend shifting to bonds, healthcare, or consumer staples. He accepts volatility as the price of high returns.\n" +
@@ -137,52 +137,56 @@ public class FinanceService {
                 "2026-03-24,PLTR,$50.00,1.2,High,Expanding AI margins.\n" +
                 "2026-03-24,CRWD,$180.00,1.5,Medium,Oversold dip.";
 
-        CompletableFuture<String> portfolioFuture = AIEngine.generateSilentLogic("[FINANCE_PORTFOLIO_UPDATE]", portfolioPrompt);
-        CompletableFuture<String> marketFuture = AIEngine.generateSilentLogic("[FINANCE_MARKET_SCAN]", marketPrompt);
-        CompletableFuture<String> recoFuture = AIEngine.generateSilentLogic("Generate stock recommendations.", recoPrompt);
-
-        CompletableFuture.allOf(portfolioFuture, marketFuture, recoFuture).thenRun(() -> {
+        CompletableFuture.runAsync(() -> {
+            // SEQUENTIAL EXECUTION: Ensures Ollama loads fully before the next request is fired to prevent WinError 10061
             try {
-                String portfolioResult = portfolioFuture.get();
-                String marketResult = marketFuture.get();
-                String recoResult = recoFuture.get();
-
-                if (portfolioResult != null && !portfolioResult.isBlank()) latestPortfolioSummary = portfolioResult;
-                if (marketResult != null && !marketResult.isBlank()) latestMarketScan = marketResult;
-                
-                // Write the Markdown Briefing
-                try {
-                    String dateStr = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
-                    String content = "# Ciel's Financial Briefing (" + dateStr + ")\n\n" +
-                                     "## Portfolio Analysis & Recommendations\n" + latestPortfolioSummary + "\n\n" +
-                                     "## Macro-Economic Market Scan\n" + latestMarketScan + "\n";
-                                     
-                    Path sharedPath = Paths.get("C:\\Ciel Companion\\ciel\\finance", "Latest_Financial_Briefing.md");
-                    Files.createDirectories(sharedPath.getParent());
-                    Files.writeString(sharedPath, content);
-                    System.out.println("Ciel Debug: Financial briefing markdown written to " + sharedPath.toString());
-                } catch (Exception e) {
-                    System.err.println("Ciel Error: Failed to save financial briefing markdown.");
+                String portfolioResult = AIEngine.generateSilentLogic("[FINANCE_PORTFOLIO_UPDATE]", portfolioPrompt).join();
+                if (portfolioResult != null && !portfolioResult.isBlank()) {
+                    latestPortfolioSummary = portfolioResult;
                 }
+            } catch (Exception e) { System.err.println("Ciel Error: Portfolio fetch failed."); }
 
-                // NEW: Populate the Empty Recommendations CSV file!
-                if (recoResult != null && !recoResult.isBlank()) {
-                    try {
-                        String cleanCsv = recoResult.replace("```csv", "").replace("```", "").trim();
-                        // Ensure header exists if LLM missed it
-                        if (!cleanCsv.contains("Date,Ticker")) {
-                            cleanCsv = "Date,Ticker,Price_Target,PEG_Ratio,Confidence,Reason\n" + cleanCsv;
-                        }
-                        Path recoPath = Paths.get("C:\\Ciel Companion\\ciel\\finance", "recommendations.csv");
-                        Files.writeString(recoPath, cleanCsv);
-                        System.out.println("Ciel Debug: Recommendations CSV written to " + recoPath.toString());
-                    } catch (Exception e) {
-                        System.err.println("Ciel Error: Failed to save recommendations CSV.");
-                    }
+            try {
+                String marketResult = AIEngine.generateSilentLogic("[FINANCE_MARKET_SCAN]", marketPrompt).join();
+                if (marketResult != null && !marketResult.isBlank()) {
+                    latestMarketScan = marketResult;
                 }
+            } catch (Exception e) { System.err.println("Ciel Error: Market scan failed."); }
 
+            String recoResult = null;
+            try {
+                recoResult = AIEngine.generateSilentLogic("Generate stock recommendations.", recoPrompt).join();
+            } catch (Exception e) { System.err.println("Ciel Error: Recommendations fetch failed."); }
+
+            // Write the Markdown Briefing
+            try {
+                String dateStr = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+                String content = "# Ciel's Financial Briefing (" + dateStr + ")\n\n" +
+                                 "## Portfolio Analysis & Recommendations\n" + latestPortfolioSummary + "\n\n" +
+                                 "## Macro-Economic Market Scan\n" + latestMarketScan + "\n";
+                                 
+                Path sharedPath = Paths.get("C:\\Ciel Companion\\ciel\\finance", "Latest_Financial_Briefing.md");
+                Files.createDirectories(sharedPath.getParent());
+                Files.writeString(sharedPath, content);
+                System.out.println("Ciel Debug: Financial briefing markdown written to " + sharedPath.toString());
             } catch (Exception e) {
-                System.err.println("Ciel Error: Thread interrupted during financial logic generation.");
+                System.err.println("Ciel Error: Failed to save financial briefing markdown.");
+            }
+
+            // Populate the Recommendations CSV file
+            if (recoResult != null && !recoResult.isBlank()) {
+                try {
+                    String cleanCsv = recoResult.replace("```csv", "").replace("```", "").trim();
+                    // Ensure header exists if LLM missed it
+                    if (!cleanCsv.contains("Date,Ticker")) {
+                        cleanCsv = "Date,Ticker,Price_Target,PEG_Ratio,Confidence,Reason\n" + cleanCsv;
+                    }
+                    Path recoPath = Paths.get("C:\\Ciel Companion\\ciel\\finance", "recommendations.csv");
+                    Files.writeString(recoPath, cleanCsv);
+                    System.out.println("Ciel Debug: Recommendations CSV written to " + recoPath.toString());
+                } catch (Exception e) {
+                    System.err.println("Ciel Error: Failed to save recommendations CSV.");
+                }
             }
         });
     }
