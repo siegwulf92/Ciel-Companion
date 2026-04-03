@@ -87,19 +87,41 @@ public class EmotionalState {
              return new VisualState(parseColor("100, 100, 255"), animation, 0.5);
         }
 
+        // --- NEW: Dynamic Color Fluctuation Algorithm ---
+        // Uses a sine wave based on system time to smoothly shift dominance between active colors
         float r = 0, g = 0, b = 0;
+        long time = System.currentTimeMillis();
+        int emotionIndex = 0;
+        float totalDynamicWeight = 0;
+
         for (Emotion e : activeEmotions.values()) {
             Color emotionColor = getColorForEmotion(e);
-            float weight = (float) (e.intensity() / totalIntensity);
-            r += emotionColor.getRed() * weight;
-            g += emotionColor.getGreen() * weight;
-            b += emotionColor.getBlue() * weight;
+            
+            // Creates a smooth oscillation cycle for each emotion. 
+            // Phase-shifted by index so they take turns peaking.
+            double timeShift = (Math.sin((time / 800.0) + (emotionIndex * Math.PI / 1.5)) + 1.0) / 2.0; 
+            
+            // Blend the emotion's base intensity with its current time-shifted peak
+            float dynamicWeight = (float) (e.intensity() * (0.3 + (timeShift * 0.7)));
+            
+            r += emotionColor.getRed() * dynamicWeight;
+            g += emotionColor.getGreen() * dynamicWeight;
+            b += emotionColor.getBlue() * dynamicWeight;
+            
+            totalDynamicWeight += dynamicWeight;
+            emotionIndex++;
         }
 
-        Color blendedColor = new Color(clamp(r), clamp(g), clamp(b));
+        if (totalDynamicWeight > 0) {
+            r /= totalDynamicWeight;
+            g /= totalDynamicWeight;
+            b /= totalDynamicWeight;
+        }
+
+        Color shiftingColor = new Color(clamp(r), clamp(g), clamp(b));
         double brightness = Math.min(1.0, totalIntensity);
 
-        return new VisualState(blendedColor, animation, brightness);
+        return new VisualState(shiftingColor, animation, brightness);
     }
     
     private Color getColorForEmotion(Emotion emotion) {

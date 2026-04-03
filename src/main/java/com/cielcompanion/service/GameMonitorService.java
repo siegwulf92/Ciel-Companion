@@ -28,6 +28,12 @@ public class GameMonitorService {
 
     private static void checkGameState() {
         String rawCmd = ModelManager.getHeavyGameRunning();
+
+        // --- NEW: Intercept background utilities that the system misclassifies as heavy games ---
+        if (rawCmd != null && isBlacklistedUtility(rawCmd)) {
+            rawCmd = null; // Override and ignore
+        }
+
         ShortTermMemory memory = ShortTermMemoryService.getMemory();
 
         // SCENARIO 1: A game is currently running
@@ -94,6 +100,19 @@ public class GameMonitorService {
                 gameLostTimestamp = 0;
             }
         }
+    }
+
+    // --- NEW: Blacklist Filter ---
+    private static boolean isBlacklistedUtility(String cmd) {
+        String lower = cmd.toLowerCase();
+        // Ignore Razer software (Razer Cortex, Synapse, AppEngine)
+        if (lower.contains("razer") || lower.contains("rzsynapse") || lower.contains("rzmonitor")) return true;
+        // Ignore other common background/overlay apps
+        if (lower.contains("discord") || lower.contains("obs64") || lower.contains("wallpaper")) return true;
+        // Ignore storefront launchers
+        if (lower.contains("steam.exe") || lower.contains("epicgameslauncher") || lower.contains("goggalaxy")) return true;
+        
+        return false;
     }
 
     // Helper to turn raw folder paths into clean spoken words for internal logging
