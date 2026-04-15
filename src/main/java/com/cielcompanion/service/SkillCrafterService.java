@@ -116,6 +116,14 @@ public class SkillCrafterService {
 
     private static boolean compileAndSaveSkill(String intendedName, String originalTask, String swarmOutput, boolean isSilent) {
         try {
+            // --- NEW: Parse the actual FILE_NAME decided by the Python Swarm ---
+            String finalName = intendedName;
+            Pattern namePattern = Pattern.compile("FILE_NAME:\\s*(.+?)(?:\\n|\\r|$)", Pattern.CASE_INSENSITIVE);
+            Matcher nameMatcher = namePattern.matcher(swarmOutput);
+            if (nameMatcher.find()) {
+                finalName = nameMatcher.group(1).trim();
+            }
+
             Pattern pattern = Pattern.compile("```(bat|batch|python|py|cmd|powershell|ps1)\\s*(.*?)\\s*```", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
             Matcher matcher = pattern.matcher(swarmOutput);
             

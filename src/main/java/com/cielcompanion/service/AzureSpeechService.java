@@ -1,11 +1,17 @@
 package com.cielcompanion.service;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 import com.microsoft.cognitiveservices.speech.*;
 import com.microsoft.cognitiveservices.speech.audio.*;
 
 import javax.sound.sampled.*;
 import java.io.File;
-import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 
 public class AzureSpeechService {
 
@@ -62,6 +68,50 @@ public class AzureSpeechService {
         }
     }
 
+    /**
+     * Automatically requests Katakana transliteration from the local Python Swarm
+     * if English characters are detected in a Japanese voice prompt.
+     */
+    private static String applyKatakanaTransliteration(String originalText, String langCode) {
+        if (!"ja-JP".equalsIgnoreCase(langCode)) return originalText;
+        if (!originalText.matches(".*[a-zA-Z].*")) return originalText; // Skip if no English letters
+
+        try {
+            System.out.println("[Azure TTS] English text detected. Requesting Katakana transliteration from Swarm...");
+            URL url = new URL("http://localhost:8000/transliterate");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json; utf-8");
+            conn.setRequestProperty("Accept", "application/json");
+            conn.setDoOutput(true);
+            conn.setConnectTimeout(10000); // 10 second timeout for connection
+            conn.setReadTimeout(120000);   // 120 seconds to wait for LM Studio response
+
+            JsonObject jsonInput = new JsonObject();
+            jsonInput.addProperty("text", originalText);
+            
+            try(OutputStream os = conn.getOutputStream()) {
+                byte[] input = new Gson().toJson(jsonInput).getBytes(StandardCharsets.UTF_8);
+                os.write(input, 0, input.length);
+            }
+
+            if (conn.getResponseCode() == 200) {
+                JsonObject response = new Gson().fromJson(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8), JsonObject.class);
+                if (response != null && response.has("katakana")) {
+                    String katakana = response.get("katakana").getAsString();
+                    System.out.println("[Azure TTS] Transliteration success: " + katakana);
+                    return katakana;
+                }
+            } else {
+                System.err.println("[Azure TTS] Transliteration API returned code: " + conn.getResponseCode());
+            }
+        } catch (Exception e) {
+            System.err.println("[Azure TTS] Transliteration network error: " + e.getMessage());
+        }
+        
+        return originalText; // Fallback to raw text if the local API fails
+    }
+
     public static boolean speak(String text, String key, String style, String pitch) {
         return speak(text, key, style, pitch, "ja-JP");
     }
@@ -92,21 +142,26 @@ public class AzureSpeechService {
                 return false;
             }
 
-            return generateAndPlayFile(text, safeStyle, safePitch, safeLang, cachedFile);
+            // Cache MISS: Convert English to Katakana via Swarm before generating
+            String processedText = applyKatakanaTransliteration(text, safeLang);
+            return generateAndPlayFile(processedText, safeStyle, safePitch, safeLang, cachedFile);
+            
         } else {
             long estimatedSeconds = (SpeechService.estimateSpeechDuration(text) / 1000) + 1;
             if (!AzureUsageTracker.canSpeak(estimatedSeconds)) {
                 System.out.println("[Azure TTS] Quota exceeded. Cannot stream dynamic speech.");
                 return false;
             }
-            return streamDirectly(text, safeStyle, safePitch, safeLang);
+            
+            // Dynamic Stream: Convert English to Katakana via Swarm before speaking
+            String processedText = applyKatakanaTransliteration(text, safeLang);
+            return streamDirectly(processedText, safeStyle, safePitch, safeLang);
         }
     }
 
     private static boolean generateAndPlayFile(String text, String style, String pitch, String lang, File destination) {
         AudioConfig fileOutput = null;
         try {
-            // UPDATED: Now logs the exact text being written to the file
             System.out.println("[Azure TTS] Generating new static file: " + destination.getName() + " | Text: \"" + text + "\" [Style: " + style + ", Lang: " + lang + "]");
             
             fileOutput = AudioConfig.fromWavFileOutput(destination.getAbsolutePath());
@@ -146,7 +201,6 @@ public class AzureSpeechService {
 
     private static boolean streamDirectly(String text, String style, String pitch, String lang) {
         try {
-            // UPDATED: Now logs the exact text being streamed
             System.out.println("[Azure TTS] Streaming dynamic content: \"" + text + "\" (Style: " + style + ", Lang: " + lang + ")");
             
             AudioConfig audioConfig = AudioConfig.fromDefaultSpeakerOutput();
@@ -217,7 +271,7 @@ public class AzureSpeechService {
         try (javax.sound.sampled.AudioInputStream audioStream = AudioSystem.getAudioInputStream(file)) {
             DataLine.Info info = new DataLine.Info(Clip.class, audioStream.getFormat());
             Clip clip = (Clip) AudioSystem.getLine(info);
-            activeClip = clip; // Attach to hardware monitor
+            activeClip = clip; 
             
             clip.open(audioStream);
             clip.start();
@@ -230,7 +284,6 @@ public class AzureSpeechService {
             return true;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            // CRITICAL FIX: Kill the clip if Java thread is interrupted
             if (activeClip != null) {
                 activeClip.stop();
                 activeClip.close();

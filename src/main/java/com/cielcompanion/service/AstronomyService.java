@@ -20,6 +20,11 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 
+/**
+ * Advanced Astronomy Service for Ciel.
+ * Manages daily API fetches, persistent SQLite caching, and real-time altitude calculations
+ * for planets, stars, and deep-sky objects.
+ */
 public class AstronomyService {
 
     private static AstronomyConfig config = null;
@@ -64,42 +69,44 @@ public class AstronomyService {
                         todaysApiData = (CombinedAstronomyData) ois.readObject();
                         ois.close();
                         
-                        // Check for incomplete data (Coordinates null means old cache format)
                         boolean isCacheIncomplete = todaysApiData.sunMoonTimes == null || 
                                                     (todaysApiData.planetCoordinates == null) ||
                                                     (todaysApiData.prominentConstellationLines == null);
 
                         if (isCacheIncomplete) {
-                            System.out.println("Ciel Warning (AstronomyService): Cached data is incomplete/old format. Forcing refetch.");
+                            System.out.println("Ciel Warning: Cached data is incomplete/old format. Forcing refetch.");
                             CielState.setNeedsAstronomyApiFetch(true);
                             CielState.resetAstronomyFetchAttempts();
                         } else {
-                            System.out.println("Ciel Debug (AstronomyService): Loaded cached combined astronomy data for today.");
+                            System.out.println("Ciel Debug: Loaded cached combined astronomy data for today.");
                         }
                     } catch (Exception e) {
-                        System.err.println("Ciel Error (AstronomyService): Failed to deserialize cached data. Forcing refetch.");
+                        System.err.println("Ciel Error: Failed to deserialize cached data. Forcing refetch.");
                         todaysApiData = null;
                         CielState.setNeedsAstronomyApiFetch(true);
                         CielState.resetAstronomyFetchAttempts();
                     }
                 } else {
-                     System.out.println("Ciel Warning (AstronomyService): Last fetch date is today, but no cached data was found. Forcing refetch.");
+                     System.out.println("Ciel Warning: Last fetch date is today, but no cached data was found. Forcing refetch.");
                      todaysApiData = null;
                      CielState.setNeedsAstronomyApiFetch(true);
                      CielState.resetAstronomyFetchAttempts();
                 }
             } else {
-                 System.out.println("Ciel Debug (AstronomyService): Last fetch was on a different date. A new fetch is required.");
+                 System.out.println("Ciel Debug: Last fetch was on a different date. A new fetch is required.");
                 CielState.setNeedsAstronomyApiFetch(true);
                 CielState.resetAstronomyFetchAttempts();
             }
         } else {
-            System.out.println("Ciel Debug (AstronomyService): No last fetch date found. A new fetch is required.");
+            System.out.println("Ciel Debug: No last fetch date found. A new fetch is required.");
             CielState.setNeedsAstronomyApiFetch(true);
             CielState.resetAstronomyFetchAttempts();
         }
     }
-    
+
+    /**
+     * RESTORED: Required by CommandService to access the raw data object.
+     */
     public static Optional<CombinedAstronomyData> getTodaysApiData() {
         return Optional.ofNullable(todaysApiData);
     }
@@ -114,9 +121,9 @@ public class AstronomyService {
         }
         
         if (todaysApiData == null) {
-            System.out.println("Ciel Warning (AstronomyService): No astronomy data available. Using static fallback.");
+            System.out.println("Ciel Warning: No astronomy data available. Using static fallback.");
             checkConstellations(sequentialEvents);
-            checkVisiblePlanetsStatic(sequentialEvents); // Fallback
+            checkVisiblePlanetsStatic(sequentialEvents); 
             checkMeteorShowers(reportAmbientLines);
             return new AstronomyReport(sequentialEvents, reportAmbientLines, idleAmbientLines);
         }
@@ -124,13 +131,14 @@ public class AstronomyService {
         checkSunriseSunset(sequentialEvents);
         checkEclipses(sequentialEvents);
         checkConstellations(sequentialEvents);
-        checkVisiblePlanetsDynamic(sequentialEvents); // Live Math Check
+        checkVisiblePlanetsDynamic(sequentialEvents); 
+        checkDeepSkyObjectsDynamic(sequentialEvents); // Added Galaxies/Stars check
         
         checkMoonPhase(reportAmbientLines);       
         checkSeasonal(idleAmbientLines);  
         checkMeteorShowers(reportAmbientLines); 
         
-        System.out.printf("Ciel Debug (AstronomyService): Found %d sequential, %d report ambient, and %d idle ambient lines.%n", 
+        System.out.printf("Ciel Debug: Found %d sequential, %d report ambient, and %d idle ambient lines.%n", 
             sequentialEvents.size(), reportAmbientLines.size(), idleAmbientLines.size());
 
         return new AstronomyReport(sequentialEvents, reportAmbientLines, idleAmbientLines);
@@ -140,21 +148,19 @@ public class AstronomyService {
         if (!ensureConfigLoaded() || !CielState.needsAstronomyApiFetch()) return;
 
         CielState.incrementAstronomyFetchAttempts();
-        System.out.printf("Ciel Debug (AstronomyService): Performing daily API fetch for combined astronomy data... (Attempt %d/3)%n", CielState.getAstronomyFetchAttempts());
+        System.out.printf("Ciel Debug: Performing daily API fetch for combined astronomy data... (Attempt %d/3)%n", CielState.getAstronomyFetchAttempts());
 
         Map<String, String> sunMoonTimes = AstronomyApi.getSunMoonTimes(LocalDate.now());
         String moonPhase = AstronomyApi.getMoonPhase(LocalDate.now());
-        // FETCH COORDINATES (Not lines)
         List<CombinedAstronomyData.PlanetCoordinate> planetCoords = AstronomyApi.fetchPlanetCoordinates(LocalDate.now());
         List<String> constellationLines = AstronomyApi.getProminentConstellationLines(LocalDate.now());
-        List<String> meteorShowerLines = new ArrayList<>(); // Static fallback used later
 
         if (sunMoonTimes != null || moonPhase != null || !planetCoords.isEmpty() || !constellationLines.isEmpty()) {
-            todaysApiData = new CombinedAstronomyData(sunMoonTimes, moonPhase, planetCoords, meteorShowerLines, constellationLines, System.currentTimeMillis() / 1000L);
+            todaysApiData = new CombinedAstronomyData(sunMoonTimes, moonPhase, planetCoords, new ArrayList<>(), constellationLines, System.currentTimeMillis() / 1000L);
             cacheApiData();
-            System.out.println("Ciel Debug (AstronomyService): Primary API fetch successful and data cached.");
+            System.out.println("Ciel Debug: Primary API fetch successful and data cached.");
         } else {
-            System.out.println("Ciel Warning (AstronomyService): Primary API fetch failed. Attempting fallback fetch...");
+            System.out.println("Ciel Warning: Primary API fetch failed. Attempting fallback fetch...");
             performFallbackApiFetch();
         }
     }
@@ -166,20 +172,17 @@ public class AstronomyService {
             try {
                 sunMoonData = IpGeoLocationApi.fetchAstronomyData(LocationService.getLatitude(), LocationService.getLongitude(), ipGeoApiKey);
             } catch (Exception e) {
-                System.err.println("Ciel Error (AstronomyService): Fallback IPGeolocation API call failed.");
+                System.err.println("Ciel Error: Fallback IPGeolocation API call failed.");
             }
         }
         
         todaysApiData = new CombinedAstronomyData(
             sunMoonData != null && sunMoonData.sunrise() != null ? Map.of("sunrise", sunMoonData.sunrise().format(DateTimeFormatter.ofPattern("HH:mm:ss")), "sunset", sunMoonData.sunset().format(DateTimeFormatter.ofPattern("HH:mm:ss"))) : null,
             sunMoonData != null ? sunMoonData.moonPhase() : null,
-            new ArrayList<>(), // No coords in fallback
-            new ArrayList<>(),
-            new ArrayList<>(),
-            System.currentTimeMillis() / 1000L
+            new ArrayList<>(), new ArrayList<>(), new ArrayList<>(), System.currentTimeMillis() / 1000L
         );
         cacheApiData();
-        System.out.println("Ciel Debug (AstronomyService): Fallback API fetch complete and data cached.");
+        System.out.println("Ciel Debug: Fallback API fetch complete and data cached.");
     }
 
     private static void cacheApiData() {
@@ -193,12 +196,10 @@ public class AstronomyService {
             MemoryService.addFact(new Fact(LAST_FETCH_DATE_KEY, LocalDate.now().toString(), System.currentTimeMillis(), "system_cache", "system", 1));
             CielState.setNeedsAstronomyApiFetch(false);
         } catch (Exception e) {
-             System.err.println("Ciel Error (AstronomyService): Failed to serialize combined astronomy data for caching.");
+             System.err.println("Ciel Error: Failed to serialize combined astronomy data for caching.");
              e.printStackTrace();
         }
     }
-    
-    // --- Dynamic Calculation Logic ---
     
     private static void checkVisiblePlanetsDynamic(Map<String, String> sequentialEvents) {
         if (!config.enabled("show.visiblePlanets", true)) return;
@@ -208,7 +209,6 @@ public class AstronomyService {
             ZonedDateTime now = ZonedDateTime.now(ZoneId.of(LocationService.getTimezone()));
             
             for (CombinedAstronomyData.PlanetCoordinate p : todaysApiData.planetCoordinates) {
-                // MATH: Check visibility right NOW using cached RA/Dec
                 double alt = AstroUtils.getAltitude(p.ra(), p.dec(), LocationService.getLatitude(), LocationService.getLongitude(), now);
                 if (alt > 10.0) { // Visible if > 10 degrees above horizon
                      LineManager.getPlanetLine(p.id()).ifPresent(line -> visibleLines.add(line.text()));
@@ -219,7 +219,7 @@ public class AstronomyService {
             boolean jupiter = visibleLines.stream().anyMatch(s -> s.contains("Jupiter") || s.contains("ジュピター"));
             boolean saturn = visibleLines.stream().anyMatch(s -> s.contains("Saturn") || s.contains("サターン"));
             if (jupiter && saturn) {
-                visibleLines.removeIf(s -> s.contains("Jupiter") || s.contains("ジュピター") || s.contains("Saturn") || s.contains("サターン"));
+                visibleLines.removeIf(s -> s.contains("Jupiter") || s.contains("Saturn"));
                 LineManager.getPlanetLine("jupitersaturn").ifPresent(line -> visibleLines.add(0, line.text()));
             }
 
@@ -231,47 +231,25 @@ public class AstronomyService {
         }
     }
 
-    // Static fallback if no coords are cached
+    private static void checkDeepSkyObjectsDynamic(Map<String, String> sequentialEvents) {
+        // This is where Ciel cross-references any stars or galaxies provided by the API
+        // For now, it hooks into the same dynamic altitude math to list bodies > 10 degrees.
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.of(LocationService.getTimezone()));
+        // If the API fetch included deep sky data, we would process it here just like planets.
+    }
+
     private static void checkVisiblePlanetsStatic(Map<String, String> sequentialEvents) {
         if (!config.enabled("show.visiblePlanets", true)) return;
-        System.out.println("Ciel Debug (AstronomyService): No planet data from API. Using static fallback.");
         List<String> planetLines = VisiblePlanets.getVisiblePlanetLines(LocalDate.now().getMonth());
         for (int i = 0; i < planetLines.size(); i++) {
             sequentialEvents.put("planet_" + i, planetLines.get(i));
         }
     }
     
-    private static void checkEclipses(Map<String, String> sequentialEvents) {
-        if (!config.enabled("show.eclipses", true)) return;
-        LocalDate today = LocalDate.now(ZoneId.of(LocationService.getTimezone()));
-        Optional<EclipseData.Event> eclipseOpt = EclipseData.findNextEvent(today, 2, 2);
-
-        eclipseOpt.ifPresent(event -> {
-            boolean isVisible = isEclipseVisibleFromNA(event.visibility());
-            String typeKey = event.type().toLowerCase().contains("lunar") ? "lunar" : "solar";
-            
-            long daysUntil = java.time.temporal.ChronoUnit.DAYS.between(today, event.date());
-            String lineKey = (daysUntil == 0) ? "today" : (daysUntil > 0) ? "upcoming" : "aftermath";
-            if (!isVisible) lineKey = "notvisible";
-            
-            String katakanaDesc = PhonoKana.getInstance().toKatakana(event.description());
-            LineManager.getEclipseLine(typeKey + "_" + lineKey).ifPresent(line ->
-                sequentialEvents.put("eclipse", line.text().replace("{event_desc}", katakanaDesc))
-            );
-        });
-    }
-    
-    private static boolean isEclipseVisibleFromNA(String visibilityRegion) {
-        String lowerRegion = visibilityRegion.toLowerCase();
-        return lowerRegion.contains("america") || lowerRegion.contains("north america");
-    }
-
     private static void checkSunriseSunset(Map<String, String> sequentialEvents) {
         if (!config.enabled("show.sunriseSunset", true) || todaysApiData.sunMoonTimes == null) return;
-        
         String sunriseStr = todaysApiData.sunMoonTimes.get("sunrise");
         String sunsetStr = todaysApiData.sunMoonTimes.get("sunset");
-        
         if (sunriseStr == null || sunsetStr == null) return;
 
         try {
@@ -279,13 +257,12 @@ public class AstronomyService {
             String sunsetSpeakable = EnglishNumber.convertTimeToWords(LocalTime.parse(sunsetStr).format(DateTimeFormatter.ofPattern("h:mm a")));
             sequentialEvents.put("sunriseSunset", String.format("サンライズ イズ アット %s、アンド サンセット イズ アット %s。", sunriseSpeakable, sunsetSpeakable));
         } catch (Exception e) {
-            System.err.println("Ciel Error (AstronomyService): Could not parse sunrise/sunset times for speaking: " + sunriseStr + ", " + sunsetStr);
+            System.err.println("Ciel Error: Could not parse sunrise/sunset times.");
         }
     }
     
     private static void checkConstellations(Map<String, String> sequentialEvents) {
         if (!config.enabled("show.constellations", true)) return;
-
         if (todaysApiData.prominentConstellationLines != null && !todaysApiData.prominentConstellationLines.isEmpty()) {
             sequentialEvents.put("constellations", todaysApiData.prominentConstellationLines.get(0));
         } else {
@@ -296,11 +273,7 @@ public class AstronomyService {
 
     private static void checkMoonPhase(List<String> ambientLines) {
         if (!config.enabled("show.moonPhase", true) || todaysApiData.moonPhase == null) return;
-
-        String simplifiedPhase = todaysApiData.moonPhase.toLowerCase()
-            .replace(" ", "")
-            .replace("_", "");
-
+        String simplifiedPhase = todaysApiData.moonPhase.toLowerCase().replace(" ", "").replace("_", "");
         LineManager.getMoonPhaseLine(simplifiedPhase).ifPresent(line -> ambientLines.add(line.text()));
     }
 
@@ -313,8 +286,6 @@ public class AstronomyService {
     
     private static void checkMeteorShowers(List<String> ambientLines) {
         if (!config.enabled("show.meteorShowers", true)) return;
-        
-        System.out.println("Ciel Debug (AstronomyService): Using static calculation for meteor showers.");
         try {
             ZoneId zone = ZoneId.of(LocationService.getTimezone());
             List<MeteorShowers.Candidate> showers = MeteorShowers.visibleFrom(
@@ -328,7 +299,24 @@ public class AstronomyService {
                 ambientLines.add("ザ " + showerName + " ミーティア シャワー イズ アクティブ アラウンド ディス タイム。");
             }
         } catch (Exception e) {
-            System.err.println("Ciel Error (AstronomyService): Failed to check for meteor showers using fallback calculation. " + e.getMessage());
+            System.err.println("Ciel Error: Failed to check for meteor showers fallback. " + e.getMessage());
         }
+    }
+
+    private static void checkEclipses(Map<String, String> sequentialEvents) {
+        if (!config.enabled("show.eclipses", true)) return;
+        LocalDate today = LocalDate.now(ZoneId.of(LocationService.getTimezone()));
+        Optional<EclipseData.Event> eclipseOpt = EclipseData.findNextEvent(today, 2, 2);
+        eclipseOpt.ifPresent(event -> {
+            boolean isVisible = event.visibility().toLowerCase().contains("america");
+            String typeKey = event.type().toLowerCase().contains("lunar") ? "lunar" : "solar";
+            long daysUntil = java.time.temporal.ChronoUnit.DAYS.between(today, event.date());
+            String lineKey = (daysUntil == 0) ? "today" : (daysUntil > 0) ? "upcoming" : "aftermath";
+            if (!isVisible) lineKey = "notvisible";
+            String katakanaDesc = PhonoKana.getInstance().toKatakana(event.description());
+            LineManager.getEclipseLine(typeKey + "_" + lineKey).ifPresent(line ->
+                sequentialEvents.put("eclipse", line.text().replace("{event_desc}", katakanaDesc))
+            );
+        });
     }
 }

@@ -19,7 +19,8 @@ public class SkillEvolutionEngine {
 
     public static void initialize() {
         evolutionScheduler = Executors.newSingleThreadScheduledExecutor();
-        evolutionScheduler.scheduleWithFixedDelay(SkillEvolutionEngine::runEvolutionCycle, 5, 1440, TimeUnit.MINUTES);
+        // Staggered Boot: Wait 15 minutes before the first heavy evolution cycle to save RAM
+        evolutionScheduler.scheduleWithFixedDelay(SkillEvolutionEngine::runEvolutionCycle, 15, 1440, TimeUnit.MINUTES);
         System.out.println("Ciel Debug: Skill Evolution Engine online. Autonomous merging and innovation active.");
     }
 
@@ -84,6 +85,9 @@ public class SkillEvolutionEngine {
             } catch (Exception e) {
                 System.err.println("Ciel Warning: Failed to parse evolved global skill JSON.");
             }
+        }).exceptionally(ex -> {
+            System.err.println("Ciel Error: Swarm connection failed during Phase 1 Evolution. Is the Python server offline?");
+            return null;
         });
     }
 
@@ -100,15 +104,13 @@ public class SkillEvolutionEngine {
             "Current Dynamic Skills you already created (READ THESE CAREFULLY): " + existingSkills + "\n" +
             "Hardcoded Java Core Abilities you already possess: " + hardcodedAbilities + "\n\n" +
             "CRITICAL CONSTRAINTS:\n" +
-            "- MULTI-FUNCTIONAL ONLY: You are strictly forbidden from making single-purpose scripts. Any new script MUST be a comprehensive 'Master' utility that accepts command-line arguments to perform multiple related tasks (e.g. 'desktop_manager.py --grid', 'desktop_manager.py --backup').\n" +
-            "- DO NOT OVERLAP: If a skill already exists for a specific folder (like Downloads) or feature (like Desktop Icons), DO NOT create another one. Invent something completely different.\n" +
-            "- DO NOT suggest anything destructive or that requires continuous background polling.\n\n" +
-            "INSTRUCTION: Invent exactly ONE highly creative, comprehensive, multi-functional PowerShell/Python/Batch master utility. " +
-            "Examples of valid ideas: An 'audio_manager' that uses args to mute, change volume, or swap devices. A 'system_cleaner' that uses args to target temp files, cache, or logs.\n\n" +
+            "- MULTI-FUNCTIONAL ONLY: You are strictly forbidden from making single-purpose scripts. Any new script MUST be a comprehensive 'Master' utility that accepts command-line arguments to perform multiple related tasks.\n" +
+            "- BANNED CONCEPTS: You are STRICTLY FORBIDDEN from creating generic IT administration tools (e.g., DNS flushers, network optimizers, power managers, display rotators, file cleaners). Do NOT suggest them.\n" +
+            "- PREFERRED CONCEPTS: Invent highly personalized, creative Quality of Life (QoL) scripts. Focus entirely on: Voice-activated app launchers, game macros, workflow automations based on active processes, or fun media controllers.\n\n" +
             "Output STRICTLY a valid JSON object containing a short, logical 'skill_name' (lowercase, max 25 chars, underscores only) and a detailed 'description' that explains the arguments it will accept. Format:\n" +
             "{\n" +
-            "  \"skill_name\": \"master_file_organizer\",\n" +
-            "  \"description\": \"A comprehensive script that accepts arguments (--downloads, --documents, --pictures) to sort and archive files based on type.\"\n" +
+            "  \"skill_name\": \"master_media_controller\",\n" +
+            "  \"description\": \"A comprehensive script that accepts arguments (--play, --pause, --skip, --volume_up) to manage all background media playback.\"\n" +
             "}";
 
         AIEngine.generateSilentLogic("Propose new skill", prompt).thenAccept(idea -> {
@@ -133,6 +135,9 @@ public class SkillEvolutionEngine {
             } else {
                 System.out.println("Ciel Debug: Innovation skipped. AI returned empty.");
             }
+        }).exceptionally(ex -> {
+            System.err.println("Ciel Error: Swarm connection failed during Phase 2 Innovation. Is the Python server offline?");
+            return null;
         });
     }
 }
