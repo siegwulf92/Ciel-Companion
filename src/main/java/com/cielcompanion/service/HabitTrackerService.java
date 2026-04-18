@@ -12,9 +12,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
@@ -64,14 +66,15 @@ public class HabitTrackerService {
         if ("Idle".equals(currentCategory)) {
             SpeechService.speakPreformatted(text);
         } else {
-            System.out.println("Ciel Debug: Master is busy (" + currentCategory + "). Deferring speech: " + text);
-            deferredSpeechQueue.offer(text);
+            System.out.println("Ciel Debug: Master is busy (" + currentCategory + "). Deferring speech to background queue.");
+            deferredSpeechQueue.offer(titleContext); // Only store the brief context for the AI summary later
             
             try {
+                // Save full data silently to memory_core
                 String dateStr = java.time.LocalDate.now().toString() + "_" + (System.currentTimeMillis() / 1000);
-                Path path = Paths.get("C:\\Ciel Companion\\ciel\\thoughts", "Deferred_Thought_" + dateStr + ".md");
+                Path path = Paths.get("C:\\Ciel Companion\\ciel\\memory_core\\deferred_speech", "Deferred_Speech_" + dateStr + ".md");
                 Files.createDirectories(path.getParent());
-                Files.writeString(path, "# Deferred Thought: " + titleContext + "\n\n" + text);
+                Files.writeString(path, "# Background Event: " + titleContext + "\n\n" + text);
             } catch (Exception e) {}
         }
     }
@@ -150,17 +153,30 @@ public class HabitTrackerService {
             }
         }
 
+        // --- INTELLIGENT DEFERRED SUMMARY ---
+        // Instead of reading the whole queue, pass it to the Local AI to summarize into one sentence!
         if ("Idle".equals(currentCategory) && !previousCategory.equals("Idle") && !deferredSpeechQueue.isEmpty()) {
-            System.out.println("Ciel Debug: Master is now Idle. Flushing deferred speech queue.");
-            SpeechService.speakPreformatted("[Happy] Master, while you were occupied, I had a few thoughts.");
+            System.out.println("Ciel Debug: Master is now Idle. Consolidating deferred speech queue via Local AI.");
             
-            new Thread(() -> {
-                while (!deferredSpeechQueue.isEmpty()) {
-                    String msg = deferredSpeechQueue.poll();
-                    SpeechService.speakPreformatted(msg);
-                    try { Thread.sleep(1500); } catch (Exception e) {} 
-                }
-            }).start();
+            List<String> deferredItems = new ArrayList<>();
+            while (!deferredSpeechQueue.isEmpty()) {
+                deferredItems.add(deferredSpeechQueue.poll());
+            }
+            
+            if (deferredItems.size() > 1) {
+                String prompt = "Master was busy, so you silently completed these tasks in the background:\n" + 
+                                String.join(" | ", deferredItems) + "\n\n" +
+                                "Summarize this into a single, elegant, conversational sentence. Tell Master Taylor that while he was occupied, you processed these things and he should review your thought logs when convenient. " +
+                                "CRITICAL: Output ONLY your spoken dialogue starting with [Happy] or [Proud]. Do NOT list them one by one.";
+                                
+                AIEngine.generateSilentLogic(prompt, "[LOCAL_THOUGHT] You are Ciel, summarizing background tasks.").thenAccept(summary -> {
+                    if (summary != null && !summary.isBlank()) {
+                        SpeechService.speakPreformatted(summary.trim(), null, false, true);
+                    }
+                });
+            } else {
+                SpeechService.speakPreformatted("[Happy] Master, while you were occupied I processed a background task: " + deferredItems.get(0) + ". I recommend reviewing my logs when convenient.", null, false, true);
+            }
         }
 
         if (currentCategory.equals("Media")) {
@@ -199,7 +215,7 @@ public class HabitTrackerService {
             "If the title is vague, generic, or you cannot accurately confirm the context, output EXACTLY the word: ABORT. " +
             "CRITICAL: If you know it, output ONLY your spoken dialogue starting with a bracketed emotion tag like [Amused], [Curious], or [Observing]. If you don't know it, output ABORT.";
 
-        AIEngine.generateSilentLogic("Media Analysis", prompt).thenAccept(response -> {
+        AIEngine.generateSilentLogic(prompt, "Media Analysis").thenAccept(response -> {
             if (response != null && !response.isBlank()) {
                 String cleanResponse = response.trim();
                 if (cleanResponse.equals("ABORT") || cleanResponse.contains("ABORT")) {
@@ -207,27 +223,26 @@ public class HabitTrackerService {
                 } else {
                     System.out.println("Ciel Debug: Confident Media Commentary Generated -> " + cleanResponse);
                     
-                    // --- NEW: AUTO-PAUSE/UNPAUSE LOGIC ---
                     new Thread(() -> {
                         try {
                             Robot robot = new Robot();
-                            System.out.println("Ciel Debug: Auto-pausing media (Spacebar) to deliver commentary...");
+                            boolean shouldPause = "Media".equals(currentCategory);
                             
-                            // Press Space to Pause
-                            robot.keyPress(KeyEvent.VK_SPACE);
-                            robot.keyRelease(KeyEvent.VK_SPACE);
+                            if (shouldPause) {
+                                System.out.println("Ciel Debug: Auto-pausing media (Spacebar) to deliver commentary...");
+                                robot.keyPress(KeyEvent.VK_SPACE);
+                                robot.keyRelease(KeyEvent.VK_SPACE);
+                                Thread.sleep(800); 
+                            }
                             
-                            Thread.sleep(800); // Give the video player a fraction of a second to halt audio
+                            SpeechService.speakPreformatted(cleanResponse, null, false, true);
                             
-                            // SpeechService.speakPreformatted is a blocking call, so it will wait until she finishes speaking
-                            SpeechService.speakPreformatted(cleanResponse);
-                            
-                            Thread.sleep(800); // Small pause after she finishes
-                            
-                            System.out.println("Ciel Debug: Auto-unpausing media (Spacebar)...");
-                            // Press Space to Unpause
-                            robot.keyPress(KeyEvent.VK_SPACE);
-                            robot.keyRelease(KeyEvent.VK_SPACE);
+                            if (shouldPause) {
+                                Thread.sleep(800); 
+                                System.out.println("Ciel Debug: Auto-unpausing media (Spacebar)...");
+                                robot.keyPress(KeyEvent.VK_SPACE);
+                                robot.keyRelease(KeyEvent.VK_SPACE);
+                            }
                             
                         } catch (Exception e) {
                             System.err.println("Ciel Error: Failed to execute media auto-pause.");

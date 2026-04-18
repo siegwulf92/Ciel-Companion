@@ -124,13 +124,14 @@ public class LoreAnalyzerService {
 
         String initialContext = missingLinksContext.get(targetLink).stream().limit(3).collect(Collectors.joining("\n"));
 
+        // UPDATED: Two-Way Alias Ban logic implemented here to protect generic classifications from characters
         String aliasPrompt = "You are Ciel from the Tensura universe. Read this context where the entity '" + targetLink + "' was mentioned:\n" +
             "\"" + initialContext + "\"\n\n" +
             "Based on this context and your knowledge, identify up to 4 SPECIFIC alternative names, pseudonyms, or unique titles for '" + targetLink + "'.\n" +
             "CRITICAL RULES:\n" +
-            "1. DO NOT include generic race names, species, or shared classifications (e.g., DO NOT use 'True Dragon', 'Slime', 'Arch Demon', 'Demon Lord', or 'Primordial' as aliases, as these are shared by multiple characters).\n" +
-            "2. DO NOT use common dictionary words.\n" +
-            "3. ONLY use highly specific, unique identifiers (e.g., Rimuru Tempest -> Rimuru. Diablo -> Noir. Veldora Tempest -> Storm Dragon, Veldora, Tsundere Dragon).\n" +
+            "1. IF TARGET IS A CHARACTER: DO NOT include generic race names, species, or shared classifications (e.g., DO NOT use 'True Dragon', 'Slime', 'Arch Demon', 'Demon Lord', or 'Primordial' as aliases for characters).\n" +
+            "2. IF TARGET IS A CLASSIFICATION/RACE (e.g., 'True Dragon', 'Demon'): DO NOT list specific character names (like 'Veldora', 'Rimuru', 'Diablo') as aliases.\n" +
+            "3. ONLY use highly specific, unique equivalent identifiers.\n" +
             "Output ONLY a comma-separated list of names. Do not include the original name unless necessary. No conversational text.";
 
         final List<File> finalTextFiles = textFiles;
@@ -172,15 +173,15 @@ public class LoreAnalyzerService {
 
             String rawContext = contextParas.stream().limit(25).collect(Collectors.joining("\n\n"));
 
-            // ADDED: Explicit logic for assigning broad categories to the tags list!
+            // UPDATED: Added "IF CONCEPT/CLASSIFICATION" to handle generic monster/race pages
             String prompt = "You are Ciel, Master Taylor's highly intelligent Manas. You are organizing his Obsidian D&D / Tensura vault.\n" +
                 "You must generate a comprehensive Markdown file for the missing entity: '[[" + targetLink + "]]'.\n\n" +
                 "KNOWN ALIASES/TITLES: " + aliasesString + "\n\n" +
                 "RAW CONTEXT (Paragraphs extracted from across the vault where this entity or its aliases were mentioned):\n" +
                 rawContext + "\n\n" +
                 "INSTRUCTIONS:\n" +
-                "1. Deduce if this entity is a Character, Skill, Lore Item, or Location based on the context.\n" +
-                "2. Identify any generic classifications, races, or species (e.g., True Dragon, Slime, Demon Lord, Primordial, Arch Demon). Format them as snake_case and inject them into the 'tags' list.\n" +
+                "1. Deduce if this entity is a Character, Skill, Lore Item, Location, or Concept/Classification (e.g., a race, species, or faction like 'True Dragon' or 'Demon Lord') based on the context.\n" +
+                "2. Identify any generic classifications, races, or species. Format them as snake_case and inject them into the 'tags' list.\n" +
                 "3. Generate the Markdown document using your immense internal knowledge base.\n" +
                 "4. USE THE EXACT TEMPLATES BELOW based on the type you deduce:\n\n" +
                 "IF CHARACTER:\n" +
@@ -189,6 +190,8 @@ public class LoreAnalyzerService {
                 "## type: skill\ntags: [ability, status/unverified, insert_classification_tags_here]\naliases: [" + aliasesString + "]\nrank: \nsource_entity: \n\n# [[" + targetLink + "]]\n## Mechanics\n[Summary here]\n## D&D 5e Equivalent\n[Spell/Feat comparison here]\n## Combat Data\n[Usage here]\n## Lore Metadata (Raw Mentions)\n\n" +
                 "IF ITEM/LOCATION:\n" +
                 "## type: item\ntags: [material, status/unverified, insert_classification_tags_here]\naliases: [" + aliasesString + "]\nrarity: \nvalue: \n\n# [[" + targetLink + "]]\n## Lore Description\n[Summary here]\n## D&D Properties\n[Properties here]\n## Source Locations\n[Where it is found]\n## Lore Metadata (Raw Mentions)\n\n" +
+                "IF CONCEPT/CLASSIFICATION:\n" +
+                "## type: concept\ntags: [lore, status/unverified, insert_classification_tags_here]\naliases: [" + aliasesString + "]\n\n# [[" + targetLink + "]]\n## Lore Description\n[Summary of the race/group/concept here]\n## Notable Members\n[List of known entities belonging to this group]\n## D&D Mechanics\n[Racial traits, faction rules, or mechanics here]\n## Lore Metadata (Raw Mentions)\n\n" +
                 "5. Auto-bracket [[ ]] any other significant characters, skills, or locations mentioned in your generated text to retroactively link them to the broader vault.\n" +
                 "6. CRITICAL: You MUST place all of the 'RAW CONTEXT' provided above into a `> [!QUOTE] Raw Data` markdown block exactly under the '## Lore Metadata (Raw Mentions)' header.\n" +
                 "Output ONLY the raw Markdown content. Do not wrap it in ```markdown fences or include conversational text.";
@@ -203,6 +206,8 @@ public class LoreAnalyzerService {
                         if (lowerContent.contains("type: character")) subFolder = "Characters";
                         else if (lowerContent.contains("type: skill")) subFolder = "Skills";
                         else if (lowerContent.contains("type: item") || lowerContent.contains("type: location")) subFolder = "Items";
+                        // NEW: Route abstract groups/races into the Concepts folder
+                        else if (lowerContent.contains("type: concept")) subFolder = "Concepts";
                         
                         File targetDir = new File(LORE_DIR, subFolder);
                         targetDir.mkdirs();
