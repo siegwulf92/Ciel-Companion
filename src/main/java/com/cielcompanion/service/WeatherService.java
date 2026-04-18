@@ -25,6 +25,11 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * Advanced Weather Service for Ciel.
+ * Provides caching, forecast formatting, and AI-evaluated proactive emergency alerts
+ * filtered specifically for the Master's current city.
+ */
 public class WeatherService {
 
     private static final String CACHED_WEATHER_KEY = "ciel.weather.last_api_data";
@@ -35,19 +40,13 @@ public class WeatherService {
 
     public static void initialize() {
         try (InputStream is = WeatherService.class.getResourceAsStream("/weather.properties")) {
-            if (is == null) {
-                System.err.println("Ciel Error: weather.properties not found.");
-                return;
-            }
+            if (is == null) return;
             weatherProps.load(new InputStreamReader(is, StandardCharsets.UTF_8));
             weatherScheduler = Executors.newSingleThreadScheduledExecutor();
-            // Wait 2 minutes before first proactive weather check to reduce boot strain
+            // Staggered Boot: Wait 2 minutes before first proactive weather check to reduce boot strain
             weatherScheduler.scheduleWithFixedDelay(WeatherService::proactiveWeatherCheck, 2, 15, TimeUnit.MINUTES);
             System.out.println("Ciel Debug: WeatherService initialized. Proactive alerts active.");
-        } catch (Exception e) {
-            System.err.println("Ciel Error: Failed to initialize WeatherService.");
-            e.printStackTrace();
-        }
+        } catch (Exception e) { e.printStackTrace(); }
     }
 
     private static void proactiveWeatherCheck() {
@@ -62,16 +61,9 @@ public class WeatherService {
         return (cachedWeatherData != null && cachedWeatherData.current != null) ? cachedWeatherData.current.condition.text : "Unknown";
     }
 
-    public static String getKatakanaWeatherCondition() {
-        String raw = getRawWeatherCondition();
-        return raw.equals("Unknown") ? "アンノウン" : katakanaConverter.toKatakana(raw);
-    }
-
     private static String getWeatherData(boolean isForecast) {
         String apiKey = weatherProps.getProperty("weather.apiKey");
-        if (apiKey == null || apiKey.isBlank() || apiKey.equalsIgnoreCase("YOUR_API_KEY_HERE")) {
-            return "Weather API key not configured.";
-        }
+        if (apiKey == null || apiKey.isBlank() || apiKey.equalsIgnoreCase("YOUR_API_KEY_HERE")) return "Weather API key not configured.";
 
         if (cachedWeatherData != null && Duration.between(Instant.ofEpochSecond(cachedWeatherData.fetchTimeEpochSeconds), Instant.now()).toMinutes() < 15) {
             return isForecast ? formatForecastReport(cachedWeatherData) : formatWeatherReport(cachedWeatherData);
@@ -90,7 +82,6 @@ public class WeatherService {
     }
 
     private static String fetchAndCacheNewData(String apiKey, boolean isForecast) {
-        System.out.println("Ciel Debug: Fetching new data from WeatherAPI (alerts=yes).");
         String location = String.format("%f,%f", LocationService.getLatitude(), LocationService.getLongitude());
         String urlString = String.format("http://api.weatherapi.com/v1/forecast.json?key=%s&q=%s&days=1&aqi=no&alerts=yes", apiKey, location);
 
@@ -100,21 +91,16 @@ public class WeatherService {
             conn.setRequestMethod("GET");
             if (conn.getResponseCode() != 200) return "Unable to retrieve weather data.";
 
-            InputStreamReader reader = new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8);
-            WeatherData newWeatherData = new Gson().fromJson(reader, WeatherData.class);
+            WeatherData newWeatherData = new Gson().fromJson(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8), WeatherData.class);
             newWeatherData.fetchTimeEpochSeconds = Instant.now().getEpochSecond();
             cachedWeatherData = newWeatherData;
-            
             MemoryService.addFact(new Fact(CACHED_WEATHER_KEY, new Gson().toJson(newWeatherData), System.currentTimeMillis(), "system_cache", "system", 1));
             
             evaluateAlerts(newWeatherData);
 
             conn.disconnect();
             return isForecast ? formatForecastReport(newWeatherData) : formatWeatherReport(newWeatherData);
-        } catch (Exception e) {
-            e.printStackTrace();
-            return "Weather service error.";
-        }
+        } catch (Exception e) { return "Weather service error."; }
     }
 
     private static void evaluateAlerts(WeatherData data) {
@@ -132,18 +118,17 @@ public class WeatherService {
 
         if (!newAlerts.isEmpty()) {
             StringBuilder alertContext = new StringBuilder();
-            for (Alert alert : newAlerts) {
-                alertContext.append("- ").append(alert.event).append(": ").append(alert.desc.length() > 300 ? alert.desc.substring(0, 300) : alert.desc).append("\n");
-            }
+            for (Alert alert : newAlerts) alertContext.append("- ").append(alert.event).append(": ").append(alert.desc).append("\n");
 
             String myCity = LocationService.getLocationName();
             String prompt = "You are Ciel, my protective AI companion. Regional NWS alerts:\n" + alertContext.toString() +
                             "\nMaster's EXACT City: " + myCity + "\nCurrent Weather: " + data.current.condition.text +
-                            "\nINSTRUCTION: Evaluate relevance to " + myCity + ". If the alert explicitly threatens our city or is a severe immediate danger (Tornado/Flash Flood), give a short, urgent [Concerned] warning. If it's for a distant area or just a broad watch, give a casual [Observing] note. Address me as Master.";
+                            "\nINSTRUCTION: Ignore regional alerts. If alert mentions " + myCity + " or is an immediate physical threat (Tornado/Flash Flood), give a short, urgent [Concerned] warning. Otherwise, give an [Observing] notice. address me as Master.";
 
             AIEngine.generateSilentLogic("[WEATHER_EVALUATION]", prompt).thenAccept(response -> {
                 if (response != null && !response.isBlank()) {
-                    SpeechService.speakPreformatted(response.trim(), null, false, true);
+                    // Uses the new Critical Interceptor to press Spacebar/ESC to pause media/game before warning you
+                    HabitTrackerService.interruptWithCriticalAnnouncement(response.trim());
                 }
             });
         }
@@ -151,7 +136,7 @@ public class WeatherService {
 
     private static String formatWeatherReport(WeatherData data) {
         Optional<DialogueLine> lineOpt = LineManager.getWeatherReportLine();
-        if (lineOpt.isEmpty()) return String.format("In %s, it is currently %.0f degrees and %s.", data.location.name, data.current.tempF, data.current.condition.text);
+        if (lineOpt.isEmpty()) return String.format("In %s, it is %.0f degrees and %s.", data.location.name, data.current.tempF, data.current.condition.text);
         
         return lineOpt.get().text().replace("{location}", LocationService.getLocationName())
             .replace("{temperature}", EnglishNumber.convert(String.format("%.0f", data.current.tempF)))

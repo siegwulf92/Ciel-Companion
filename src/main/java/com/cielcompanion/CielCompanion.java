@@ -108,6 +108,7 @@ public class CielCompanion {
             SpeechService.initialize(voiceListener); 
             SkillCrafterService.initialize();
             HabitTrackerService.initialize();
+            com.cielcompanion.ai.LoreAnalyzerService.initialize();
             com.cielcompanion.ai.SkillEvolutionEngine.initialize();
             com.cielcompanion.memory.stwm.ShortTermMemoryService.initialize();
 
@@ -124,9 +125,12 @@ public class CielCompanion {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("Ciel Companion shutting down...");
 
-            List<String> recentMemories = MemoryService.getRecentEpisodicMemories(5);
+            // CRITICAL FIX: Expanded from 5 to 50 memories to ensure comprehensive recording of all activities
+            List<String> recentMemories = MemoryService.getRecentEpisodicMemories(50);
             String contextSummary = recentMemories.isEmpty() ? "No significant interactions recorded this session." : String.join("\n- ", recentMemories);
             boolean isReboot = !CielState.isPerformingColdShutdown();
+            
+            // This blocking call will now be instantly routed to the fast Cloud model by OpenJarvis
             VaultService.generateSystemDiaryEntryBlocking(contextSummary, isReboot);
 
             if (isReboot) {
@@ -178,20 +182,17 @@ public class CielCompanion {
 
     private static void startBackgroundInitialization(
         IntentService intentService, AppLauncherService appLauncherService, RoutineService routineService, 
-        ConversationService conversationService, WebService webService, AppFinderService appFinderService, 
-        AppScannerService appScannerService, SoundService soundService, LoreService loreService, 
+        ConversationService conversationService, WebService webService, AppFinderService appScannerService, 
+        AppScannerService appScannerService2, SoundService soundService, LoreService loreService, 
         RulebookService rulebookService, CommandService commandService) {
 
         new Thread(() -> {
             try {
-                // ADDED: Wait for Windows to boot Ollama/LM Studio before trying to start OpenJarvis
                 waitForInferenceEngines();
                 com.cielcompanion.ai.AIEngine.warmUpModels();
                 
-                // Check and boot the AI Brain
                 ensureJarvisServerRunning();
 
-                // RESTORED: These were accidentally deleted during the Swarm boot fixes!
                 GameMonitorService.initialize();
                 FinanceService.initialize();
 

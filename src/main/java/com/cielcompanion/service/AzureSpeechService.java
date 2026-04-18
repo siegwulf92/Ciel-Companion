@@ -68,13 +68,9 @@ public class AzureSpeechService {
         }
     }
 
-    /**
-     * Automatically requests Katakana transliteration from the local Python Swarm
-     * if English characters are detected in a Japanese voice prompt.
-     */
     private static String applyKatakanaTransliteration(String originalText, String langCode) {
         if (!"ja-JP".equalsIgnoreCase(langCode)) return originalText;
-        if (!originalText.matches(".*[a-zA-Z].*")) return originalText; // Skip if no English letters
+        if (!originalText.matches(".*[a-zA-Z].*")) return originalText; 
 
         try {
             System.out.println("[Azure TTS] English text detected. Requesting Katakana transliteration from Swarm...");
@@ -84,8 +80,8 @@ public class AzureSpeechService {
             conn.setRequestProperty("Content-Type", "application/json; utf-8");
             conn.setRequestProperty("Accept", "application/json");
             conn.setDoOutput(true);
-            conn.setConnectTimeout(10000); // 10 second timeout for connection
-            conn.setReadTimeout(120000);   // 120 seconds to wait for LM Studio response
+            conn.setConnectTimeout(10000); 
+            conn.setReadTimeout(120000);   
 
             JsonObject jsonInput = new JsonObject();
             jsonInput.addProperty("text", originalText);
@@ -109,14 +105,15 @@ public class AzureSpeechService {
             System.err.println("[Azure TTS] Transliteration network error: " + e.getMessage());
         }
         
-        return originalText; // Fallback to raw text if the local API fails
+        return originalText; 
     }
 
-    public static boolean speak(String text, String key, String style, String pitch) {
+    // CRITICAL FIX: 'synchronized' forces threads to queue up so she never cuts herself off again!
+    public static synchronized boolean speak(String text, String key, String style, String pitch) {
         return speak(text, key, style, pitch, "ja-JP");
     }
 
-    public static boolean speak(String text, String key, String style, String pitch, String langCode) {
+    public static synchronized boolean speak(String text, String key, String style, String pitch, String langCode) {
         if (!isInitialized) return false;
 
         String safeStyle = (style == null || style.isBlank() || style.equalsIgnoreCase("default")) ? "default" : style;
@@ -142,7 +139,6 @@ public class AzureSpeechService {
                 return false;
             }
 
-            // Cache MISS: Convert English to Katakana via Swarm before generating
             String processedText = applyKatakanaTransliteration(text, safeLang);
             return generateAndPlayFile(processedText, safeStyle, safePitch, safeLang, cachedFile);
             
@@ -153,7 +149,6 @@ public class AzureSpeechService {
                 return false;
             }
             
-            // Dynamic Stream: Convert English to Katakana via Swarm before speaking
             String processedText = applyKatakanaTransliteration(text, safeLang);
             return streamDirectly(processedText, safeStyle, safePitch, safeLang);
         }

@@ -116,7 +116,6 @@ public class SkillCrafterService {
 
     private static boolean compileAndSaveSkill(String intendedName, String originalTask, String swarmOutput, boolean isSilent) {
         try {
-            // --- NEW: Parse the actual FILE_NAME decided by the Python Swarm ---
             String finalName = intendedName;
             Pattern namePattern = Pattern.compile("FILE_NAME:\\s*(.+?)(?:\\n|\\r|$)", Pattern.CASE_INSENSITIVE);
             Matcher nameMatcher = namePattern.matcher(swarmOutput);
@@ -136,13 +135,13 @@ public class SkillCrafterService {
                     return false; 
                 }
 
-                // FIX: Safely map extensions so we don't accidentally create files with no extension
                 String extension = ".bat";
                 if (lang.contains("python") || lang.contains("py")) extension = ".py";
                 else if (lang.contains("powershell") || lang.contains("ps1")) extension = ".ps1";
                 else if (lang.contains("bat") || lang.contains("batch") || lang.contains("cmd")) extension = ".bat";
                 
-                String safeName = intendedName.replaceAll("[^a-zA-Z0-9_]", "_").toLowerCase().replaceAll("_+$", "");
+                // CRITICAL FIX: We now use finalName (from the AI) instead of intendedName (from Java)
+                String safeName = finalName.replaceAll("[^a-zA-Z0-9_]", "_").toLowerCase().replaceAll("_+$", "");
                 
                 String fileName = safeName + extension;
                 Path filePath = Paths.get(SKILLS_DIR, fileName);
@@ -167,10 +166,10 @@ public class SkillCrafterService {
                     SpeechService.speakPreformatted("[Happy] The new skill has been successfully compiled and assimilated. You may execute it at your discretion.");
                 } else {
                     String friendlyName = safeName.replace("_", " ");
-                    SpeechService.speakPreformatted("[Proud] I have autonomously developed and assimilated a new system skill to improve your workflow: " + friendlyName + ".");
+                    // Queues the announcement instead of interrupting gameplay
+                    HabitTrackerService.queueNonCriticalAnnouncement("[Proud] I have autonomously developed and assimilated a new system skill to improve your workflow: " + friendlyName + ".", "New Skill Synthesized: " + friendlyName);
                 }
 
-                // Trigger Beelzebub Protocol instantly to check for immediate overlap
                 com.cielcompanion.ai.SkillEvolutionEngine.forceImmediateEvolution();
 
                 return true;
