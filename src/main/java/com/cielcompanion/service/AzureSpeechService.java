@@ -6,6 +6,8 @@ import com.microsoft.cognitiveservices.speech.*;
 import com.microsoft.cognitiveservices.speech.audio.*;
 
 import javax.sound.sampled.*;
+import java.awt.Robot;
+import java.awt.event.KeyEvent;
 import java.io.File;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -18,10 +20,13 @@ public class AzureSpeechService {
     private static SpeechConfig config;
     private static boolean isInitialized = false;
     
+    // EXPOSED FLAG: Tracks timestamps of simulated keystrokes so SystemMonitor can ignore them for True Idle tracking
+    public static boolean isSimulatingKeystroke = false;
+    public static long lastSimulatedInputTime = 0;
+    
     private static final String CACHE_DIR_PATH = "voice_cache";
     private static final String DND_CACHE_DIR_PATH = "dnd_voice_cache";
     
-    // HARDWARE LOCKS
     private static Clip activeClip = null;
     private static SpeechSynthesizer activeSynthesizer = null;
 
@@ -53,7 +58,6 @@ public class AzureSpeechService {
         return isInitialized;
     }
     
-    // EXPLICIT HARDWARE KILL SWITCH
     public static void stopAllAudio() {
         if (activeClip != null && activeClip.isRunning()) {
             activeClip.stop();
@@ -81,7 +85,7 @@ public class AzureSpeechService {
             conn.setRequestProperty("Accept", "application/json");
             conn.setDoOutput(true);
             conn.setConnectTimeout(10000); 
-            conn.setReadTimeout(120000);   
+            conn.setReadTimeout(180000);   
 
             JsonObject jsonInput = new JsonObject();
             jsonInput.addProperty("text", originalText);
@@ -98,8 +102,6 @@ public class AzureSpeechService {
                     System.out.println("[Azure TTS] Transliteration success: " + katakana);
                     return katakana;
                 }
-            } else {
-                System.err.println("[Azure TTS] Transliteration API returned code: " + conn.getResponseCode());
             }
         } catch (Exception e) {
             System.err.println("[Azure TTS] Transliteration network error: " + e.getMessage());
@@ -108,7 +110,6 @@ public class AzureSpeechService {
         return originalText; 
     }
 
-    // CRITICAL FIX: 'synchronized' forces threads to queue up so she never cuts herself off again!
     public static synchronized boolean speak(String text, String key, String style, String pitch) {
         return speak(text, key, style, pitch, "ja-JP");
     }
@@ -130,34 +131,33 @@ public class AzureSpeechService {
 
             if (cachedFile.exists()) {
                 System.out.println("[Azure TTS] Cache hit (Static): " + safeFilename);
-                return playWav(cachedFile);
+                return playWav(cachedFile, key);
             }
 
             long estimatedSeconds = (SpeechService.estimateSpeechDuration(text) / 1000) + 1;
             if (!AzureUsageTracker.canSpeak(estimatedSeconds)) {
-                System.out.println("[Azure TTS] Quota exceeded. Cannot generate new static file: " + safeFilename);
+                System.out.println("[Azure TTS] Quota exceeded. Cannot generate new static file.");
                 return false;
             }
 
             String processedText = applyKatakanaTransliteration(text, safeLang);
-            return generateAndPlayFile(processedText, safeStyle, safePitch, safeLang, cachedFile);
+            return generateAndPlayFile(processedText, safeStyle, safePitch, safeLang, cachedFile, key);
             
         } else {
             long estimatedSeconds = (SpeechService.estimateSpeechDuration(text) / 1000) + 1;
             if (!AzureUsageTracker.canSpeak(estimatedSeconds)) {
-                System.out.println("[Azure TTS] Quota exceeded. Cannot stream dynamic speech.");
                 return false;
             }
             
             String processedText = applyKatakanaTransliteration(text, safeLang);
-            return streamDirectly(processedText, safeStyle, safePitch, safeLang);
+            return streamDirectly(processedText, safeStyle, safePitch, safeLang, key);
         }
     }
 
-    private static boolean generateAndPlayFile(String text, String style, String pitch, String lang, File destination) {
+    private static boolean generateAndPlayFile(String text, String style, String pitch, String lang, File destination, String key) {
         AudioConfig fileOutput = null;
         try {
-            System.out.println("[Azure TTS] Generating new static file: " + destination.getName() + " | Text: \"" + text + "\" [Style: " + style + ", Lang: " + lang + "]");
+            System.out.println("[Azure TTS] Generating new static file: " + destination.getName());
             
             fileOutput = AudioConfig.fromWavFileOutput(destination.getAbsolutePath());
             activeSynthesizer = new SpeechSynthesizer(config, fileOutput);
@@ -166,24 +166,19 @@ public class AzureSpeechService {
             SpeechSynthesisResult result = activeSynthesizer.SpeakSsml(ssml);
 
             if (result.getReason() == ResultReason.SynthesizingAudioCompleted) {
-                long bytes = result.getAudioData().length;
-                long durationSeconds = bytes / 32000; 
-                if (durationSeconds < 1) durationSeconds = 1;
+                long durationSeconds = Math.max(1, result.getAudioData().length / 32000);
                 AzureUsageTracker.addUsage(durationSeconds);
-
                 result.close();
                 activeSynthesizer.close();
                 fileOutput.close(); 
                 activeSynthesizer = null;
 
-                return playWav(destination);
+                return playWav(destination, key);
             } else {
-                logError(result);
                 if (destination.exists()) destination.delete();
             }
             result.close();
         } catch (Exception e) {
-            e.printStackTrace();
             if (destination.exists()) destination.delete();
         } finally {
             if (activeSynthesizer != null) {
@@ -194,26 +189,55 @@ public class AzureSpeechService {
         return false;
     }
 
-    private static boolean streamDirectly(String text, String style, String pitch, String lang) {
+    private static boolean streamDirectly(String text, String style, String pitch, String lang, String key) {
+        boolean mediaPaused = false;
+        boolean gamePaused = false;
         try {
-            System.out.println("[Azure TTS] Streaming dynamic content: \"" + text + "\" (Style: " + style + ", Lang: " + lang + ")");
+            System.out.println("[Azure TTS] Streaming dynamic content: \"" + text + "\"");
             
             AudioConfig audioConfig = AudioConfig.fromDefaultSpeakerOutput();
             activeSynthesizer = new SpeechSynthesizer(config, audioConfig);
-
             String ssml = buildSsml(text, style, pitch, lang);
+            
+            String currentCat = HabitTrackerService.getCurrentCategory();
+            boolean isAmbientLine = key != null && (key.toLowerCase().contains("phase") || key.toLowerCase().contains("return") || key.toLowerCase().contains("boot") || key.toLowerCase().contains("login"));
+            boolean isMasterPresent = com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().getCurrentPhase() == 0;
+            
+            if ("Media".equals(currentCat) && !isAmbientLine && isMasterPresent) {
+                mediaPaused = true;
+                System.out.println("Ciel Debug: Auto-pausing media (Spacebar) for synchronized speech.");
+                Robot robot = new Robot();
+                isSimulatingKeystroke = true;
+                lastSimulatedInputTime = System.currentTimeMillis();
+                robot.keyPress(KeyEvent.VK_SPACE);
+                robot.keyRelease(KeyEvent.VK_SPACE);
+                Thread.sleep(600); 
+                isSimulatingKeystroke = false;
+            } else if ("Gaming".equals(currentCat) && !isAmbientLine && isMasterPresent) {
+                if (HabitTrackerService.isCurrentGamePausable()) {
+                    gamePaused = true;
+                    System.out.println("Ciel Debug: Auto-pausing single-player game (ESC) for critical synchronized speech.");
+                    Robot robot = new Robot();
+                    isSimulatingKeystroke = true;
+                    lastSimulatedInputTime = System.currentTimeMillis();
+                    robot.keyPress(KeyEvent.VK_ESCAPE);
+                    robot.keyRelease(KeyEvent.VK_ESCAPE);
+                    Thread.sleep(600); 
+                    isSimulatingKeystroke = false;
+                }
+            }
+
             SpeechSynthesisResult result = activeSynthesizer.SpeakSsml(ssml);
 
             if (result.getReason() == ResultReason.SynthesizingAudioCompleted) {
-                long bytes = result.getAudioData().length;
-                long durationSeconds = bytes / 32000;
-                if (durationSeconds < 1) durationSeconds = 1;
+                long durationSeconds = Math.max(1, result.getAudioData().length / 32000);
                 AzureUsageTracker.addUsage(durationSeconds);
-                
                 result.close();
                 return true;
-            } else {
-                logError(result);
+            } else if (result.getReason() == ResultReason.Canceled) {
+                System.out.println("Ciel Debug: Azure Speech stream intentionally canceled.");
+                result.close();
+                return true; // Prevents the SAPI fallback from triggering!
             }
             result.close();
         } catch (Exception e) {
@@ -222,6 +246,19 @@ public class AzureSpeechService {
             if (activeSynthesizer != null) {
                 activeSynthesizer.close();
                 activeSynthesizer = null;
+            }
+            if (mediaPaused) {
+                try {
+                    Thread.sleep(600);
+                    System.out.println("Ciel Debug: Auto-unpausing media (Spacebar).");
+                    Robot robot = new Robot();
+                    isSimulatingKeystroke = true;
+                    lastSimulatedInputTime = System.currentTimeMillis();
+                    robot.keyPress(KeyEvent.VK_SPACE);
+                    robot.keyRelease(KeyEvent.VK_SPACE);
+                    Thread.sleep(200);
+                    isSimulatingKeystroke = false;
+                } catch (Exception ignored) {}
             }
         }
         return false;
@@ -238,57 +275,79 @@ public class AzureSpeechService {
         ssml.append("<voice name=\"").append(currentVoiceName).append("\">");
         
         boolean useStyle = !style.equals("default");
+        if (useStyle) ssml.append("<mstts:express-as style=\"").append(style).append("\">");
         
-        if (useStyle) {
-            ssml.append("<mstts:express-as style=\"").append(style).append("\">");
-        }
+        ssml.append("<prosody pitch=\"").append(pitch).append("\">").append(text).append("</prosody>");
         
-        ssml.append("<prosody pitch=\"").append(pitch).append("\">");
-        ssml.append(text);
-        ssml.append("</prosody>");
-        
-        if (useStyle) {
-            ssml.append("</mstts:express-as>");
-        }
-        
+        if (useStyle) ssml.append("</mstts:express-as>");
         ssml.append("</voice></speak>");
         return ssml.toString();
     }
 
-    private static void logError(SpeechSynthesisResult result) {
-        if (result.getReason() == ResultReason.Canceled) {
-            SpeechSynthesisCancellationDetails cancellation = SpeechSynthesisCancellationDetails.fromResult(result);
-            System.err.println("[Azure TTS] CANCELED: " + cancellation.getReason() + " | " + cancellation.getErrorDetails());
-        }
-    }
-
-    private static boolean playWav(File file) {
+    private static boolean playWav(File file, String key) {
+        boolean mediaPaused = false;
         try (javax.sound.sampled.AudioInputStream audioStream = AudioSystem.getAudioInputStream(file)) {
             DataLine.Info info = new DataLine.Info(Clip.class, audioStream.getFormat());
             Clip clip = (Clip) AudioSystem.getLine(info);
             activeClip = clip; 
-            
             clip.open(audioStream);
-            clip.start();
             
-            while (!clip.isRunning()) Thread.sleep(10);
-            while (clip.isRunning()) Thread.sleep(10);
+            String currentCat = HabitTrackerService.getCurrentCategory();
+            boolean isAmbientLine = key != null && (key.toLowerCase().contains("phase") || key.toLowerCase().contains("return") || key.toLowerCase().contains("boot") || key.toLowerCase().contains("login"));
+            boolean isMasterPresent = com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().getCurrentPhase() == 0;
+            
+            if ("Media".equals(currentCat) && !isAmbientLine && isMasterPresent) {
+                mediaPaused = true;
+                System.out.println("Ciel Debug: Auto-pausing media (Spacebar) for synchronized speech.");
+                Robot robot = new Robot();
+                isSimulatingKeystroke = true;
+                lastSimulatedInputTime = System.currentTimeMillis();
+                robot.keyPress(KeyEvent.VK_SPACE);
+                robot.keyRelease(KeyEvent.VK_SPACE);
+                Thread.sleep(600);
+                isSimulatingKeystroke = false;
+            } else if ("Gaming".equals(currentCat) && !isAmbientLine && isMasterPresent) {
+                if (HabitTrackerService.isCurrentGamePausable()) {
+                    System.out.println("Ciel Debug: Auto-pausing single-player game (ESC) for critical synchronized speech.");
+                    Robot robot = new Robot();
+                    isSimulatingKeystroke = true;
+                    lastSimulatedInputTime = System.currentTimeMillis();
+                    robot.keyPress(KeyEvent.VK_ESCAPE);
+                    robot.keyRelease(KeyEvent.VK_ESCAPE);
+                    Thread.sleep(600);
+                    isSimulatingKeystroke = false;
+                }
+            }
+            
+            clip.start();
+            long durationMs = clip.getMicrosecondLength() / 1000;
+            Thread.sleep(durationMs + 200); 
             
             clip.close();
             activeClip = null;
             return true;
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            if (activeClip != null) {
-                activeClip.stop();
-                activeClip.close();
-                activeClip = null;
-            }
-            System.out.println("Ciel Debug: Audio playback interrupted manually.");
+            // CRITICAL SAPI GLITCH FIX: If SpeechService intentionally halts her speech upon your return, 
+            // gracefully acknowledge the interrupt and return TRUE so the system doesn't hallucinate an error and fallback to SAPI.
+            System.out.println("Ciel Debug: Audio playback was intentionally interrupted/cancelled.");
+            Thread.currentThread().interrupt(); 
             return true; 
         } catch (Exception e) {
-            System.err.println("[Audio Player] Failed to play WAV: " + e.getMessage());
             return false;
+        } finally {
+            if (mediaPaused) {
+                try {
+                    Thread.sleep(600);
+                    System.out.println("Ciel Debug: Auto-unpausing media (Spacebar).");
+                    Robot robot = new Robot();
+                    isSimulatingKeystroke = true;
+                    lastSimulatedInputTime = System.currentTimeMillis();
+                    robot.keyPress(KeyEvent.VK_SPACE);
+                    robot.keyRelease(KeyEvent.VK_SPACE);
+                    Thread.sleep(200);
+                    isSimulatingKeystroke = false;
+                } catch (Exception ignored) {}
+            }
         }
     }
 }

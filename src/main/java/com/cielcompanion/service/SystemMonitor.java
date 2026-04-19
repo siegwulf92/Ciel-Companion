@@ -1,12 +1,12 @@
 package com.cielcompanion.service;
 
+import com.cielcompanion.memory.stwm.ShortTermMemoryService;
 import oshi.SystemInfo;
 import oshi.hardware.CentralProcessor;
 import oshi.hardware.GlobalMemory;
 import oshi.software.os.OSProcess;
 import oshi.software.os.OperatingSystem;
 
-import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -22,6 +22,9 @@ public class SystemMonitor {
     private static final OperatingSystem os = systemInfo.getOperatingSystem();
     
     private static long[] prevLoadTicks = new long[CentralProcessor.TickType.values().length];
+
+    private static long virtualIdleStartTime = System.currentTimeMillis();
+    private static long lastHardwareIdleMs = 0;
 
     public record SystemMetrics(
         double cpuLoadPercent,
@@ -41,20 +44,27 @@ public class SystemMonitor {
     public record ProcessInfo(String name, double usage, int pid) {}
 
     public static SystemMetrics getSystemMetrics() {
-        // CPU Load
         double cpuLoad = processor.getSystemCpuLoadBetweenTicks(prevLoadTicks) * 100;
         prevLoadTicks = processor.getSystemCpuLoadTicks();
 
-        // Memory
         long availableMem = memory.getAvailable();
         long totalMem = memory.getTotal();
         double memUsage = 100.0 * (totalMem - availableMem) / totalMem;
 
-        // Idle Time
-        long idleMs = WindowsInputService.getIdleTimeMillis();
-        long idleMin = idleMs / 60000;
+        long hardwareIdleMs = WindowsInputService.getIdleTimeMillis();
+        
+        if (hardwareIdleMs < lastHardwareIdleMs) {
+            if (AzureSpeechService.isSimulatingKeystroke || (System.currentTimeMillis() - AzureSpeechService.lastSimulatedInputTime < 3000)) {
+                System.out.println("Ciel Debug: OS Idle timer reset by Ciel's simulated keystroke. Ignoring to preserve true physical idle state.");
+            } else {
+                virtualIdleStartTime = System.currentTimeMillis() - hardwareIdleMs;
+            }
+        }
+        lastHardwareIdleMs = hardwareIdleMs;
+        
+        long realIdleMs = System.currentTimeMillis() - virtualIdleStartTime;
+        long idleMin = realIdleMs / 60000;
 
-        // Active Window & Process
         int activePid = WindowsApiService.INSTANCE.GetForegroundWindow() != null 
             ? getPidFromHwnd(WindowsApiService.INSTANCE.GetForegroundWindow()) 
             : 0;
@@ -62,16 +72,13 @@ public class SystemMonitor {
         String activeProcName = activePid > 0 ? WindowsApiService.getProcessName(activePid) : "Unknown";
         String activeTitle = WindowsApiService.getActiveWindowTitle(WindowsApiService.INSTANCE.GetForegroundWindow());
 
-        // Process List
         Set<String> processes = os.getProcesses().stream()
             .map(p -> p.getName().toLowerCase())
             .collect(Collectors.toSet());
 
-        // --- Improved Heuristics ---
         boolean isBrowser = activeProcName.matches(Settings.getBrowserProcessesRegex());
         boolean isFullScreen = WindowsApiService.isWindowFullscreen(WindowsApiService.INSTANCE.GetForegroundWindow());
         
-        // 1. Streaming Detection (Use find() for partial matches like "Video - YouTube")
         boolean isStreaming = false;
         String streamingRegex = Settings.getStreamingTitleRegex();
         if (streamingRegex != null && !streamingRegex.isBlank()) {
@@ -80,18 +87,22 @@ public class SystemMonitor {
             isStreaming = m.find();
         }
 
-        // 2. Fullscreen Browser Rule (Catch-all for unlisted streaming sites)
         if (isBrowser && isFullScreen) {
             isStreaming = true;
         }
 
         boolean isMedia = activeProcName.matches(Settings.getPlayerProcessesRegex());
+        boolean isMediaPlatform = activeTitle.toLowerCase().matches(".*(youtube|netflix|twitch|crunchyroll|hulu|prime video|disney\\+|max|peacock|paramount\\+|apple tv).*");
         boolean isHardMuted = Settings.getHardMuteProcs().stream().anyMatch(processes::contains);
+        boolean isGaming = ShortTermMemoryService.getMemory().isInGamingSession();
+        
+        // CRITICAL SYNC FIX: Queries HabitTracker to see if the AI classified the background activity as Media
+        boolean isHabitMedia = "Media".equals(HabitTrackerService.getCurrentCategory());
 
-        // 3. Force "Active" State if Media is Playing
-        // This resets Ciel's boredom timer so she doesn't interrupt movies
-        if (isStreaming || isMedia || isHardMuted) {
+        // THE ULTIMATE MEDIA LOCK: If ANY part of the system knows you are watching media, freeze the idle timer.
+        if ((isStreaming || isMedia || isMediaPlatform || isHabitMedia || isHardMuted) && !isGaming) {
             idleMin = 0;
+            virtualIdleStartTime = System.currentTimeMillis(); 
         }
 
         return new SystemMetrics(

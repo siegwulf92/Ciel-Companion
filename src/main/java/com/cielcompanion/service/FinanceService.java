@@ -94,9 +94,12 @@ public class FinanceService {
     private static void silentMarketCheck() {
         System.out.println("Ciel Debug: Commanding Swarm to execute silent background market and portfolio analysis...");
         
-        // UPGRADED PROMPT: Age, Goal Alignment, and TL;DR requirement
+        // UPGRADED PROMPT: Explicit tax awareness and Emergency Fund isolation boundaries!
         String portfolioPrompt = "You are Ciel, Master Taylor's elite financial advisor. Master Taylor's DOB is 12/30/1992 (currently 33 years old), and his ultimate goal is aggressive growth and early retirement. " +
-                "Analyze the provided portfolio spreadsheet, paying close attention to his cash liquidity. Identify 'Buy the Dip' opportunities for tech and high-beta assets. " +
+                "Analyze the provided portfolio spreadsheet. " +
+                "CRITICAL CONTEXT: The accounts labeled 'taxable' and 'smart' (which hold assets like MINT, TFLO, bonds, or dividend ETFs) function as his liquid Emergency Fund and cash reserves. " +
+                "DO NOT recommend selling assets from the 'taxable' or 'smart' accounts to 'buy the dip', as this would trigger unwanted capital gains taxes and compromise his safety net. " +
+                "Focus your aggressive growth, 'Buy the Dip', and reallocation recommendations STRICTLY on his tax-advantaged 'Roth' account. " +
                 "Note how any newly added funds align with his long-term goals. " +
                 "CRITICAL: You MUST include a 'TL;DR' section at the very end summarizing everything in simple, plain English.";
 

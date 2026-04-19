@@ -25,11 +25,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-/**
- * Advanced Weather Service for Ciel.
- * Provides caching, forecast formatting, and AI-evaluated proactive emergency alerts
- * filtered specifically for the Master's current city.
- */
 public class WeatherService {
 
     private static final String CACHED_WEATHER_KEY = "ciel.weather.last_api_data";
@@ -43,8 +38,7 @@ public class WeatherService {
             if (is == null) return;
             weatherProps.load(new InputStreamReader(is, StandardCharsets.UTF_8));
             weatherScheduler = Executors.newSingleThreadScheduledExecutor();
-            // Staggered Boot: Wait 2 minutes before first proactive weather check to reduce boot strain
-            weatherScheduler.scheduleWithFixedDelay(WeatherService::proactiveWeatherCheck, 2, 15, TimeUnit.MINUTES);
+            weatherScheduler.scheduleWithFixedDelay(WeatherService::proactiveWeatherCheck, 1, 15, TimeUnit.MINUTES);
             System.out.println("Ciel Debug: WeatherService initialized. Proactive alerts active.");
         } catch (Exception e) { e.printStackTrace(); }
     }
@@ -121,14 +115,22 @@ public class WeatherService {
             for (Alert alert : newAlerts) alertContext.append("- ").append(alert.event).append(": ").append(alert.desc).append("\n");
 
             String myCity = LocationService.getLocationName();
+            
+            // CRITICAL FIX: Stricter prompt to absolutely prevent unprompted weather reports.
             String prompt = "You are Ciel, my protective AI companion. Regional NWS alerts:\n" + alertContext.toString() +
                             "\nMaster's EXACT City: " + myCity + "\nCurrent Weather: " + data.current.condition.text +
-                            "\nINSTRUCTION: Ignore regional alerts. If alert mentions " + myCity + " or is an immediate physical threat (Tornado/Flash Flood), give a short, urgent [Concerned] warning. Otherwise, give an [Observing] notice. address me as Master.";
+                            "\nINSTRUCTION: Ignore minor/regional alerts. If an alert specifically threatens " + myCity + " (e.g., Tornado, Flash Flood, Severe Thunderstorm), give a short, urgent [Concerned] warning. If there is no immediate physical threat to his city, output EXACTLY the word: ABORT. Do NOT give a general weather update under any circumstances. ONLY output the warning or ABORT.";
 
             AIEngine.generateSilentLogic("[WEATHER_EVALUATION]", prompt).thenAccept(response -> {
                 if (response != null && !response.isBlank()) {
-                    // Uses the new Critical Interceptor to press Spacebar/ESC to pause media/game before warning you
-                    HabitTrackerService.interruptWithCriticalAnnouncement(response.trim());
+                    String cleanResponse = response.trim();
+                    // Hard Failsafe: Ensures she stays completely silent if the AI hallucinates a polite weather update anyway
+                    if (!cleanResponse.equals("ABORT") && !cleanResponse.contains("ABORT") && 
+                        !cleanResponse.toLowerCase().matches(".*(overcast|light rain|sunny|cloudy|clear|current weather).*")) {
+                        HabitTrackerService.interruptWithCriticalAnnouncement(cleanResponse);
+                    } else {
+                        System.out.println("Ciel Debug: Weather alert deemed non-critical or AI hallucinated. Logged silently.");
+                    }
                 }
             });
         }
