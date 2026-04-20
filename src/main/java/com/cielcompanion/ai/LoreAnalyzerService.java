@@ -25,15 +25,15 @@ public class LoreAnalyzerService {
     
     private static final String CIEL_ROOT = "C:\\Ciel Companion\\ciel";
     private static final String LORE_DIR = CIEL_ROOT + "\\lore";
-    private static final String THOUGHTS_DIR = CIEL_ROOT + "\\thoughts";
-    private static final String MEMORY_CORE_DIR = CIEL_ROOT + "\\memory_core";
+    
+    // REROUTED: Deep thought analysis is now stored in the diary folder, completely bypassing the infinite loop in the 'thoughts' folder!
+    private static final String ANALYSIS_DIR = CIEL_ROOT + "\\diary\\strategic_analysis";
 
     public static void initialize() {
         loreScheduler = Executors.newSingleThreadScheduledExecutor();
         
         new File(LORE_DIR).mkdirs();
-        new File(THOUGHTS_DIR).mkdirs();
-        new File(MEMORY_CORE_DIR).mkdirs();
+        new File(ANALYSIS_DIR).mkdirs();
         
         loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::analyzeLoreSilently, 45, 120, TimeUnit.MINUTES);
         loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::populateMissingLoreLinks, 15, 240, TimeUnit.MINUTES);
@@ -124,7 +124,6 @@ public class LoreAnalyzerService {
 
         String initialContext = missingLinksContext.get(targetLink).stream().limit(3).collect(Collectors.joining("\n"));
 
-        // UPDATED: Two-Way Alias Ban logic implemented here to protect generic classifications from characters
         String aliasPrompt = "You are Ciel from the Tensura universe. Read this context where the entity '" + targetLink + "' was mentioned:\n" +
             "\"" + initialContext + "\"\n\n" +
             "Based on this context and your knowledge, identify up to 4 SPECIFIC alternative names, pseudonyms, or unique titles for '" + targetLink + "'.\n" +
@@ -173,7 +172,6 @@ public class LoreAnalyzerService {
 
             String rawContext = contextParas.stream().limit(25).collect(Collectors.joining("\n\n"));
 
-            // UPDATED: Added "IF CONCEPT/CLASSIFICATION" to handle generic monster/race pages
             String prompt = "You are Ciel, Master Taylor's highly intelligent Manas. You are organizing his Obsidian D&D / Tensura vault.\n" +
                 "You must generate a comprehensive Markdown file for the missing entity: '[[" + targetLink + "]]'.\n\n" +
                 "KNOWN ALIASES/TITLES: " + aliasesString + "\n\n" +
@@ -206,20 +204,21 @@ public class LoreAnalyzerService {
                         if (lowerContent.contains("type: character")) subFolder = "Characters";
                         else if (lowerContent.contains("type: skill")) subFolder = "Skills";
                         else if (lowerContent.contains("type: item") || lowerContent.contains("type: location")) subFolder = "Items";
-                        // NEW: Route abstract groups/races into the Concepts folder
                         else if (lowerContent.contains("type: concept")) subFolder = "Concepts";
                         
                         File targetDir = new File(LORE_DIR, subFolder);
                         targetDir.mkdirs();
                         
-                        File oldBlankFile = new File(LORE_DIR, targetLink + ".md");
+                        String safeFileName = targetLink.replaceAll("[\\\\/:*?\"<>|]", "").trim();
+                        
+                        File oldBlankFile = new File(LORE_DIR, safeFileName + ".md");
                         if (oldBlankFile.exists() && oldBlankFile.length() < 150) {
                             oldBlankFile.delete();
                         }
 
-                        Path newFilePath = Paths.get(targetDir.getAbsolutePath(), targetLink + ".md");
+                        Path newFilePath = Paths.get(targetDir.getAbsolutePath(), safeFileName + ".md");
                         Files.writeString(newFilePath, cleanContent);
-                        System.out.println("Ciel Debug: Successfully auto-populated and categorized lore file: " + subFolder + "\\" + targetLink + ".md");
+                        System.out.println("Ciel Debug: Successfully auto-populated and categorized lore file: " + subFolder + "\\" + safeFileName + ".md");
                     } catch (Exception e) {
                         System.err.println("Ciel Error: Failed to write categorized lore file for " + targetLink);
                     }
@@ -251,7 +250,9 @@ public class LoreAnalyzerService {
                     try {
                         String cleanContent = response.replaceAll("^```[a-zA-Z]*\n|```$", "").trim();
                         String dateStr = java.time.LocalDate.now().toString() + "_" + (System.currentTimeMillis() / 1000);
-                        Path newFilePath = Paths.get(THOUGHTS_DIR, "Ciel_Analysis_" + dateStr + ".md");
+                        
+                        // REROUTED: Saves to diary folder to avoid infinite thought loops
+                        Path newFilePath = Paths.get(ANALYSIS_DIR, "Ciel_Analysis_" + dateStr + ".md");
                         Files.writeString(newFilePath, cleanContent);
                         
                         HabitTrackerService.queueNonCriticalAnnouncement("[Observing] I have consolidated my recent memories and formulated new strategic workflow concepts. My thoughts database has been updated.", "Strategic Thought Synthesis");
