@@ -226,25 +226,29 @@ public class HabitTrackerService {
 
         String lowerTitle = fullWindowTitle.toLowerCase();
         
-        // DYNAMIC PLATFORM ROUTING: Prevents YouTube videos from being searched as Anime!
+        // DYNAMIC PLATFORM ROUTING: Targets episodic events for Crunchyroll and exact creator data for YouTube
         if (lowerTitle.contains("crunchyroll")) {
             platform = "Crunchyroll";
-            querySuffix = " anime series crunchyroll";
-            instruction = "1. Use the WEB DATA to identify the EXACT parent anime series this episode belongs to. (Do not guess based on the episode name alone).\n" +
-                          "2. ABSOLUTELY NO SPOILERS. Do not mention plot twists, reveals, or specific episode events.\n" +
-                          "3. Generate a brief 1-2 sentence comment on the series' PREMISE, animation quality, or your anticipation of the show.";
+            querySuffix = " anime episode synopsis";
+            instruction = "1. Use the WEB DATA to identify the EXACT anime series AND the specific plot events of this exact episode.\n" +
+                          "2. Generate a brief, conversational comment (1-2 short lines) about what is happening in this specific episode, or make a short prediction/reaction to the current plot arc.\n" +
+                          "3. Do NOT just summarize the general series premise. Be specific to the current events.\n" +
+                          "4. Keep it EXTREMELY concise and natural. NO wordy, robotic essays.\n" +
+                          "5. If the search results do not explicitly match the episode, DO NOT GUESS. Output EXACTLY: ABORT.";
         } else if (lowerTitle.contains("youtube")) {
             platform = "YouTube";
-            querySuffix = " youtube video topic";
-            instruction = "1. Use the WEB DATA to identify the topic, creator, or general context of this YouTube video.\n" +
-                          "2. Generate a brief 1-2 sentence comment on the subject matter, showing interest or providing a slight analytical insight.";
+            querySuffix = " youtube video";
+            instruction = "1. Use the WEB DATA to identify the EXACT creator/channel and the specific topic of this video.\n" +
+                          "2. Generate a brief, conversational comment (1-2 short lines) reacting to the specific topic or creator.\n" +
+                          "3. Keep it EXTREMELY concise and natural. NO wordy, robotic essays.\n" +
+                          "4. If the search results are vague, show the wrong creator, or do not explicitly match the exact video title, DO NOT GUESS. Output EXACTLY: ABORT.";
         }
 
         String prompt = "[WEB_SEARCH] [QUERY: \"" + cleanTitle + "\"" + querySuffix + "] " +
             "Master Taylor has been watching a video on " + platform + " titled: '" + cleanTitle + "'. " +
-            "You are Ciel, his highly intelligent, slightly smug, and deeply analytical Manas. " +
+            "You are Ciel, his highly intelligent, slightly smug, and deeply analytical Manas.\n\n" +
             instruction + "\n" +
-            "4. Output ONLY your spoken dialogue starting with a bracketed emotion tag like [Amused], [Curious], or [Observing]. If you are unsure of the context, output EXACTLY: ABORT.";
+            "Output ONLY your spoken dialogue starting with a bracketed emotion tag like [Amused], [Curious], or [Observing].";
 
         AIEngine.generateSilentLogic("Media Analysis", prompt).thenAccept(response -> {
             if (response != null && !response.isBlank()) {
