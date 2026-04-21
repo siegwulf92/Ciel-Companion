@@ -1,5 +1,8 @@
 package com.cielcompanion.service;
 
+import com.cielcompanion.CielState;
+import com.cielcompanion.memory.stwm.ShortTermMemoryService;
+import com.cielcompanion.ui.CielGui;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.microsoft.cognitiveservices.speech.*;
@@ -20,7 +23,6 @@ public class AzureSpeechService {
     private static SpeechConfig config;
     private static boolean isInitialized = false;
     
-    // EXPOSED FLAG: Tracks timestamps of simulated keystrokes so SystemMonitor can ignore them for True Idle tracking
     public static boolean isSimulatingKeystroke = false;
     public static long lastSimulatedInputTime = 0;
     
@@ -77,6 +79,9 @@ public class AzureSpeechService {
         if (!originalText.matches(".*[a-zA-Z].*")) return originalText; 
 
         try {
+            // GUI SYNC FIX: Explicitly signal she is processing/calculating before speaking!
+            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
+            
             System.out.println("[Azure TTS] English text detected. Requesting Katakana transliteration from Swarm...");
             URL url = new URL("http://localhost:8000/transliterate");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -201,7 +206,7 @@ public class AzureSpeechService {
             
             String currentCat = HabitTrackerService.getCurrentCategory();
             boolean isAmbientLine = key != null && (key.toLowerCase().contains("phase") || key.toLowerCase().contains("return") || key.toLowerCase().contains("boot") || key.toLowerCase().contains("login"));
-            boolean isMasterPresent = com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().getCurrentPhase() == 0;
+            boolean isMasterPresent = ShortTermMemoryService.getMemory().getCurrentPhase() == 0;
             
             if ("Media".equals(currentCat) && !isAmbientLine && isMasterPresent) {
                 mediaPaused = true;
@@ -227,6 +232,9 @@ public class AzureSpeechService {
                 }
             }
 
+            // GUI SYNC FIX: Orb transitions to "Speaking" state at the exact millisecond the audio starts
+            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
+            
             SpeechSynthesisResult result = activeSynthesizer.SpeakSsml(ssml);
 
             if (result.getReason() == ResultReason.SynthesizingAudioCompleted) {
@@ -237,7 +245,7 @@ public class AzureSpeechService {
             } else if (result.getReason() == ResultReason.Canceled) {
                 System.out.println("Ciel Debug: Azure Speech stream intentionally canceled.");
                 result.close();
-                return true; // Prevents the SAPI fallback from triggering!
+                return true; 
             }
             result.close();
         } catch (Exception e) {
@@ -294,7 +302,7 @@ public class AzureSpeechService {
             
             String currentCat = HabitTrackerService.getCurrentCategory();
             boolean isAmbientLine = key != null && (key.toLowerCase().contains("phase") || key.toLowerCase().contains("return") || key.toLowerCase().contains("boot") || key.toLowerCase().contains("login"));
-            boolean isMasterPresent = com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().getCurrentPhase() == 0;
+            boolean isMasterPresent = ShortTermMemoryService.getMemory().getCurrentPhase() == 0;
             
             if ("Media".equals(currentCat) && !isAmbientLine && isMasterPresent) {
                 mediaPaused = true;
@@ -319,6 +327,9 @@ public class AzureSpeechService {
                 }
             }
             
+            // GUI SYNC FIX: Orb transitions to "Speaking" state at the exact millisecond the audio starts
+            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
+            
             clip.start();
             long durationMs = clip.getMicrosecondLength() / 1000;
             Thread.sleep(durationMs + 200); 
@@ -327,8 +338,6 @@ public class AzureSpeechService {
             activeClip = null;
             return true;
         } catch (InterruptedException e) {
-            // CRITICAL SAPI GLITCH FIX: If SpeechService intentionally halts her speech upon your return, 
-            // gracefully acknowledge the interrupt and return TRUE so the system doesn't hallucinate an error and fallback to SAPI.
             System.out.println("Ciel Debug: Audio playback was intentionally interrupted/cancelled.");
             Thread.currentThread().interrupt(); 
             return true; 

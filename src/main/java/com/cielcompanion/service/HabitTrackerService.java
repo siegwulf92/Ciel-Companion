@@ -6,7 +6,12 @@ import com.cielcompanion.memory.Fact;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
 import com.cielcompanion.service.SystemMonitor.SystemMetrics;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -67,6 +72,23 @@ public class HabitTrackerService {
 
     public static boolean isCurrentGamePausable() {
         return currentGamePausable;
+    }
+    
+    private static String getActiveMediaUrl() {
+        try {
+            URL url = new URL("http://localhost:8000/active_media_url");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(1500);
+            conn.setReadTimeout(1500);
+            if (conn.getResponseCode() == 200) {
+                JsonObject json = JsonParser.parseReader(new InputStreamReader(conn.getInputStream(), "UTF-8")).getAsJsonObject();
+                if (json.has("url") && !json.get("url").isJsonNull()) {
+                    return json.get("url").getAsString();
+                }
+            }
+        } catch (Exception e) {}
+        return null;
     }
 
     public static void queueNonCriticalAnnouncement(String text, String titleContext) {
@@ -197,7 +219,8 @@ public class HabitTrackerService {
                     loggedMediaToday.add(cleanTitle);
                     
                     if (ShortTermMemoryService.getMemory().getCurrentPhase() == 0) {
-                        triggerConfidentMediaCommentary(cleanTitle, activeTitle);
+                        String activeUrl = getActiveMediaUrl();
+                        triggerConfidentMediaCommentary(cleanTitle, activeUrl);
                     } else {
                         System.out.println("Ciel Debug: Media threshold reached, but Master is physically Idle. Skipping commentary.");
                     }
@@ -219,33 +242,30 @@ public class HabitTrackerService {
         evaluateEmotionalResonance();
     }
 
-    private static void triggerConfidentMediaCommentary(String cleanTitle, String fullWindowTitle) {
-        String platform = "Media";
-        String querySuffix = "";
-        String instruction = "Attempt to deduce the context of this video from its title. Use the provided WEB DATA to understand the topic. Generate a brief 1-2 sentence comment on the subject matter.";
+    private static void triggerConfidentMediaCommentary(String cleanTitle, String activeUrl) {
+        String query = cleanTitle;
+        String instruction = "";
 
-        String lowerTitle = fullWindowTitle.toLowerCase();
-        
-        // DYNAMIC PLATFORM ROUTING: Targets episodic events for Crunchyroll and exact creator data for YouTube
-        if (lowerTitle.contains("crunchyroll")) {
-            platform = "Crunchyroll";
-            querySuffix = " anime episode synopsis";
-            instruction = "1. Use the WEB DATA to identify the EXACT anime series AND the specific plot events of this exact episode.\n" +
-                          "2. Generate a brief, conversational comment (1-2 short lines) about what is happening in this specific episode, or make a short prediction/reaction to the current plot arc.\n" +
-                          "3. Do NOT just summarize the general series premise. Be specific to the current events.\n" +
+        if (activeUrl != null && !activeUrl.isBlank() && activeUrl.startsWith("http")) {
+            System.out.println("Ciel Debug: Successfully fetched media URL: " + activeUrl);
+            query = query + "|||" + activeUrl;
+            
+            // SIMPLIFIED, STRICT PROMPT: Relies 100% on the exact metadata scraped by Python
+            instruction = "1. Read the provided WEB DATA to find the EXACT Series/Creator, Episode/Video Title, and Synopsis.\n" +
+                          "2. Generate a brief, conversational comment (1-2 short lines) reacting to a specific detail in the synopsis, the creator, or the overall premise of what is happening.\n" +
+                          "3. CRITICAL: The WEB DATA is 100% accurate. Base your reaction SOLELY on it.\n" +
                           "4. Keep it EXTREMELY concise and natural. NO wordy, robotic essays.\n" +
-                          "5. If the search results do not explicitly match the episode, DO NOT GUESS. Output EXACTLY: ABORT.";
-        } else if (lowerTitle.contains("youtube")) {
-            platform = "YouTube";
-            querySuffix = " youtube video";
-            instruction = "1. Use the WEB DATA to identify the EXACT creator/channel and the specific topic of this video.\n" +
-                          "2. Generate a brief, conversational comment (1-2 short lines) reacting to the specific topic or creator.\n" +
+                          "5. If the WEB DATA is missing or says 'Unknown', output EXACTLY: ABORT.";
+        } else {
+            System.out.println("Ciel Debug: Media URL fetch failed. Falling back to DDG Title Search.");
+            instruction = "1. Use the WEB DATA to identify the EXACT anime series/creator and plot.\n" +
+                          "2. Generate a brief, conversational comment (1-2 short lines) reflecting on the CURRENT events.\n" +
                           "3. Keep it EXTREMELY concise and natural. NO wordy, robotic essays.\n" +
-                          "4. If the search results are vague, show the wrong creator, or do not explicitly match the exact video title, DO NOT GUESS. Output EXACTLY: ABORT.";
+                          "4. If the search results do not explicitly match the title, DO NOT GUESS. Output EXACTLY: ABORT.";
         }
 
-        String prompt = "[WEB_SEARCH] [QUERY: \"" + cleanTitle + "\"" + querySuffix + "] " +
-            "Master Taylor has been watching a video on " + platform + " titled: '" + cleanTitle + "'. " +
+        String prompt = "[WEB_SEARCH] [QUERY: " + query + "] " +
+            "Master Taylor is watching media titled: '" + cleanTitle + "'. " +
             "You are Ciel, his highly intelligent, slightly smug, and deeply analytical Manas.\n\n" +
             instruction + "\n" +
             "Output ONLY your spoken dialogue starting with a bracketed emotion tag like [Amused], [Curious], or [Observing].";
@@ -254,7 +274,7 @@ public class HabitTrackerService {
             if (response != null && !response.isBlank()) {
                 String cleanResponse = response.trim();
                 if (cleanResponse.equals("ABORT") || cleanResponse.contains("ABORT")) {
-                    System.out.println("Ciel Debug: Media context unclear. Logged silently.");
+                    System.out.println("Ciel Debug: Media context unclear or missing. Logged silently.");
                 } else {
                     System.out.println("Ciel Debug: Confident Media Commentary Generated -> " + cleanResponse);
                     SpeechService.speakPreformatted(cleanResponse, null, false, true); 

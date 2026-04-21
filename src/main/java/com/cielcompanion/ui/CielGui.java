@@ -14,7 +14,8 @@ import java.util.Random;
 
 public class CielGui {
     
-    public enum GuiState { IDLE, LISTENING, SPEAKING }
+    // CRITICAL FIX: Added the THINKING state to the Enum
+    public enum GuiState { IDLE, LISTENING, SPEAKING, THINKING }
 
     private JFrame frame;
     private CielPanel panel;
@@ -188,9 +189,14 @@ public class CielGui {
             
             // Animation Pulses
             float breath = (float) (Math.sin(animationTick * GuiSettings.getBreathingSpeed() * 2.0)) / 2.0f + 0.5f;
-            float pulse = (currentState == GuiState.SPEAKING) 
-                ? (float) Math.abs(Math.sin(animationTick * GuiSettings.getSpeakingFlickerSpeed() * 2.0)) 
-                : breath;
+            
+            // GUI SYNC FIX: Distinct rapid pulse logic for the THINKING state
+            float pulse = breath;
+            if (currentState == GuiState.SPEAKING) {
+                pulse = (float) Math.abs(Math.sin(animationTick * GuiSettings.getSpeakingFlickerSpeed() * 2.0));
+            } else if (currentState == GuiState.THINKING) {
+                pulse = (float) (Math.sin(animationTick * 15.0) + 1) / 2.0f; // Rapid processing throb
+            }
 
             float coreR = maxRadius * (0.65f + pulse * 0.1f);
             float glowR = maxRadius * (0.9f + breath * 0.1f);
@@ -246,13 +252,22 @@ public class CielGui {
             g2d.draw(new Ellipse2D.Float(-coreR * 1.1f, -coreR * 1.1f, coreR * 2.2f, coreR * 2.2f));
             g2d.setTransform(oldTransform);
 
-            // --- LAYER 5: Listening Overlay ---
+            // --- LAYER 5: Overlays (Listening vs Thinking) ---
             if (currentState == GuiState.LISTENING) {
                 float listeningPulse = (float) (Math.sin(animationTick * 20) + 1) / 2.0f;
                 g2d.setColor(Color.CYAN);
                 g2d.setStroke(new BasicStroke(3.0f));
                 float r = maxRadius * (0.95f - listeningPulse * 0.1f);
                 g2d.draw(new Ellipse2D.Float(center.x - r, center.y - r, r * 2, r * 2));
+            } else if (currentState == GuiState.THINKING) {
+                // Great Sage / Raphael Calculation Effect: Inner counter-rotating dashed geometry
+                g2d.setColor(new Color(150, 200, 255, 200)); 
+                g2d.setStroke(new BasicStroke(2.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10.0f, new float[]{10.0f, 10.0f}, 0.0f));
+                g2d.translate(center.x, center.y);
+                g2d.rotate(-animationTick * 6.0); // Fast counter-rotation to look computational
+                float r = maxRadius * 0.85f;
+                g2d.draw(new Ellipse2D.Float(-r, -r, r * 2, r * 2));
+                g2d.setTransform(oldTransform);
             }
             
             g2d.dispose();

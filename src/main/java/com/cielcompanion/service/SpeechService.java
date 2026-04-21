@@ -168,6 +168,7 @@ public class SpeechService {
             String textToSpeak = finalCleanText;
 
             if (CielVoiceManager.isLanguageLocked()) {
+                CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
                 textToSpeak = TranslationService.toJapanese(textToSpeak);
                 System.out.println("[Ciel World Voice]: Translated to: " + textToSpeak);
             } 
@@ -176,6 +177,9 @@ public class SpeechService {
             }
             else if (langCode.equals("ja-JP")) {
                 if (Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                    // GUI SYNC FIX: Explicitly signal she is processing/calculating before speaking!
+                    CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
+                    
                     textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
                     
                     if (Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
@@ -285,9 +289,13 @@ public class SpeechService {
                         String langCode = CielVoiceManager.getActiveLanguageCode();
                         
                         if (CielVoiceManager.isLanguageLocked()) {
+                            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
                             textToSpeak = TranslationService.toJapanese(textToSpeak);
                         } 
                         else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                            // GUI SYNC FIX: Explicitly signal she is processing/calculating before speaking!
+                            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
+                            
                             textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
                             
                             if (Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
@@ -339,7 +347,9 @@ public class SpeechService {
         try {
             if (voiceListener != null) voiceListener.setInternalMute(true);
             isActivelySpeaking.set(true);
-            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
+            
+            // GUI SYNC FIX: Removed the SPEAKING state trigger from here.
+            // It is now perfectly synced inside AzureSpeechService right as the audio fires.
 
             boolean azureSuccess = false;
 
@@ -353,6 +363,9 @@ public class SpeechService {
             }
             
             if (!azureSuccess) {
+                // If falling back to local SAPI, trigger the SPEAKING state now
+                CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
+                
                 String targetVoice = Settings.getVoiceNameHint();
                 System.out.println("Ciel Debug: SAPI Speaking: \"" + text + "\" (Target: " + targetVoice + ")");
                 
