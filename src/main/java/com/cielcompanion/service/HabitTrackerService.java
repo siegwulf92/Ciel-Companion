@@ -55,6 +55,11 @@ public class HabitTrackerService {
     private static final Queue<String> deferredSpeechQueue = new LinkedList<>();
     private static boolean currentGamePausable = false;
 
+    // --- PRE-FULLSCREEN CACHE SYSTEM ---
+    // Caches the DOM and URL the moment a video starts, ensuring data is preserved even if the user goes fullscreen.
+    private static String cachedActiveUrl = "";
+    private static String cachedDomText = "";
+
     public static void initialize() {
         habitScheduler = Executors.newSingleThreadScheduledExecutor();
         habitScheduler.scheduleWithFixedDelay(HabitTrackerService::pollAndTrack, 1, 1, TimeUnit.MINUTES);
@@ -74,21 +79,29 @@ public class HabitTrackerService {
         return currentGamePausable;
     }
     
-    private static String getActiveMediaUrl() {
+    private static JsonObject getActiveMediaData(String activeTitle) {
         try {
-            URL url = new URL("http://localhost:8000/active_media_url");
+            String encodedTitle = java.net.URLEncoder.encode(activeTitle, "UTF-8");
+            URL url = new URL("http://localhost:8000/active_media_data?title=" + encodedTitle);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(1500);
-            conn.setReadTimeout(1500);
+            conn.setReadTimeout(2500); 
             if (conn.getResponseCode() == 200) {
-                JsonObject json = JsonParser.parseReader(new InputStreamReader(conn.getInputStream(), "UTF-8")).getAsJsonObject();
-                if (json.has("url") && !json.get("url").isJsonNull()) {
-                    return json.get("url").getAsString();
-                }
+                return JsonParser.parseReader(new InputStreamReader(conn.getInputStream(), "UTF-8")).getAsJsonObject();
             }
         } catch (Exception e) {}
-        return null;
+        return new JsonObject();
+    }
+    
+    public static void toggleMediaPlayback() {
+        try {
+            URL url = new URL("http://localhost:8000/toggle_media");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(1000);
+            conn.getResponseCode(); 
+        } catch (Exception e) {}
     }
 
     public static void queueNonCriticalAnnouncement(String text, String titleContext) {
@@ -209,18 +222,35 @@ public class HabitTrackerService {
             queueFlushedThisSession = false; 
         }
 
+        // --- MEDIA TRACKING & CACHING LOGIC ---
         if (currentCategory.equals("Media")) {
             String cleanTitle = cleanMediaTitle(activeTitle);
             if (!cleanTitle.isBlank() && cleanTitle.equals(currentMediaTitle)) {
                 currentMediaConsecutiveMinutes++;
+                
+                // Cache Update Phase (Minutes 1-4)
+                if (currentMediaConsecutiveMinutes <= 5) {
+                    JsonObject mediaData = getActiveMediaData(activeTitle);
+                    String tempUrl = mediaData.has("url") && !mediaData.get("url").isJsonNull() ? mediaData.get("url").getAsString() : null;
+                    String tempDom = mediaData.has("dom") && !mediaData.get("dom").isJsonNull() ? mediaData.get("dom").getAsString() : null;
+
+                    if (tempUrl != null && !tempUrl.isBlank() && !tempUrl.equals("null")) cachedActiveUrl = tempUrl;
+                    if (tempDom != null && !tempDom.isBlank() && tempDom.length() > 10) cachedDomText = tempDom;
+                }
+
+                // Commentary Phase (Minute 5)
                 if (currentMediaConsecutiveMinutes == 5 && !loggedMediaToday.contains(cleanTitle)) {
                     String memoryText = "Master actively engaged with the media content '" + cleanTitle + "' for over 5 minutes.";
                     MemoryService.addFact(new Fact("media_" + System.currentTimeMillis(), memoryText, System.currentTimeMillis(), "episodic_memory", "habit_tracking", 1));
                     loggedMediaToday.add(cleanTitle);
                     
                     if (ShortTermMemoryService.getMemory().getCurrentPhase() == 0) {
-                        String activeUrl = getActiveMediaUrl();
-                        triggerConfidentMediaCommentary(cleanTitle, activeUrl);
+                        System.out.println("Ciel Debug: Pre-Fullscreen Cache utilized -> URL: " + cachedActiveUrl);
+                        if (cachedDomText != null && !cachedDomText.isBlank()) {
+                            System.out.println("Ciel Debug: Cached DOM Extracted: " + cachedDomText.substring(0, Math.min(cachedDomText.length(), 150)) + "...");
+                        }
+                        
+                        triggerConfidentMediaCommentary(cleanTitle, activeTitle, cachedActiveUrl, cachedDomText);
                     } else {
                         System.out.println("Ciel Debug: Media threshold reached, but Master is physically Idle. Skipping commentary.");
                     }
@@ -228,10 +258,19 @@ public class HabitTrackerService {
             } else {
                 currentMediaTitle = cleanTitle;
                 currentMediaConsecutiveMinutes = 1;
+                
+                // Reset cache on new media and instantly grab Minute 1 snapshot
+                cachedActiveUrl = "";
+                cachedDomText = "";
+                JsonObject mediaData = getActiveMediaData(activeTitle);
+                if (mediaData.has("url") && !mediaData.get("url").isJsonNull()) cachedActiveUrl = mediaData.get("url").getAsString();
+                if (mediaData.has("dom") && !mediaData.get("dom").isJsonNull()) cachedDomText = mediaData.get("dom").getAsString();
             }
         } else {
             currentMediaTitle = "";
             currentMediaConsecutiveMinutes = 0;
+            cachedActiveUrl = "";
+            cachedDomText = "";
         }
 
         if (!currentCategory.equals("Idle") && !processCategoryCache.containsKey(activeProcess) && !IGNORED_PROCESSES.contains(activeProcess)) {
@@ -242,39 +281,42 @@ public class HabitTrackerService {
         evaluateEmotionalResonance();
     }
 
-    private static void triggerConfidentMediaCommentary(String cleanTitle, String activeUrl) {
+    private static void triggerConfidentMediaCommentary(String cleanTitle, String fullWindowTitle, String activeUrl, String domText) {
         String query = cleanTitle;
         String instruction = "";
 
+        String domContext = (domText != null && !domText.isBlank()) ? "\n\nACCESSIBILITY DOM TEXT (Series Name is likely in here):\n" + domText : "";
+
         if (activeUrl != null && !activeUrl.isBlank() && activeUrl.startsWith("http")) {
-            System.out.println("Ciel Debug: Successfully fetched media URL: " + activeUrl);
+            System.out.println("Ciel Debug: Using Media URL for context: " + activeUrl);
             query = query + "|||" + activeUrl;
             
-            // SIMPLIFIED, STRICT PROMPT: Relies 100% on the exact metadata scraped by Python
-            instruction = "1. Read the provided WEB DATA to find the EXACT Series/Creator, Episode/Video Title, and Synopsis.\n" +
-                          "2. Generate a brief, conversational comment (1-2 short lines) reacting to a specific detail in the synopsis, the creator, or the overall premise of what is happening.\n" +
-                          "3. CRITICAL: The WEB DATA is 100% accurate. Base your reaction SOLELY on it.\n" +
-                          "4. Keep it EXTREMELY concise and natural. NO wordy, robotic essays.\n" +
-                          "5. If the WEB DATA is missing or says 'Unknown', output EXACTLY: ABORT.";
+            instruction = "1. Read the provided WEB DATA and the ACCESSIBILITY DOM TEXT. The DOM text contains the exact Series Name and Episode Title currently on screen.\n" +
+                          "2. Identify the exact anime series or YouTube creator to avoid hallucinations (e.g., ATLA vs Tensura vs Hell's Paradise).\n" +
+                          "3. Generate a brief, conversational comment (1-2 short lines) reacting to a specific detail in the synopsis, the creator, or the current events.\n" +
+                          "4. CRITICAL: If the WEB DATA is blocked or fails, you MUST rely entirely on your internal training data to summarize the episode identified in the DOM text.\n" +
+                          "5. Keep it EXTREMELY concise and natural. NO wordy, robotic essays.\n" +
+                          "6. If both the WEB DATA and DOM text are completely missing/useless, output EXACTLY: ABORT.";
         } else {
-            System.out.println("Ciel Debug: Media URL fetch failed. Falling back to DDG Title Search.");
-            instruction = "1. Use the WEB DATA to identify the EXACT anime series/creator and plot.\n" +
+            System.out.println("Ciel Debug: Media URL unavailable. Trusting LLM and raw DOM context.");
+            instruction = "1. Use the WEB DATA and the ACCESSIBILITY DOM TEXT to identify the EXACT anime series/creator and plot.\n" +
                           "2. Generate a brief, conversational comment (1-2 short lines) reflecting on the CURRENT events.\n" +
                           "3. Keep it EXTREMELY concise and natural. NO wordy, robotic essays.\n" +
-                          "4. If the search results do not explicitly match the title, DO NOT GUESS. Output EXACTLY: ABORT.";
+                          "4. CRITICAL ANTI-HALLUCINATION: If the WEB DATA is blocked, you MUST rely entirely on your internal training data using the Series Name from the DOM text and the Raw Window Title.\n" +
+                          "5. If you are completely unsure and multiple anime match this exact criteria, output EXACTLY: ABORT.";
         }
 
         String prompt = "[WEB_SEARCH] [QUERY: " + query + "] " +
-            "Master Taylor is watching media titled: '" + cleanTitle + "'. " +
+            "Master Taylor is watching media. The raw window title on his screen is: '" + fullWindowTitle + "'. " +
             "You are Ciel, his highly intelligent, slightly smug, and deeply analytical Manas.\n\n" +
-            instruction + "\n" +
+            instruction + domContext + "\n" +
             "Output ONLY your spoken dialogue starting with a bracketed emotion tag like [Amused], [Curious], or [Observing].";
 
         AIEngine.generateSilentLogic("Media Analysis", prompt).thenAccept(response -> {
             if (response != null && !response.isBlank()) {
                 String cleanResponse = response.trim();
                 if (cleanResponse.equals("ABORT") || cleanResponse.contains("ABORT")) {
-                    System.out.println("Ciel Debug: Media context unclear or missing. Logged silently.");
+                    System.out.println("Ciel Debug: Media context unclear or hallucination detected. Logged silently.");
                 } else {
                     System.out.println("Ciel Debug: Confident Media Commentary Generated -> " + cleanResponse);
                     SpeechService.speakPreformatted(cleanResponse, null, false, true); 

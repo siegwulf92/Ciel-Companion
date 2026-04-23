@@ -79,7 +79,6 @@ public class AzureSpeechService {
         if (!originalText.matches(".*[a-zA-Z].*")) return originalText; 
 
         try {
-            // GUI SYNC FIX: Explicitly signal she is processing/calculating before speaking!
             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
             
             System.out.println("[Azure TTS] English text detected. Requesting Katakana transliteration from Swarm...");
@@ -104,7 +103,7 @@ public class AzureSpeechService {
                 JsonObject response = new Gson().fromJson(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8), JsonObject.class);
                 if (response != null && response.has("katakana")) {
                     String katakana = response.get("katakana").getAsString();
-                    System.out.println("[Azure TTS] Transliteration success: " + katakana);
+                    System.out.println("[Azure TTS] Transliteration success.");
                     return katakana;
                 }
             }
@@ -208,16 +207,12 @@ public class AzureSpeechService {
             boolean isAmbientLine = key != null && (key.toLowerCase().contains("phase") || key.toLowerCase().contains("return") || key.toLowerCase().contains("boot") || key.toLowerCase().contains("login"));
             boolean isMasterPresent = ShortTermMemoryService.getMemory().getCurrentPhase() == 0;
             
+            // CRITICAL FIX: Removed Spacebar logic, dynamically triggers OS-Level Media Playback Toggle to prevent conflicts
             if ("Media".equals(currentCat) && !isAmbientLine && isMasterPresent) {
                 mediaPaused = true;
-                System.out.println("Ciel Debug: Auto-pausing media (Spacebar) for synchronized speech.");
-                Robot robot = new Robot();
-                isSimulatingKeystroke = true;
-                lastSimulatedInputTime = System.currentTimeMillis();
-                robot.keyPress(KeyEvent.VK_SPACE);
-                robot.keyRelease(KeyEvent.VK_SPACE);
-                Thread.sleep(600); 
-                isSimulatingKeystroke = false;
+                System.out.println("Ciel Debug: Auto-pausing media for synchronized speech.");
+                HabitTrackerService.toggleMediaPlayback();
+                Thread.sleep(400); 
             } else if ("Gaming".equals(currentCat) && !isAmbientLine && isMasterPresent) {
                 if (HabitTrackerService.isCurrentGamePausable()) {
                     gamePaused = true;
@@ -232,7 +227,6 @@ public class AzureSpeechService {
                 }
             }
 
-            // GUI SYNC FIX: Orb transitions to "Speaking" state at the exact millisecond the audio starts
             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
             
             SpeechSynthesisResult result = activeSynthesizer.SpeakSsml(ssml);
@@ -257,15 +251,9 @@ public class AzureSpeechService {
             }
             if (mediaPaused) {
                 try {
-                    Thread.sleep(600);
-                    System.out.println("Ciel Debug: Auto-unpausing media (Spacebar).");
-                    Robot robot = new Robot();
-                    isSimulatingKeystroke = true;
-                    lastSimulatedInputTime = System.currentTimeMillis();
-                    robot.keyPress(KeyEvent.VK_SPACE);
-                    robot.keyRelease(KeyEvent.VK_SPACE);
-                    Thread.sleep(200);
-                    isSimulatingKeystroke = false;
+                    Thread.sleep(600); // Give the audio buffer time to close cleanly before unpausing
+                    System.out.println("Ciel Debug: Auto-unpausing media.");
+                    HabitTrackerService.toggleMediaPlayback();
                 } catch (Exception ignored) {}
             }
         }
@@ -304,16 +292,12 @@ public class AzureSpeechService {
             boolean isAmbientLine = key != null && (key.toLowerCase().contains("phase") || key.toLowerCase().contains("return") || key.toLowerCase().contains("boot") || key.toLowerCase().contains("login"));
             boolean isMasterPresent = ShortTermMemoryService.getMemory().getCurrentPhase() == 0;
             
+            // CRITICAL FIX: Removed Spacebar logic, dynamically triggers OS-Level Media Playback Toggle to prevent conflicts
             if ("Media".equals(currentCat) && !isAmbientLine && isMasterPresent) {
                 mediaPaused = true;
-                System.out.println("Ciel Debug: Auto-pausing media (Spacebar) for synchronized speech.");
-                Robot robot = new Robot();
-                isSimulatingKeystroke = true;
-                lastSimulatedInputTime = System.currentTimeMillis();
-                robot.keyPress(KeyEvent.VK_SPACE);
-                robot.keyRelease(KeyEvent.VK_SPACE);
-                Thread.sleep(600);
-                isSimulatingKeystroke = false;
+                System.out.println("Ciel Debug: Auto-pausing media for synchronized speech.");
+                HabitTrackerService.toggleMediaPlayback();
+                Thread.sleep(400);
             } else if ("Gaming".equals(currentCat) && !isAmbientLine && isMasterPresent) {
                 if (HabitTrackerService.isCurrentGamePausable()) {
                     System.out.println("Ciel Debug: Auto-pausing single-player game (ESC) for critical synchronized speech.");
@@ -327,7 +311,6 @@ public class AzureSpeechService {
                 }
             }
             
-            // GUI SYNC FIX: Orb transitions to "Speaking" state at the exact millisecond the audio starts
             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
             
             clip.start();
@@ -346,15 +329,9 @@ public class AzureSpeechService {
         } finally {
             if (mediaPaused) {
                 try {
-                    Thread.sleep(600);
-                    System.out.println("Ciel Debug: Auto-unpausing media (Spacebar).");
-                    Robot robot = new Robot();
-                    isSimulatingKeystroke = true;
-                    lastSimulatedInputTime = System.currentTimeMillis();
-                    robot.keyPress(KeyEvent.VK_SPACE);
-                    robot.keyRelease(KeyEvent.VK_SPACE);
-                    Thread.sleep(200);
-                    isSimulatingKeystroke = false;
+                    Thread.sleep(600); // Give the audio buffer time to close cleanly before unpausing
+                    System.out.println("Ciel Debug: Auto-unpausing media.");
+                    HabitTrackerService.toggleMediaPlayback();
                 } catch (Exception ignored) {}
             }
         }
