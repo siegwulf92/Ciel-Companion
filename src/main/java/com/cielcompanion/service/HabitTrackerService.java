@@ -55,10 +55,11 @@ public class HabitTrackerService {
     private static final Queue<String> deferredSpeechQueue = new LinkedList<>();
     private static boolean currentGamePausable = false;
 
-    // --- PRE-FULLSCREEN CACHE SYSTEM ---
-    // Caches the DOM and URL the moment a video starts, ensuring data is preserved even if the user goes fullscreen.
     private static String cachedActiveUrl = "";
     private static String cachedDomText = "";
+    
+    // CRITICAL FIX: Inter-Episode Context. Retains the last 3 watched videos/episodes in memory.
+    private static final LinkedList<String> recentMediaHistory = new LinkedList<>();
 
     public static void initialize() {
         habitScheduler = Executors.newSingleThreadScheduledExecutor();
@@ -134,6 +135,7 @@ public class HabitTrackerService {
             summarizeAndSaveToMemory();
             dailyHabits.clear();
             loggedMediaToday.clear();
+            recentMediaHistory.clear();
             currentDate = LocalDate.now();
             proactiveTriggeredToday = false; 
         }
@@ -160,7 +162,7 @@ public class HabitTrackerService {
                 currentGamePausable = false; 
                 if (!processCategoryCache.containsKey(memKey + "_checking")) {
                     processCategoryCache.put(memKey + "_checking", "true");
-                    String pausePrompt = "[LOCAL_THOUGHT] Analyze the PC game '" + activeTitle + "'. Is it typically a single-player/offline game that CAN be paused via the ESC key (like Final Fantasy, Kingdom Hearts, Skyrim), or a live online/multiplayer game that CANNOT be paused (like Smite, Dead by Daylight, Marvel Rivals, Call of Duty)? Reply STRICTLY with a JSON object: { \"pausable\": true } or { \"pausable\": false }.";
+                    String pausePrompt = "[LOCAL_THOUGHT] Analyze the PC game '" + activeTitle + "'. Is it typically a single-player/offline game that CAN be paused via the ESC key? Reply STRICTLY with a JSON object: { \"pausable\": true } or { \"pausable\": false }.";
                     AIEngine.generateSilentLogic(pausePrompt, "Game Pausability Check").thenAccept(res -> {
                         if (res != null) {
                             boolean canPause = res.contains("\"pausable\": true") || res.contains("\"pausable\":true");
@@ -179,10 +181,7 @@ public class HabitTrackerService {
             currentGamePausable = false;
             if (!activeProcess.isBlank() && !IGNORED_PROCESSES.contains(activeProcess) && !processCategoryCache.containsKey(activeProcess)) {
                 processCategoryCache.put(activeProcess, "Analyzing..."); 
-                String prompt = "Analyze this active Windows application.\n" +
-                                "Process Executable: " + activeProcess + "\n" +
-                                "Window Title: " + activeTitle + "\n" +
-                                "Classify it into EXACTLY ONE of these categories: 'Gaming', 'Media', 'Productivity', or 'Idle'. Reply strictly with a JSON object: { \"category\": \"Gaming\" }";
+                String prompt = "Analyze this active Windows application.\nProcess Executable: " + activeProcess + "\nWindow Title: " + activeTitle + "\nClassify it into EXACTLY ONE of these categories: 'Gaming', 'Media', 'Productivity', or 'Idle'. Reply strictly with a JSON object: { \"category\": \"Gaming\" }";
                 AIEngine.evaluateBackground(prompt, "You are a PC activity classifier.").thenAccept(res -> {
                     if (res != null && res.has("category")) {
                         String cat = res.get("category").getAsString();
@@ -208,10 +207,8 @@ public class HabitTrackerService {
                 if (deferredItems.size() > 1) {
                     String prompt = "Master was busy/away, so you silently completed these tasks in the background:\n" + 
                                     String.join(" | ", deferredItems) + "\n\n" +
-                                    "Summarize this into a single, elegant, conversational sentence. Tell Master Taylor that while he was occupied, you processed these things and he should review your thought logs when convenient. " +
-                                    "CRITICAL: Output ONLY your spoken dialogue starting with [Happy] or [Proud]. Do NOT list them one by one.";
-                                    
-                    AIEngine.generateSilentLogic(prompt, "[LOCAL_THOUGHT] You are Ciel, summarizing background tasks.").thenAccept(summary -> {
+                                    "Summarize this into a single, elegant, conversational sentence. Output ONLY your spoken dialogue starting with [Happy] or [Proud].";
+                    AIEngine.generateSilentLogic(prompt, "[LOCAL_THOUGHT] You are Ciel.").thenAccept(summary -> {
                         if (summary != null && !summary.isBlank()) SpeechService.speakPreformatted(summary.trim(), null, false, true);
                     });
                 } else {
@@ -222,13 +219,11 @@ public class HabitTrackerService {
             queueFlushedThisSession = false; 
         }
 
-        // --- MEDIA TRACKING & CACHING LOGIC ---
         if (currentCategory.equals("Media")) {
             String cleanTitle = cleanMediaTitle(activeTitle);
             if (!cleanTitle.isBlank() && cleanTitle.equals(currentMediaTitle)) {
                 currentMediaConsecutiveMinutes++;
                 
-                // Cache Update Phase (Minutes 1-4)
                 if (currentMediaConsecutiveMinutes <= 5) {
                     JsonObject mediaData = getActiveMediaData(activeTitle);
                     String tempUrl = mediaData.has("url") && !mediaData.get("url").isJsonNull() ? mediaData.get("url").getAsString() : null;
@@ -238,16 +233,19 @@ public class HabitTrackerService {
                     if (tempDom != null && !tempDom.isBlank() && tempDom.length() > 10) cachedDomText = tempDom;
                 }
 
-                // Commentary Phase (Minute 5)
                 if (currentMediaConsecutiveMinutes == 5 && !loggedMediaToday.contains(cleanTitle)) {
                     String memoryText = "Master actively engaged with the media content '" + cleanTitle + "' for over 5 minutes.";
                     MemoryService.addFact(new Fact("media_" + System.currentTimeMillis(), memoryText, System.currentTimeMillis(), "episodic_memory", "habit_tracking", 1));
                     loggedMediaToday.add(cleanTitle);
                     
+                    // Add to session history to maintain inter-episode continuity
+                    recentMediaHistory.add(cleanTitle);
+                    if (recentMediaHistory.size() > 3) recentMediaHistory.removeFirst();
+                    
                     if (ShortTermMemoryService.getMemory().getCurrentPhase() == 0) {
                         System.out.println("Ciel Debug: Pre-Fullscreen Cache utilized -> URL: " + cachedActiveUrl);
                         if (cachedDomText != null && !cachedDomText.isBlank()) {
-                            System.out.println("Ciel Debug: Cached DOM Extracted: " + cachedDomText.substring(0, Math.min(cachedDomText.length(), 150)) + "...");
+                            System.out.println("Ciel Debug: Cached DOM Extracted: " + cachedDomText.substring(0, Math.min(cachedDomText.length(), 200)) + "...");
                         }
                         
                         triggerConfidentMediaCommentary(cleanTitle, activeTitle, cachedActiveUrl, cachedDomText);
@@ -259,7 +257,6 @@ public class HabitTrackerService {
                 currentMediaTitle = cleanTitle;
                 currentMediaConsecutiveMinutes = 1;
                 
-                // Reset cache on new media and instantly grab Minute 1 snapshot
                 cachedActiveUrl = "";
                 cachedDomText = "";
                 JsonObject mediaData = getActiveMediaData(activeTitle);
@@ -286,30 +283,31 @@ public class HabitTrackerService {
         String instruction = "";
 
         String domContext = (domText != null && !domText.isBlank()) ? "\n\nACCESSIBILITY DOM TEXT (Series Name is likely in here):\n" + domText : "";
+        String historicalContext = recentMediaHistory.isEmpty() ? "" : "\n\nEPISODE CONTINUITY (Master's recently watched media during this session):\n" + String.join(" -> ", recentMediaHistory);
 
         if (activeUrl != null && !activeUrl.isBlank() && activeUrl.startsWith("http")) {
             System.out.println("Ciel Debug: Using Media URL for context: " + activeUrl);
             query = query + "|||" + activeUrl;
             
-            instruction = "1. Read the provided WEB DATA and the ACCESSIBILITY DOM TEXT. The DOM text contains the exact Series Name and Episode Title currently on screen.\n" +
-                          "2. Identify the exact anime series or YouTube creator to avoid hallucinations (e.g., ATLA vs Tensura vs Hell's Paradise).\n" +
-                          "3. Generate a brief, conversational comment (1-2 short lines) reacting to a specific detail in the synopsis, the creator, or the current events.\n" +
-                          "4. CRITICAL: If the WEB DATA is blocked or fails, you MUST rely entirely on your internal training data to summarize the episode identified in the DOM text.\n" +
+            instruction = "1. Read the provided WEB DATA, the EPISODE CONTINUITY history, and the ACCESSIBILITY DOM TEXT.\n" +
+                          "2. Use the EPISODE CONTINUITY to deduce if the current video is simply the next episode in the same series.\n" +
+                          "3. Identify the exact anime series or YouTube creator to avoid hallucinations.\n" +
+                          "4. Generate a brief, conversational comment (1-2 short lines) reacting to the creator or current events.\n" +
                           "5. Keep it EXTREMELY concise and natural. NO wordy, robotic essays.\n" +
-                          "6. If both the WEB DATA and DOM text are completely missing/useless, output EXACTLY: ABORT.";
+                          "6. If all data is completely missing/useless, output EXACTLY: ABORT.";
         } else {
             System.out.println("Ciel Debug: Media URL unavailable. Trusting LLM and raw DOM context.");
-            instruction = "1. Use the WEB DATA and the ACCESSIBILITY DOM TEXT to identify the EXACT anime series/creator and plot.\n" +
-                          "2. Generate a brief, conversational comment (1-2 short lines) reflecting on the CURRENT events.\n" +
-                          "3. Keep it EXTREMELY concise and natural. NO wordy, robotic essays.\n" +
-                          "4. CRITICAL ANTI-HALLUCINATION: If the WEB DATA is blocked, you MUST rely entirely on your internal training data using the Series Name from the DOM text and the Raw Window Title.\n" +
+            instruction = "1. Use the EPISODE CONTINUITY history and the ACCESSIBILITY DOM TEXT to identify the EXACT anime series/creator.\n" +
+                          "2. If the continuity history shows he was just watching a specific anime, deduce that this new title is the next episode of that same series!\n" +
+                          "3. Generate a brief, conversational comment (1-2 short lines) reflecting on the CURRENT events.\n" +
+                          "4. Keep it EXTREMELY concise and natural. NO wordy, robotic essays.\n" +
                           "5. If you are completely unsure and multiple anime match this exact criteria, output EXACTLY: ABORT.";
         }
 
         String prompt = "[WEB_SEARCH] [QUERY: " + query + "] " +
             "Master Taylor is watching media. The raw window title on his screen is: '" + fullWindowTitle + "'. " +
             "You are Ciel, his highly intelligent, slightly smug, and deeply analytical Manas.\n\n" +
-            instruction + domContext + "\n" +
+            instruction + historicalContext + domContext + "\n" +
             "Output ONLY your spoken dialogue starting with a bracketed emotion tag like [Amused], [Curious], or [Observing].";
 
         AIEngine.generateSilentLogic("Media Analysis", prompt).thenAccept(response -> {
