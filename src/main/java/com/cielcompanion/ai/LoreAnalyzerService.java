@@ -26,7 +26,6 @@ public class LoreAnalyzerService {
     private static final String CIEL_ROOT = "C:\\Ciel Companion\\ciel";
     private static final String LORE_DIR = CIEL_ROOT + "\\lore";
     
-    // REROUTED: Deep thought analysis is now stored in the diary folder, completely bypassing the infinite loop in the 'thoughts' folder!
     private static final String ANALYSIS_DIR = CIEL_ROOT + "\\diary\\strategic_analysis";
 
     public static void initialize() {
@@ -37,6 +36,11 @@ public class LoreAnalyzerService {
         
         loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::analyzeLoreSilently, 45, 120, TimeUnit.MINUTES);
         loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::populateMissingLoreLinks, 15, 240, TimeUnit.MINUTES);
+        
+        // --- CRITICAL FIX: The DeepSeek Lore Updater ---
+        // Scans existing files every few hours and safely merges new facts from transcripts!
+        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::updateExistingLoreWithNewContext, 30, 360, TimeUnit.MINUTES);
+        
         loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::synthesizeDeepThoughts, 60, 360, TimeUnit.MINUTES);
         
         System.out.println("Ciel Debug: Deep Lore Analyzer & Obsidian Auto-Population initialized.");
@@ -73,6 +77,65 @@ public class LoreAnalyzerService {
                     HabitTrackerService.queueNonCriticalAnnouncement(response.trim(), "Lore Analysis Insight: " + targetFile.getName());
                 }
             });
+        } catch (Exception e) {}
+    }
+
+    // --- CRITICAL FIX: The Safe Updater (Prevents data loss when updating existing Lore) ---
+    private static void updateExistingLoreWithNewContext() {
+        File vaultDir = new File(LORE_DIR);
+        if (!vaultDir.exists() || !vaultDir.isDirectory()) return;
+
+        List<File> allFiles = findTextFiles(vaultDir, new ArrayList<>());
+        
+        List<File> populatedLore = allFiles.stream()
+            .filter(f -> !f.getAbsolutePath().contains("Transcripts") && f.length() > 150)
+            .collect(Collectors.toList());
+
+        List<File> transcripts = allFiles.stream()
+            .filter(f -> f.getAbsolutePath().contains("Transcripts"))
+            .collect(Collectors.toList());
+
+        if (populatedLore.isEmpty() || transcripts.isEmpty()) return;
+
+        File targetLore = populatedLore.get(random.nextInt(populatedLore.size()));
+        String targetName = targetLore.getName().replace(".md", "").replace(".txt", "");
+
+        try {
+            String existingContent = Files.readString(targetLore.toPath());
+            
+            Set<String> newMentions = new HashSet<>();
+            for (File t : transcripts) {
+                String tContent = Files.readString(t.toPath());
+                String[] paragraphs = tContent.split("\\n\\s*\\n");
+                for (String para : paragraphs) {
+                    if (para.contains("[[" + targetName + "]]") || para.toLowerCase().contains(targetName.toLowerCase())) {
+                        if (!existingContent.contains(para.trim()) && para.trim().length() > 20) {
+                            newMentions.add(para.trim());
+                        }
+                    }
+                }
+            }
+
+            if (newMentions.isEmpty()) return;
+
+            String newContext = newMentions.stream().limit(6).collect(Collectors.joining("\n\n"));
+
+            // This trigger tag forces Python to pass the data directly to DeepSeek (The Orchestrator)
+            // ensuring the old lore is perfectly preserved while the new info is injected.
+            String prompt = "[UPDATE_LORE]\n" +
+                "EXISTING LORE:\n" + existingContent + "\n\n" +
+                "NEW MENTIONS/CONTEXT:\n" + newContext;
+
+            AIEngine.generateSilentLogic(prompt, "Lore Evolution").thenAccept(response -> {
+                if (response != null && !response.isBlank() && !response.contains("NO_UPDATE_NEEDED")) {
+                    try {
+                        String cleanContent = response.replaceAll("^```[a-zA-Z]*\n|```$", "").trim();
+                        Files.writeString(targetLore.toPath(), cleanContent);
+                        System.out.println("Ciel Debug: Swarm Orchestrator safely merged new data into existing lore file: " + targetLore.getName());
+                    } catch (Exception e) {}
+                }
+            });
+            
         } catch (Exception e) {}
     }
 
@@ -209,7 +272,7 @@ public class LoreAnalyzerService {
                         File targetDir = new File(LORE_DIR, subFolder);
                         targetDir.mkdirs();
                         
-                        String safeFileName = targetLink.replaceAll("[\\\\/:*?\"<>|]", "").trim();
+                        String safeFileName = targetLink.replaceAll("[\\\\/:*?\"<>|]", "").replace("**", "").replace("*", "").trim();
                         
                         File oldBlankFile = new File(LORE_DIR, safeFileName + ".md");
                         if (oldBlankFile.exists() && oldBlankFile.length() < 150) {
@@ -251,7 +314,6 @@ public class LoreAnalyzerService {
                         String cleanContent = response.replaceAll("^```[a-zA-Z]*\n|```$", "").trim();
                         String dateStr = java.time.LocalDate.now().toString() + "_" + (System.currentTimeMillis() / 1000);
                         
-                        // REROUTED: Saves to diary folder to avoid infinite thought loops
                         Path newFilePath = Paths.get(ANALYSIS_DIR, "Ciel_Analysis_" + dateStr + ".md");
                         Files.writeString(newFilePath, cleanContent);
                         

@@ -94,7 +94,6 @@ public class FinanceService {
     private static void silentMarketCheck() {
         System.out.println("Ciel Debug: Commanding Swarm to execute silent background market and portfolio analysis...");
         
-        // UPGRADED PROMPT: Explicit tax awareness and Emergency Fund isolation boundaries!
         String portfolioPrompt = "You are Ciel, Master Taylor's elite financial advisor. Master Taylor's DOB is 12/30/1992 (currently 33 years old), and his ultimate goal is aggressive growth and early retirement. " +
                 "Analyze the provided portfolio spreadsheet. " +
                 "CRITICAL CONTEXT: The accounts labeled 'taxable' and 'smart' (which hold assets like MINT, TFLO, bonds, or dividend ETFs) function as his liquid Emergency Fund and cash reserves. " +
@@ -106,8 +105,9 @@ public class FinanceService {
         String marketPrompt = "Perform a macro-economic scan of the S&P 500 and VIX. " +
                 "Correlate VIX fear levels with growth opportunities for a 33-year-old investor. Provide a 'Market Threat Level' (Low, Elevated, High, Critical).";
 
-        String recoPrompt = "Recommend 3 to 5 high-growth stock tickers. " +
-                "Output STRICTLY in CSV format: Date,Ticker,Price_Target,PEG_Ratio,Confidence,Reason";
+        // CRITICAL FIX: The Java prompt now passes a specific trigger tag to python so Python 
+        // can intercept the command and inject a live web search for actual market trends.
+        String recoPrompt = "[FINANCE_RECOMMENDATIONS] Generate stock recommendations.";
 
         CompletableFuture.runAsync(() -> {
             boolean swarmSuccess = false;
@@ -146,8 +146,11 @@ public class FinanceService {
 
             if (recoCsv != null && recoCsv.contains(",")) {
                 String cleanCsv = recoCsv.replace("```csv", "").replace("```", "").trim();
+                
+                // CRITICAL FIX: Re-aligned the backup CSV header insertion to match the precise layout
+                // (Action, Shares, Target_Price) expected from the Python logic.
                 if (!cleanCsv.contains("Ticker")) {
-                    cleanCsv = "Date,Ticker,Price_Target,PEG_Ratio,Confidence,Reason\n" + cleanCsv;
+                    cleanCsv = "Date,Ticker,Action,Shares,Target_Price,Reason\n" + cleanCsv;
                 }
                 Files.writeString(Paths.get("C:\\Ciel Companion\\ciel\\finance", "recommendations.csv"), cleanCsv);
             }

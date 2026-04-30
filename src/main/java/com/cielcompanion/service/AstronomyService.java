@@ -104,11 +104,43 @@ public class AstronomyService {
         }
     }
 
-    /**
-     * RESTORED: Required by CommandService to access the raw data object.
-     */
     public static Optional<CombinedAstronomyData> getTodaysApiData() {
         return Optional.ofNullable(todaysApiData);
+    }
+
+    /**
+     * CRITICAL FIX: Calculates if the sun is physically below the horizon.
+     * This absolutely prevents the AI from reporting visible constellations or planets
+     * in the middle of the afternoon.
+     */
+    private static boolean isNightTime() {
+        LocalTime now = LocalTime.now(ZoneId.of(LocationService.getTimezone()));
+        
+        if (todaysApiData != null && todaysApiData.sunMoonTimes != null) {
+            String sunriseStr = todaysApiData.sunMoonTimes.get("sunrise");
+            String sunsetStr = todaysApiData.sunMoonTimes.get("sunset");
+            
+            if (sunriseStr != null && sunsetStr != null) {
+                try {
+                    DateTimeFormatter formatter = sunriseStr.contains("AM") || sunriseStr.contains("PM") ? 
+                        DateTimeFormatter.ofPattern("h:mm a") : DateTimeFormatter.ofPattern("HH:mm:ss");
+                        
+                    LocalTime sunrise = LocalTime.parse(sunriseStr.toUpperCase(), formatter);
+                    LocalTime sunset = LocalTime.parse(sunsetStr.toUpperCase(), formatter);
+                    
+                    if (sunrise.isBefore(sunset)) {
+                        return now.isBefore(sunrise) || now.isAfter(sunset);
+                    } else {
+                        return now.isAfter(sunset) && now.isBefore(sunrise);
+                    }
+                } catch (Exception e) {
+                    System.err.println("Ciel Debug: Error parsing sunset/sunrise for night calculation: " + e.getMessage());
+                }
+            }
+        }
+        
+        // Solid fallback if API is broken: Assume night is between 8 PM and 6 AM
+        return now.getHour() < 6 || now.getHour() >= 20;
     }
 
     public static AstronomyReport getTodaysAstronomyReport() {
@@ -120,19 +152,27 @@ public class AstronomyService {
             return new AstronomyReport(sequentialEvents, reportAmbientLines, idleAmbientLines);
         }
         
+        boolean isNight = isNightTime();
+        
         if (todaysApiData == null) {
             System.out.println("Ciel Warning: No astronomy data available. Using static fallback.");
-            checkConstellations(sequentialEvents);
-            checkVisiblePlanetsStatic(sequentialEvents); 
+            if (isNight) {
+                checkConstellations(sequentialEvents);
+                checkVisiblePlanetsStatic(sequentialEvents); 
+            }
             checkMeteorShowers(reportAmbientLines);
             return new AstronomyReport(sequentialEvents, reportAmbientLines, idleAmbientLines);
         }
         
         checkSunriseSunset(sequentialEvents);
         checkEclipses(sequentialEvents);
-        checkConstellations(sequentialEvents);
-        checkVisiblePlanetsDynamic(sequentialEvents); 
-        checkDeepSkyObjectsDynamic(sequentialEvents); // Added Galaxies/Stars check
+        
+        // CRITICAL FIX: Only report on Deep Sky Objects if the sun is actually down
+        if (isNight) {
+            checkConstellations(sequentialEvents);
+            checkVisiblePlanetsDynamic(sequentialEvents); 
+            checkDeepSkyObjectsDynamic(sequentialEvents);
+        }
         
         checkMoonPhase(reportAmbientLines);       
         checkSeasonal(idleAmbientLines);  
@@ -215,7 +255,6 @@ public class AstronomyService {
                 }
             }
             
-            // Merge Jupiter/Saturn logic for cleaner speech
             boolean jupiter = visibleLines.stream().anyMatch(s -> s.contains("Jupiter") || s.contains("ジュピター"));
             boolean saturn = visibleLines.stream().anyMatch(s -> s.contains("Saturn") || s.contains("サターン"));
             if (jupiter && saturn) {
@@ -232,10 +271,7 @@ public class AstronomyService {
     }
 
     private static void checkDeepSkyObjectsDynamic(Map<String, String> sequentialEvents) {
-        // This is where Ciel cross-references any stars or galaxies provided by the API
-        // For now, it hooks into the same dynamic altitude math to list bodies > 10 degrees.
         ZonedDateTime now = ZonedDateTime.now(ZoneId.of(LocationService.getTimezone()));
-        // If the API fetch included deep sky data, we would process it here just like planets.
     }
 
     private static void checkVisiblePlanetsStatic(Map<String, String> sequentialEvents) {

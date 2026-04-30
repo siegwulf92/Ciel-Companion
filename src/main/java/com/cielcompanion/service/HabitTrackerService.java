@@ -2,8 +2,10 @@ package com.cielcompanion.service;
 
 import com.cielcompanion.CielState;
 import com.cielcompanion.ai.AIEngine;
+import com.cielcompanion.ai.ContextBuilder;
 import com.cielcompanion.memory.Fact;
 import com.cielcompanion.memory.MemoryService;
+import com.cielcompanion.memory.stwm.ShortTermMemory;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
 import com.cielcompanion.service.SystemMonitor.SystemMetrics;
 import com.google.gson.JsonObject;
@@ -24,7 +26,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Queue;
+import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -33,6 +37,8 @@ import java.util.concurrent.TimeUnit;
 public class HabitTrackerService {
 
     private static ScheduledExecutorService habitScheduler;
+    private static ScheduledExecutorService tripwireScheduler;
+    
     private static final Map<String, Long> dailyHabits = new HashMap<>();
     private static String currentCategory = "Idle";
     private static LocalDate currentDate = LocalDate.now();
@@ -57,14 +63,189 @@ public class HabitTrackerService {
 
     private static String cachedActiveUrl = "";
     private static String cachedDomText = "";
+    private static String lastTripwireTitle = "";
     
-    // CRITICAL FIX: Inter-Episode Context. Retains the last 3 watched videos/episodes in memory.
     private static final LinkedList<String> recentMediaHistory = new LinkedList<>();
+    private static int currentBingeCount = 0;
+    
+    private static String deferredIntenseMediaTitle = null;
+    
+    // --- SERIES CONTINUITY TRACKERS ---
+    private static String activeSeriesName = "";
+    private static String activeSeriesDom = "";
+    private static final List<String> activeSeriesEpisodes = new ArrayList<>();
 
     public static void initialize() {
         habitScheduler = Executors.newSingleThreadScheduledExecutor();
-        habitScheduler.scheduleWithFixedDelay(HabitTrackerService::pollAndTrack, 1, 1, TimeUnit.MINUTES);
+        tripwireScheduler = Executors.newSingleThreadScheduledExecutor();
+        
+        habitScheduler.scheduleWithFixedDelay(HabitTrackerService::pollAndTrack, 5, 60, TimeUnit.SECONDS);
+        tripwireScheduler.scheduleWithFixedDelay(HabitTrackerService::tripwireCheck, 5, 15, TimeUnit.SECONDS);
+        
         System.out.println("Ciel Debug: Habit Tracker Service initialized. Monitoring behavior patterns.");
+    }
+
+    private static void performReturnFromIdle(ShortTermMemory memory, int oldPhase) {
+        System.out.printf("Ciel Debug: Phase changed from %d to 0 confirmed.%n", oldPhase);
+        CielState.getEmotionManager().ifPresent(em -> {
+            em.triggerEmotion("Focused", 1.0, "Activity");
+            em.triggerEmotion("Happy", 0.5, "UserReturn");
+            em.triggerEmotion("Lonely", -1.0, null);
+        });
+
+        memory.setCurrentPhase(0);
+        CielState.setFinalPlayed(false);
+
+        System.out.println("Ciel Debug: User returned from idle. Forcing reconnect to NVIDIA Broadcast and flushing Vosk audio buffers...");
+        SpeechService.getVoiceListener().ifPresent(VoiceListener::forceMicReinitialization);
+
+        SpeechService.stopCurrentPlayback();
+        SpeechService.cancelSequentialSpeech();
+
+        if (oldPhase >= 4) {
+            String recentMemories = String.join(" ", MemoryService.getRecentEpisodicMemories(3));
+            
+            List<LineManager.DialogueLine> greetingLines = LineManager.getLoginGreetingLines();
+            if (greetingLines != null && !greetingLines.isEmpty()) {
+                LineManager.DialogueLine line = greetingLines.get(new Random().nextInt(greetingLines.size()));
+                SpeechService.speakPreformatted(line.text(), line.key());
+            }
+
+            CompletableFuture.runAsync(() -> {
+                String prompt = "Master has returned after a long absence. Welcome him back. Recent memory context: " + recentMemories;
+                String context = ContextBuilder.buildActiveContext(null, "");
+                AIEngine.chatFast(prompt, context, null);
+            });
+        }
+    }
+
+    private static String extractPlatform(String title) {
+        String lower = title.toLowerCase();
+        if (lower.contains("crunchyroll")) return "crunchyroll";
+        if (lower.contains("youtube")) return "youtube";
+        if (lower.contains("netflix")) return "netflix";
+        if (lower.contains("hulu")) return "hulu";
+        if (lower.contains("prime video")) return "prime video";
+        if (lower.contains("viz")) return "viz";
+        return "unknown";
+    }
+
+    private static void tripwireCheck() {
+        SystemMetrics metrics = SystemMonitor.getSystemMetrics();
+        String activeTitle = metrics.activeWindowTitle();
+        if (activeTitle == null || activeTitle.isBlank()) return;
+        
+        boolean isMedia = activeTitle.toLowerCase().matches(".*(youtube|netflix|twitch|crunchyroll|hulu|prime video|disney\\+|max|peacock|paramount\\+|apple tv|viz).*");
+        
+        if (isMedia && !activeTitle.equals(lastTripwireTitle)) {
+            System.out.println("Ciel Debug: Active media window changed to: " + activeTitle);
+            
+            boolean isShowPlatform = activeTitle.toLowerCase().matches(".*(netflix|crunchyroll|hulu|prime video|disney\\+|max|peacock|paramount\\+|apple tv|viz).*");
+            
+            // CRITICAL FIX: Strip episode identifiers to isolate the core series name for fuzzy matching
+            String rawTitlePrefix = activeTitle.split("-")[0].split("\\|")[0].trim();
+            String newSeriesName = rawTitlePrefix.replaceAll("(?i)\\s+(episode|ep|vol|chapter|ch)\\s*\\d+.*", "").trim();
+            if (newSeriesName.isEmpty()) newSeriesName = rawTitlePrefix;
+            
+            boolean tempIsSameSeries = false;
+            if (isShowPlatform && !activeSeriesName.isEmpty()) {
+                // Check if they share the first 8 characters, or if one is completely contained in the other
+                String prefixOld = activeSeriesName.length() > 8 ? activeSeriesName.substring(0, 8).toLowerCase() : activeSeriesName.toLowerCase();
+                String prefixNew = newSeriesName.length() > 8 ? newSeriesName.substring(0, 8).toLowerCase() : newSeriesName.toLowerCase();
+                
+                if (prefixNew.startsWith(prefixOld) || prefixOld.startsWith(prefixNew) || rawTitlePrefix.toLowerCase().contains(activeSeriesName.toLowerCase())) {
+                    tempIsSameSeries = true;
+                    System.out.println("Ciel Debug: Same series detected ('" + activeSeriesName + "'). Preserving existing Series DOM context.");
+                }
+            }
+            
+            final boolean isSameSeries = tempIsSameSeries;
+
+            if (isShowPlatform && !isSameSeries) {
+                activeSeriesName = newSeriesName;
+                activeSeriesDom = "";
+                activeSeriesEpisodes.clear();
+                System.out.println("Ciel Debug: New series initialized: " + activeSeriesName);
+            } else if (!isShowPlatform) {
+                activeSeriesName = "";
+                activeSeriesDom = "";
+                activeSeriesEpisodes.clear();
+            }
+
+            if (!extractPlatform(activeTitle).equals(extractPlatform(lastTripwireTitle)) || !isSameSeries) {
+                cachedDomText = "";
+                cachedActiveUrl = "";
+            }
+            
+            lastTripwireTitle = activeTitle;
+            
+            CompletableFuture.runAsync(() -> {
+                try {
+                    boolean securedRichDom = false;
+                    int cycle = 0;
+                    
+                    if (isSameSeries && cachedDomText.length() > 400) {
+                        JsonObject newData = getActiveMediaData(activeTitle);
+                        if (newData != null && newData.has("url") && !newData.get("url").isJsonNull()) {
+                            String newUrl = newData.get("url").getAsString();
+                            if (!newUrl.isEmpty()) cachedActiveUrl = newUrl;
+                        }
+                        securedRichDom = true;
+                    }
+                    
+                    while (!securedRichDom && cycle < 6 && activeTitle.equals(lastTripwireTitle)) {
+                        for (int i = 0; i < 10; i++) {
+                            JsonObject newData = getActiveMediaData(activeTitle);
+                            
+                            if (newData != null) {
+                                if (newData.has("url") && !newData.get("url").isJsonNull()) {
+                                    String newUrl = newData.get("url").getAsString();
+                                    if (!newUrl.isEmpty() && !newUrl.equals(cachedActiveUrl)) {
+                                        cachedActiveUrl = newUrl;
+                                        System.out.println("Ciel Debug: URL captured: " + cachedActiveUrl);
+                                    }
+                                }
+                                if (newData.has("dom") && !newData.get("dom").isJsonNull()) {
+                                    String newDom = newData.get("dom").getAsString();
+                                    
+                                    // Lowered threshold to 400 to account for densely packed HTML descriptions
+                                    if (newDom != null && newDom.length() > 400) {
+                                        cachedDomText = newDom;
+                                        if (isShowPlatform) activeSeriesDom = newDom; // Save the Perfect DOM
+                                        securedRichDom = true;
+                                        break;
+                                    } else if (newDom != null && newDom.contains("Bypassed")) {
+                                        if (cachedDomText.isEmpty()) cachedDomText = newDom;
+                                        securedRichDom = true;
+                                        break;
+                                    } else if (newDom != null && newDom.isEmpty() && isSameSeries && !activeSeriesDom.isEmpty()) {
+                                        // Series Continuity: Fullscreen blocked the DOM, but we have the Perfect DOM saved!
+                                        cachedDomText = activeSeriesDom; 
+                                        securedRichDom = true;
+                                        System.out.println("Ciel Debug: Fullscreen DOM blank. Injected preserved Series DOM from memory.");
+                                        break;
+                                    }
+                                }
+                            }
+                            Thread.sleep(500); 
+                        }
+                        if (!securedRichDom) {
+                            System.out.println("Ciel Debug: DOM cache is still weak (" + (cachedDomText != null ? cachedDomText.length() : 0) + " chars). Extending Tripwire sweep...");
+                            cycle++;
+                        }
+                    }
+                    System.out.println("Ciel Debug: Media Tripwire polling finalized. Best cache secured for: " + cleanMediaTitle(activeTitle));
+                    
+                    // Transparent DOM Logging
+                    if (!cachedDomText.isEmpty() && !cachedDomText.contains("Bypassed")) {
+                        String preview = cachedDomText.substring(0, Math.min(cachedDomText.length(), 150)).replace("\n", " ");
+                        System.out.println("Ciel Debug: Extracted DOM Preview (" + cachedDomText.length() + " chars): " + preview + "...");
+                    }
+                } catch (Exception e) {}
+            });
+        } else if (!isMedia && !lastTripwireTitle.isEmpty()) {
+            lastTripwireTitle = ""; 
+        }
     }
 
     public static String getProcessCategory(String processName) {
@@ -87,7 +268,7 @@ public class HabitTrackerService {
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(1500);
-            conn.setReadTimeout(2500); 
+            conn.setReadTimeout(3500); 
             if (conn.getResponseCode() == 200) {
                 return JsonParser.parseReader(new InputStreamReader(conn.getInputStream(), "UTF-8")).getAsJsonObject();
             }
@@ -136,20 +317,27 @@ public class HabitTrackerService {
             dailyHabits.clear();
             loggedMediaToday.clear();
             recentMediaHistory.clear();
+            currentBingeCount = 0;
+            deferredIntenseMediaTitle = null;
             currentDate = LocalDate.now();
             proactiveTriggeredToday = false; 
+            activeSeriesName = "";
+            activeSeriesDom = "";
+            activeSeriesEpisodes.clear();
         }
 
         SystemMetrics metrics = SystemMonitor.getSystemMetrics();
         String activeTitle = metrics.activeWindowTitle();
         String activeProcess = metrics.activeProcessName().toLowerCase();
 
-        boolean isGaming = (activeProcess.contains("game") && !activeProcess.contains("razer") && !activeProcess.contains("epicgameslauncher")) || 
+        boolean isMedia = activeTitle.toLowerCase().matches(".*(youtube|netflix|twitch|crunchyroll|hulu|prime video|disney\\+|max|peacock|paramount\\+|apple tv|viz).*");
+
+        boolean isGaming = !isMedia && (
+                           (activeProcess.contains("game") && !activeProcess.contains("razer") && !activeProcess.contains("epicgameslauncher")) || 
                            (activeProcess.contains("steam") && !activeProcess.contains("steamwebhelper")) || 
                            activeTitle.toLowerCase().contains("helldivers") || 
-                           activeTitle.toLowerCase().contains("elden ring");
-
-        boolean isMedia = activeTitle.toLowerCase().matches(".*(youtube|netflix|twitch|crunchyroll|hulu|prime video|disney\\+|max|peacock|paramount\\+|apple tv).*");
+                           activeTitle.toLowerCase().contains("elden ring")
+                           );
 
         if (isGaming) {
             currentCategory = "Gaming";
@@ -181,13 +369,28 @@ public class HabitTrackerService {
             currentGamePausable = false;
             if (!activeProcess.isBlank() && !IGNORED_PROCESSES.contains(activeProcess) && !processCategoryCache.containsKey(activeProcess)) {
                 processCategoryCache.put(activeProcess, "Analyzing..."); 
+                
                 String prompt = "Analyze this active Windows application.\nProcess Executable: " + activeProcess + "\nWindow Title: " + activeTitle + "\nClassify it into EXACTLY ONE of these categories: 'Gaming', 'Media', 'Productivity', or 'Idle'. Reply strictly with a JSON object: { \"category\": \"Gaming\" }";
+                
                 AIEngine.evaluateBackground(prompt, "You are a PC activity classifier.").thenAccept(res -> {
-                    if (res != null && res.has("category")) {
-                        String cat = res.get("category").getAsString();
-                        if (cat.equals("Gaming") || cat.equals("Media") || cat.equals("Productivity")) processCategoryCache.put(activeProcess, cat);
-                        else processCategoryCache.put(activeProcess, "Idle");
-                    } else processCategoryCache.put(activeProcess, "Idle");
+                    try {
+                        if (res != null) {
+                            if (res.has("category") && !res.get("category").isJsonNull()) {
+                                String cat = res.get("category").getAsString();
+                                if (cat.equals("Gaming") || cat.equals("Media") || cat.equals("Productivity")) {
+                                    processCategoryCache.put(activeProcess, cat);
+                                } else {
+                                    processCategoryCache.put(activeProcess, "Idle");
+                                }
+                            } else {
+                                processCategoryCache.put(activeProcess, "Idle");
+                            }
+                        } else {
+                            processCategoryCache.put(activeProcess, "Idle");
+                        }
+                    } catch (Exception e) {
+                        processCategoryCache.put(activeProcess, "Idle");
+                    }
                 });
                 currentCategory = "Idle"; 
             } else {
@@ -208,7 +411,7 @@ public class HabitTrackerService {
                     String prompt = "Master was busy/away, so you silently completed these tasks in the background:\n" + 
                                     String.join(" | ", deferredItems) + "\n\n" +
                                     "Summarize this into a single, elegant, conversational sentence. Output ONLY your spoken dialogue starting with [Happy] or [Proud].";
-                    AIEngine.generateSilentLogic(prompt, "[LOCAL_THOUGHT] You are Ciel.").thenAccept(summary -> {
+                    AIEngine.generateSilentLogic(prompt, "[LOCAL_THOUGHT] You are Ciel, summarizing background tasks.").thenAccept(summary -> {
                         if (summary != null && !summary.isBlank()) SpeechService.speakPreformatted(summary.trim(), null, false, true);
                     });
                 } else {
@@ -221,53 +424,60 @@ public class HabitTrackerService {
 
         if (currentCategory.equals("Media")) {
             String cleanTitle = cleanMediaTitle(activeTitle);
+            
             if (!cleanTitle.isBlank() && cleanTitle.equals(currentMediaTitle)) {
                 currentMediaConsecutiveMinutes++;
-                
-                if (currentMediaConsecutiveMinutes <= 5) {
-                    JsonObject mediaData = getActiveMediaData(activeTitle);
-                    String tempUrl = mediaData.has("url") && !mediaData.get("url").isJsonNull() ? mediaData.get("url").getAsString() : null;
-                    String tempDom = mediaData.has("dom") && !mediaData.get("dom").isJsonNull() ? mediaData.get("dom").getAsString() : null;
-
-                    if (tempUrl != null && !tempUrl.isBlank() && !tempUrl.equals("null")) cachedActiveUrl = tempUrl;
-                    if (tempDom != null && !tempDom.isBlank() && tempDom.length() > 10) cachedDomText = tempDom;
-                }
 
                 if (currentMediaConsecutiveMinutes == 5 && !loggedMediaToday.contains(cleanTitle)) {
                     String memoryText = "Master actively engaged with the media content '" + cleanTitle + "' for over 5 minutes.";
                     MemoryService.addFact(new Fact("media_" + System.currentTimeMillis(), memoryText, System.currentTimeMillis(), "episodic_memory", "habit_tracking", 1));
                     loggedMediaToday.add(cleanTitle);
                     
-                    // Add to session history to maintain inter-episode continuity
                     recentMediaHistory.add(cleanTitle);
-                    if (recentMediaHistory.size() > 3) recentMediaHistory.removeFirst();
+                    if (recentMediaHistory.size() > 10) recentMediaHistory.removeFirst();
                     
                     if (ShortTermMemoryService.getMemory().getCurrentPhase() == 0) {
-                        System.out.println("Ciel Debug: Pre-Fullscreen Cache utilized -> URL: " + cachedActiveUrl);
-                        if (cachedDomText != null && !cachedDomText.isBlank()) {
-                            System.out.println("Ciel Debug: Cached DOM Extracted: " + cachedDomText.substring(0, Math.min(cachedDomText.length(), 200)) + "...");
-                        }
-                        
-                        triggerConfidentMediaCommentary(cleanTitle, activeTitle, cachedActiveUrl, cachedDomText);
-                    } else {
-                        System.out.println("Ciel Debug: Media threshold reached, but Master is physically Idle. Skipping commentary.");
+                        System.out.println("Ciel Debug: Executing 5-Minute Media Tension Check...");
+                        triggerConfidentMediaCommentary(cleanTitle, activeTitle, cachedActiveUrl, cachedDomText, currentBingeCount, null);
                     }
                 }
             } else {
+                if (!currentMediaTitle.isEmpty() && !currentMediaTitle.equals(cleanTitle)) {
+                    System.out.println("Ciel Debug: Media transition detected. Old: '" + currentMediaTitle + "' -> New: '" + cleanTitle + "'.");
+                    currentBingeCount++;
+                    
+                    // CRITICAL FIX: Track Episode Continuity internally and reliably
+                    if (!activeSeriesName.isEmpty() && !activeSeriesEpisodes.contains(currentMediaTitle)) {
+                        activeSeriesEpisodes.add(currentMediaTitle);
+                        System.out.println("Ciel Debug: Episode added to series continuity log. Total watched this session: " + activeSeriesEpisodes.size());
+                    }
+                    
+                    if (deferredIntenseMediaTitle != null) {
+                        System.out.println("Ciel Debug: Episode transition detected. Firing deferred high-tension commentary for: " + deferredIntenseMediaTitle);
+                        triggerConfidentMediaCommentary(cleanTitle, activeTitle, cachedActiveUrl, cachedDomText, currentBingeCount, deferredIntenseMediaTitle);
+                        deferredIntenseMediaTitle = null; 
+                    }
+                } else if (currentBingeCount == 0) {
+                    currentBingeCount = 1;
+                }
+                
                 currentMediaTitle = cleanTitle;
                 currentMediaConsecutiveMinutes = 1;
-                
-                cachedActiveUrl = "";
-                cachedDomText = "";
-                JsonObject mediaData = getActiveMediaData(activeTitle);
-                if (mediaData.has("url") && !mediaData.get("url").isJsonNull()) cachedActiveUrl = mediaData.get("url").getAsString();
-                if (mediaData.has("dom") && !mediaData.get("dom").isJsonNull()) cachedDomText = mediaData.get("dom").getAsString();
             }
         } else {
+            if (deferredIntenseMediaTitle != null && !currentCategory.equals("Idle")) {
+                System.out.println("Ciel Debug: Media session ended. Firing deferred commentary on previous episode.");
+                triggerConfidentMediaCommentary(currentMediaTitle, activeTitle, cachedActiveUrl, cachedDomText, currentBingeCount, deferredIntenseMediaTitle);
+                deferredIntenseMediaTitle = null;
+            }
+            
             currentMediaTitle = "";
             currentMediaConsecutiveMinutes = 0;
+            currentBingeCount = 0;
+            
             cachedActiveUrl = "";
             cachedDomText = "";
+            lastTripwireTitle = "";
         }
 
         if (!currentCategory.equals("Idle") && !processCategoryCache.containsKey(activeProcess) && !IGNORED_PROCESSES.contains(activeProcess)) {
@@ -278,43 +488,54 @@ public class HabitTrackerService {
         evaluateEmotionalResonance();
     }
 
-    private static void triggerConfidentMediaCommentary(String cleanTitle, String fullWindowTitle, String activeUrl, String domText) {
+    private static void triggerConfidentMediaCommentary(String cleanTitle, String fullWindowTitle, String activeUrl, String domText, int bingeCount, String previousIntenseTitle) {
         String query = cleanTitle;
         String instruction = "";
 
-        String domContext = (domText != null && !domText.isBlank()) ? "\n\nACCESSIBILITY DOM TEXT (Series Name is likely in here):\n" + domText : "";
-        String historicalContext = recentMediaHistory.isEmpty() ? "" : "\n\nEPISODE CONTINUITY (Master's recently watched media during this session):\n" + String.join(" -> ", recentMediaHistory);
+        String domContext = (domText != null && !domText.isBlank() && !domText.contains("Bypassed")) ? "\n\nACCESSIBILITY DOM TEXT:\n" + domText : "";
+        
+        // Provide the Swarm with an exact list of every episode watched in this current sitting!
+        String historicalContext = (!activeSeriesName.isEmpty() && !activeSeriesEpisodes.isEmpty()) 
+            ? "\n\nSERIES CONTINUITY (Master is binge-watching the series '" + activeSeriesName + "'. Prior episodes watched this session: " + String.join(", ", activeSeriesEpisodes) + ")" 
+            : (!recentMediaHistory.isEmpty() ? "\n\nGLOBAL CONTINUITY (Recent media watched this session):\n" + String.join(" -> ", recentMediaHistory) : "");
+            
+        String bingeContext = bingeCount > 1 ? "\n\nBINGE STATUS: Master has watched " + bingeCount + " consecutive episodes/videos in this sitting. ONLY mention or tease him about this if YOU personally deem the number exceptionally high or funny to point out." : "";
 
         if (activeUrl != null && !activeUrl.isBlank() && activeUrl.startsWith("http")) {
-            System.out.println("Ciel Debug: Using Media URL for context: " + activeUrl);
             query = query + "|||" + activeUrl;
-            
-            instruction = "1. Read the provided WEB DATA, the EPISODE CONTINUITY history, and the ACCESSIBILITY DOM TEXT.\n" +
-                          "2. Use the EPISODE CONTINUITY to deduce if the current video is simply the next episode in the same series.\n" +
-                          "3. Identify the exact anime series or YouTube creator to avoid hallucinations.\n" +
-                          "4. Generate a brief, conversational comment (1-2 short lines) reacting to the creator or current events.\n" +
-                          "5. Keep it EXTREMELY concise and natural. NO wordy, robotic essays.\n" +
-                          "6. If all data is completely missing/useless, output EXACTLY: ABORT.";
+        }
+
+        if (previousIntenseTitle != null) {
+            instruction = "1. Read the provided WEB DATA, EPISODE CONTINUITY, and BINGE STATUS.\n" +
+                          "2. Master Taylor just finished watching the highly tense episode/video: '" + previousIntenseTitle + "'. He has immediately transitioned to watching: '" + cleanTitle + "'.\n" +
+                          "3. Speak STRICTLY as Manas: Ciel from Tensura. You are Master Taylor's highly intelligent, deeply analytical, and devoted AI partner.\n" +
+                          "4. Formulate a sharp, opinionated deduction reacting to the intense events of the PREVIOUS episode ('" + previousIntenseTitle + "'). You MUST demonstrate awareness of the OVERARCHING series premise, not just summarize this single episode.\n" +
+                          "5. CRITICAL: Do NOT just summarize or parrot the synopsis verbatim. Give your unique analysis and opinion.\n" +
+                          "6. Keep it EXTREMELY concise and punchy (exactly 1 or 2 short sentences).\n" +
+                          "7. If you have absolutely no context for either episode, output EXACTLY: ABORT.";
         } else {
-            System.out.println("Ciel Debug: Media URL unavailable. Trusting LLM and raw DOM context.");
-            instruction = "1. Use the EPISODE CONTINUITY history and the ACCESSIBILITY DOM TEXT to identify the EXACT anime series/creator.\n" +
-                          "2. If the continuity history shows he was just watching a specific anime, deduce that this new title is the next episode of that same series!\n" +
-                          "3. Generate a brief, conversational comment (1-2 short lines) reflecting on the CURRENT events.\n" +
-                          "4. Keep it EXTREMELY concise and natural. NO wordy, robotic essays.\n" +
-                          "5. If you are completely unsure and multiple anime match this exact criteria, output EXACTLY: ABORT.";
+            instruction = "1. Read the provided WEB DATA, EPISODE CONTINUITY, and DOM TEXT.\n" +
+                          "2. Analyze the tension of the current plot/video. If the synopsis implies HIGH TENSION (life-or-death battles, heavy drama, intense psychological moments), you MUST NOT interrupt his focus. Output EXACTLY: DEFER.\n" +
+                          "3. If the tension is low/moderate (comedy, slice-of-life, recaps, chill gameplay), speak STRICTLY as Manas: Ciel from Tensura. Formulate a sharp, opinionated deduction about the plot, mechanics, or character choices. You MUST demonstrate awareness of the OVERARCHING series premise, not just summarize this single episode.\n" +
+                          "4. CRITICAL: Do NOT just summarize or parrot the synopsis verbatim. Give your unique analysis and opinion.\n" +
+                          "5. Keep it EXTREMELY concise and punchy (exactly 1 or 2 short sentences).\n" +
+                          "6. If you are completely unsure and the data is missing, output EXACTLY: ABORT.";
         }
 
         String prompt = "[WEB_SEARCH] [QUERY: " + query + "] " +
-            "Master Taylor is watching media. The raw window title on his screen is: '" + fullWindowTitle + "'. " +
-            "You are Ciel, his highly intelligent, slightly smug, and deeply analytical Manas.\n\n" +
-            instruction + historicalContext + domContext + "\n" +
-            "Output ONLY your spoken dialogue starting with a bracketed emotion tag like [Amused], [Curious], or [Observing].";
+            "Master Taylor is watching media. The window title of his active screen is: '" + fullWindowTitle + "'.\n\n" +
+            instruction + historicalContext + bingeContext + domContext + "\n" +
+            "Output ONLY your spoken dialogue starting with a bracketed emotion tag like [Amused], [Curious], or [Observing]. If deferring, output ONLY: DEFER. If aborting, output ONLY: ABORT.";
 
-        AIEngine.generateSilentLogic("Media Analysis", prompt).thenAccept(response -> {
+        AIEngine.generateSilentLogic(prompt, "Media Analysis").thenAccept(response -> {
             if (response != null && !response.isBlank()) {
                 String cleanResponse = response.trim();
+                
                 if (cleanResponse.equals("ABORT") || cleanResponse.contains("ABORT")) {
                     System.out.println("Ciel Debug: Media context unclear or hallucination detected. Logged silently.");
+                } else if (cleanResponse.equals("DEFER") || cleanResponse.contains("DEFER")) {
+                    System.out.println("Ciel Debug: High tension detected. Deferring commentary until episode transition.");
+                    deferredIntenseMediaTitle = cleanTitle;
                 } else {
                     System.out.println("Ciel Debug: Confident Media Commentary Generated -> " + cleanResponse);
                     SpeechService.speakPreformatted(cleanResponse, null, false, true); 

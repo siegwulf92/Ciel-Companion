@@ -125,12 +125,10 @@ public class CielCompanion {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("Ciel Companion shutting down...");
 
-            // CRITICAL FIX: Expanded from 5 to 50 memories to ensure comprehensive recording of all activities
             List<String> recentMemories = MemoryService.getRecentEpisodicMemories(50);
             String contextSummary = recentMemories.isEmpty() ? "No significant interactions recorded this session." : String.join("\n- ", recentMemories);
             boolean isReboot = !CielState.isPerformingColdShutdown();
             
-            // This blocking call will now be instantly routed to the fast Cloud model by OpenJarvis
             VaultService.generateSystemDiaryEntryBlocking(contextSummary, isReboot);
 
             if (isReboot) {
@@ -144,9 +142,18 @@ public class CielCompanion {
             if (scheduler != null) scheduler.shutdown();
             SpeechService.cleanup();
             
+            System.out.println("Ciel Debug: Initiating graceful Swarm shutdown (VRAM Purge)...");
+            killJarvis();
+            
+            // CRITICAL FIX: Enforce a 5-second VRAM Grace Period
+            // Ensures Python and LM Studio drop massive 100GB+ LLMs from the GPU 
+            // before Windows brutally axes the process tree, preventing "hanging" shutdowns!
+            try { Thread.sleep(5000); } catch (InterruptedException ignored) {} 
+            
             if (jarvisProcess != null && jarvisProcess.isAlive()) {
-                System.out.println("Ciel Debug: Shutting down background OpenJarvis server...");
-                try { Runtime.getRuntime().exec("taskkill /F /T /PID " + jarvisProcess.pid()); } catch (IOException e) { e.printStackTrace(); }
+                System.out.println("Ciel Debug: Swarm process lingering. Executing native JVM forceful termination.");
+                jarvisProcess.descendants().forEach(ProcessHandle::destroyForcibly);
+                jarvisProcess.destroyForcibly();
             }
             
             releaseInstanceLock();
@@ -208,7 +215,7 @@ public class CielCompanion {
                 
                 startTriggerListener(5555, COMMAND_TRIGGER_PASSPHRASE, () -> {
                     System.out.println("Ciel Debug: VoiceAttack Command Trigger received. Granting Privileged Mode.");
-                    com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, 1);
+                    com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
                     
                     String pendingTask = com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().getPendingSystemTask();
                     
@@ -328,12 +335,13 @@ public class CielCompanion {
         }
     }
 
-    private static void killJarvis() {
+    public static void killJarvis() {
         try {
+            System.out.println("Ciel Debug: Sending graceful shutdown signal to Swarm (VRAM Purge)...");
             java.net.HttpURLConnection connection = (java.net.HttpURLConnection) new java.net.URL("http://localhost:8000/shutdown").openConnection();
             connection.setRequestMethod("POST");
-            connection.setConnectTimeout(1000);
-            connection.setReadTimeout(1000);
+            connection.setConnectTimeout(1500);
+            connection.setReadTimeout(1500);
             connection.getResponseCode();
         } catch (Exception e) {}
     }

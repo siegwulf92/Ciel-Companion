@@ -1,5 +1,6 @@
 package com.cielcompanion.service;
 
+import com.cielcompanion.CielCompanion;
 import com.cielcompanion.CielState;
 import com.cielcompanion.memory.SpokenLine;
 import com.cielcompanion.memory.MemoryService;
@@ -50,7 +51,7 @@ public class CielController {
         int oldPhase = memory.getCurrentPhase();
         int newPhase = determinePhase(metrics.idleTimeMinutes(), memory.isInGamingSession());
 
-        // --- NEW: GAMING MUTE OVERRIDE ---
+        // --- GAMING MUTE OVERRIDE ---
         boolean isGaming = memory.isInGamingSession();
         boolean shouldBeMuted = metrics.isHardMuted() || metrics.isStreaming() || 
                                 (!isGaming && metrics.isPlayingMedia()) || 
@@ -103,6 +104,7 @@ public class CielController {
         memory.setCurrentPhase(0);
         CielState.setFinalPlayed(false);
 
+        System.out.println("Ciel Debug: Waking up from idle. Forcing reconnect to NVIDIA Broadcast and flushing Vosk audio buffers...");
         SpeechService.getVoiceListener().ifPresent(VoiceListener::forceMicReinitialization);
 
         SpeechService.stopCurrentPlayback();
@@ -110,6 +112,9 @@ public class CielController {
 
         if (oldPhase >= 4) {
             memory.setInPhase4Monologue(false);
+            // CRITICAL FIX: If the user wiggled their mouse to interrupt an idle logout,
+            // we must release the memory lock so she can write a new final diary later!
+            VaultService.resetFinalLogFlag(); 
             speakRandomLine(LineManager.getPhase4InterruptLines(), null, 1, false, false);
         } else {
             if (memory.isInGamingSession()) {
@@ -224,7 +229,6 @@ public class CielController {
             if (ShortTermMemoryService.getMemory().isInPhase4Monologue()) {
                 checkBlockersAndLogout();
             }
-            ShortTermMemoryService.getMemory().setInPhase4Monologue(false);
         });
     }
 
@@ -250,14 +254,21 @@ public class CielController {
     }
 
     private static void executeLogoutSequence() {
+        VaultService.generateSystemDiaryEntryBlocking("Master was idle for an extended period. Executing graceful OS logout to secure the environment.", false);
+        
         SpeechService.speakAnnoyed(LineManager.getLogoutWarningLine().text());
+        SpeechService.speakPreformatted("[Focused] Memory core successfully archived to the vault. No data will be lost. Triggering graceful OS logout in 30 seconds.");
+        
         try { Thread.sleep(30000); } catch (InterruptedException e) {} 
         
         if (!ShortTermMemoryService.getMemory().isInPhase4Monologue()) return;
 
         if (SystemMonitor.getSystemMetrics().idleTimeMinutes() >= Settings.getPhase4ThresholdMin()) {
-            System.out.println("Ciel Debug: Executing cleanup and shutdown.");
-            appLauncher.closeBrowsers();
+            System.out.println("Ciel Debug: Executing graceful logout.");
+            
+            CielCompanion.killJarvis();
+            try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
+            
             try { 
                 Runtime.getRuntime().exec("shutdown -l"); 
             } catch (IOException e) {

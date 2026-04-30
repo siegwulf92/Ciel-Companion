@@ -1,5 +1,6 @@
 package com.cielcompanion.service;
 
+import com.cielcompanion.CielCompanion;
 import com.cielcompanion.CielState;
 import com.cielcompanion.ai.AIEngine;
 import com.cielcompanion.ai.ContextBuilder;
@@ -100,7 +101,6 @@ public class CommandService {
     private void handleDynamicPcControl(CommandAnalysis analysis) {
         String query = analysis.entities().get("query");
         
-        // Check for VoiceAttack Authorization
         if (!com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
             System.out.println("Ciel Debug: Holding dynamic PC control request pending authorization.");
             com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPendingSystemTask(query);
@@ -108,7 +108,6 @@ public class CommandService {
             return;
         }
 
-        // If already authorized, build the skill immediately
         com.cielcompanion.service.SkillCrafterService.synthesizeNewSkill(query);
     }
 
@@ -121,17 +120,27 @@ public class CommandService {
     }
 
     public void handleCommand(String originalText, boolean hasWakeWord, Runnable onComplete) {
-        // NEW: Check if the command is critical. If it is, pierce the 'isBusy' lock!
+        if (originalText == null || originalText.isBlank()) {
+            if(onComplete != null) onComplete.run();
+            return;
+        }
+
+        System.out.printf("Ciel STT [Raw]: \"%s\"%n", originalText);
+
         CommandAnalysis preAnalysis = intentService.analyze(originalText);
+        String lowerText = originalText.toLowerCase();
+        
         boolean isCriticalOverride = (
             preAnalysis.intent() == Intent.INITIATE_REBOOT || 
             preAnalysis.intent() == Intent.INITIATE_SHUTDOWN || 
             preAnalysis.intent() == Intent.CANCEL_SHUTDOWN ||
-            preAnalysis.intent() == Intent.UPDATE_SYSTEM
+            preAnalysis.intent() == Intent.UPDATE_SYSTEM ||
+            lowerText.contains("update") || lowerText.contains("upgrade")
         );
 
         if (!isCriticalOverride) {
             if (!isBusy.compareAndSet(false, true)) {
+                System.out.println("Ciel Debug: Command dropped. AI is currently busy.");
                 if(onComplete != null) onComplete.run();
                 return;
             }
@@ -143,17 +152,13 @@ public class CommandService {
         commandExecutor.submit(() -> {
             boolean releaseBusySynchronously = true;
             try {
-                if (originalText == null || originalText.isBlank()) return;
-                
-                System.out.printf("Ciel STT [Raw]: \"%s\"%n", originalText);
-                
                 String activeText = originalText;
 
                 emotionManager.recordUserInteraction();
 
                 CommandAnalysis analysis = conversationService.checkForFollowUp(activeText);
                 if (analysis == null) {
-                    analysis = intentService.analyze(activeText);
+                    analysis = preAnalysis;
                 }
 
                 String speaker = analysis.entities().get("speaker");
@@ -166,8 +171,9 @@ public class CommandService {
                 boolean isPrivileged = ShortTermMemoryService.getMemory().isInPrivilegedMode();
                 boolean isDirectlyAddressed = hasWakeWord || isPrivileged;
 
-                // --- THE SEMANTIC ROUTER ---
-                if (analysis.intent() == Intent.UNKNOWN || analysis.intent() == Intent.SEARCH_WEB || analysis.intent() == Intent.DYNAMIC_PC_CONTROL) {
+                if (lowerText.contains("update") || lowerText.contains("upgrade")) {
+                    analysis = new CommandAnalysis(Intent.UPDATE_SYSTEM, new HashMap<>());
+                } else if (analysis.intent() == Intent.UNKNOWN || analysis.intent() == Intent.SEARCH_WEB || analysis.intent() == Intent.DYNAMIC_PC_CONTROL) {
                     
                     if (!isDirectlyAddressed) {
                         System.out.printf("Ciel STT [Background]: \"%s\"%n", activeText);
@@ -193,7 +199,6 @@ public class CommandService {
                         System.out.println("Ciel Debug: Routing deep analysis to Logic Core (Phi-4).");
                         String subject = semanticAnalysis.entities().get("query");
                         
-                        // Fetch the Obsidian-crawled lore using our new method
                         String loreData = loreService.getExpandedNoteContent(subject)
                                                       .orElse("No specific campaign notes found for: " + subject);
 
@@ -214,7 +219,11 @@ public class CommandService {
 
                 System.out.printf("Ciel STT: Command Matched [%s]: \"%s\"%n", analysis.intent(), activeText);
                 
-                if (analysis.intent() != Intent.EASTER_EGG) {
+                if (analysis.intent() != Intent.EASTER_EGG && 
+                    analysis.intent() != Intent.INITIATE_SHUTDOWN && 
+                    analysis.intent() != Intent.INITIATE_REBOOT && 
+                    analysis.intent() != Intent.CANCEL_SHUTDOWN &&
+                    analysis.intent() != Intent.UPDATE_SYSTEM) {
                     LineManager.getCommandConfirmationLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
                 }
 
@@ -272,9 +281,8 @@ public class CommandService {
                 return false;
                 
             case EXECUTE_SKILL: 
-                // UPGRADED: Extracts the inferred arguments out of the Semantic Router
                 String skillName = analysis.entities().get("query");
-                if (skillName == null || skillName.isBlank()) skillName = analysis.entities().get("skill"); // Fallback check
+                if (skillName == null || skillName.isBlank()) skillName = analysis.entities().get("skill");
                 String arguments = analysis.entities().get("arguments");
                 
                 com.cielcompanion.ai.SkillManager.executeSkill(skillName, arguments, () -> isBusy.set(false));
@@ -333,10 +341,6 @@ public class CommandService {
         }
     }
     
-    // ==========================================
-    // RAG AI HANDLERS (Returns False)
-    // ==========================================
-
     private boolean handleWeatherCommand(String userText) {
         if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
             String prompt = "The party is asking about the current weather. Invent a highly thematic, atmospheric description of the fantasy weather based on recent context.";
@@ -414,7 +418,6 @@ public class CommandService {
         String data = String.join(" ", linesToSpeak);
         if (data.isBlank()) data = "No significant daily events detected.";
         
-        // CRITICAL FIX: Inject the silent background financial data into the Daily Report
         String financeData = FinanceService.getDailyFinanceReport();
         if (financeData != null && !financeData.isBlank()) {
             data = data + "\n\n[FINANCIAL REPORT]\n" + financeData;
@@ -692,23 +695,27 @@ public class CommandService {
         boolean isReboot = "reboot".equals(commandType);
         CielState.setPerformingColdShutdown(!isReboot);
         
-        if (!isReboot) {
-            SpeechService.speakPreformatted(LineManager.getShutdownConfirmLine().text(), LineManager.getShutdownConfirmLine().key());
-        } else {
-            SpeechService.speakPreformatted(LineManager.getRebootConfirmLine().text(), LineManager.getRebootConfirmLine().key());
-        }
+        SpeechService.speakPreformatted("[Focused] Command authorized. Archiving active workflows and memory core to the vault now.");
         
-        String contextSummary = "The Master initiated a " + commandType + " sequence via voice command.";
-        
+        String contextSummary = "The Master initiated a " + commandType + " sequence via voice command. Please synthesize your final thoughts and next-cycle action plan.";
         VaultService.generateSystemDiaryEntryBlocking(contextSummary, isReboot);
+
+        SpeechService.speakPreformatted("[Proud] Memory core secured. All progress is safe. Triggering OS " + commandType + " in 30 seconds. You may cancel this sequence if needed.");
 
         shutdownScheduler = Executors.newSingleThreadScheduledExecutor();
         shutdownScheduler.schedule(() -> {
+            System.out.println("Ciel Debug: Flushing VRAM before OS Shutdown...");
+            CielCompanion.killJarvis(); 
+            
+            // CRITICAL FIX: Give LLM models 6 seconds to completely drop from GPU memory
+            // before Windows forcefully executes the shutdown command, preventing OS hangs!
+            try { Thread.sleep(6000); } catch (Exception ignored) {} 
+
             try {
                 String osCommand = ("shutdown".equals(commandType)) ? "shutdown -s -t 0" : "shutdown -r -t 0";
                 Runtime.getRuntime().exec(osCommand);
             } catch (IOException e) { e.printStackTrace(); }
-        }, 30, TimeUnit.SECONDS);
+        }, 30, TimeUnit.SECONDS); 
     }
 
     private void handleUpdateSelfCommand() {
@@ -718,22 +725,61 @@ public class CommandService {
         }
         
         CielState.setPerformingColdShutdown(true); 
-        SpeechService.speakPreformatted("[Focused] Initiating self-update protocol. I will save my memories to the vault and temporarily disconnect from the interface.");
+        SpeechService.speakPreformatted("[Focused] Update authorized. Archiving active workflows and memory core to the vault now.");
         
         String contextSummary = "The Master initiated a self-update sequence. I am shutting down my interface to assimilate new code, while leaving his PC running.";
         VaultService.generateSystemDiaryEntryBlocking(contextSummary, false);
 
+        SpeechService.speakPreformatted("[Proud] Memory core secured. All progress is safe. I will now disconnect, recompile my source code, and automatically relaunch myself.");
+
         shutdownScheduler = Executors.newSingleThreadScheduledExecutor();
         shutdownScheduler.schedule(() -> {
-            System.out.println("Ciel Debug: Self-update sequence complete. Exiting JVM.");
+            CielCompanion.killJarvis();
+            try { Thread.sleep(3000); } catch (Exception ignored) {}
+            
+            try {
+                File script = new File("C:\\Ciel Companion\\update_ciel.bat");
+                String batContent = "@echo off\n" +
+                                    "title Ciel Autonomous Re-Compiler\n" +
+                                    "echo [Ciel] Memory core detached. Waiting 10 seconds for JVM to fully exit...\n" +
+                                    "timeout /t 10 /nobreak\n" +
+                                    "cd /d \"C:\\Ciel Companion\"\n" +
+                                    "echo [Ciel] Initiating Maven Clean Package as requested by Master...\n" +
+                                    "call mvn clean package\n" +
+                                    "if %ERRORLEVEL% NEQ 0 (\n" +
+                                    "    echo.\n" +
+                                    "    echo ====================================================\n" +
+                                    "    echo [CIEL FATAL ERROR] Maven compilation failed!\n" +
+                                    "    echo The Swarm generated code with syntax errors.\n" +
+                                    "    echo Please review the output above to diagnose the issue.\n" +
+                                    "    echo ====================================================\n" +
+                                    "    pause\n" +
+                                    "    exit /b %ERRORLEVEL%\n" +
+                                    ")\n" +
+                                    "echo.\n" +
+                                    "echo [Ciel] Compilation successful. Relaunching Ciel Companion silently...\n" +
+                                    "echo Set objShell = WScript.CreateObject(\"WScript.Shell\") > launch_ciel.vbs\n" +
+                                    "echo objShell.Run \"cmd /c mvn exec:java -Dexec.mainClass=com.cielcompanion.CielCompanion\", 0, False >> launch_ciel.vbs\n" +
+                                    "cscript //nologo launch_ciel.vbs\n" +
+                                    "del launch_ciel.vbs\n" +
+                                    "exit";
+                Files.writeString(script.toPath(), batContent);
+                
+                Runtime.getRuntime().exec(new String[]{"cmd.exe", "/c", "start", "\"Ciel Updater\"", "\"" + script.getAbsolutePath() + "\""});
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            
+            System.out.println("Ciel Debug: Self-update sequence complete. Exiting JVM to allow recompilation.");
             System.exit(0);
-        }, 15, TimeUnit.SECONDS);
+        }, 25, TimeUnit.SECONDS);
     }
 
     private void handleCancelShutdownCommand() {
         if (shutdownScheduler != null && !shutdownScheduler.isShutdown()) {
             shutdownScheduler.shutdownNow();
-            SpeechService.speakPreformatted(LineManager.getCancelSuccessLine().text(), LineManager.getCancelSuccessLine().key());
+            VaultService.resetFinalLogFlag(); 
+            SpeechService.speakPreformatted("[Happy] Shutdown sequence aborted. Memory core locks released. I am standing by.");
         } else {
             SpeechService.speakPreformatted(LineManager.getCancelFailLine().text(), LineManager.getCancelFailLine().key());
         }
