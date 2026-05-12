@@ -61,7 +61,7 @@ public class RoutineService {
 
     private void handleStep(String step) {
         String[] parts = step.split(":", 2);
-        String action = parts[0];
+        String action = parts[0].toLowerCase();
         String value = (parts.length > 1) ? parts[1] : "";
 
         switch (action) {
@@ -70,6 +70,15 @@ public class RoutineService {
                 break;
             case "wait":
                 handleWaitAction(value);
+                break;
+            case "system":
+                if (value.equalsIgnoreCase("shutdown")) {
+                    CommandService.executeGracefulShutdown("shutdown");
+                } else if (value.equalsIgnoreCase("reboot")) {
+                    CommandService.executeGracefulShutdown("reboot");
+                } else if (value.equalsIgnoreCase("logout")) {
+                    CommandService.executeGracefulShutdown("logout");
+                }
                 break;
             default:
                 System.err.println("Ciel Warning: Unknown routine action: " + action);

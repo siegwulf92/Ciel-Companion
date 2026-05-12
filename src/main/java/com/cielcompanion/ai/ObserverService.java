@@ -36,6 +36,12 @@ public class ObserverService {
     // Fatigue threshold set to 2 hours
     private static final long FATIGUE_THRESHOLD_MS = 2 * 60 * 60 * 1000L;
 
+    // Quick truncator to stop massive JSON prompts from bloating the AI Context
+    private static String truncateLog(String text) {
+        if (text == null) return "";
+        return text.length() > 80 ? text.substring(0, 80) + "..." : text;
+    }
+
     public static void initialize() {
         if (!Settings.isAiObserverEnabled()) {
             System.out.println("Ciel Debug: AI Observer is disabled in settings.");
@@ -111,7 +117,7 @@ public class ObserverService {
                 long elapsedMs = System.currentTimeMillis() - appFocusStartTime;
                 if (elapsedMs > FATIGUE_THRESHOLD_MS && !hasWarnedForFatigue) { 
                     hasWarnedForFatigue = true;
-                    String warningData = "SYSTEM ALERT: The Master has been actively focused on the application '" + metrics.activeWindowTitle() + "' (" + activeApp + ") for over 2 hours straight without changing windows. Proactively suggest they take a brief break, hydrate, or check their posture.";
+                    String warningData = "SYSTEM ALERT: The Master has been actively focused on the application '" + truncateLog(metrics.activeWindowTitle()) + "' (" + activeApp + ") for over 2 hours straight without changing windows. Proactively suggest they take a brief break, hydrate, or check their posture.";
                     String context = ContextBuilder.buildObserverContext();
 
                     AIEngine.evaluateBackground(warningData, context).thenAccept(result -> {
@@ -151,7 +157,9 @@ public class ObserverService {
 
     private static void extractAndSpeak(String text) {
         String cleanText = text.trim();
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\[([a-zA-Z]+)\\]").matcher(cleanText);
+        
+        // CRITICAL FIX: The regex now catches spaces, hyphens, and multiple words so tags like [Proudly Analytical] are properly stripped!
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\[(.*?)\\]").matcher(cleanText);
         
         String emotion = null;
         while (matcher.find()) {
@@ -169,7 +177,6 @@ public class ObserverService {
         }
         
         if (!cleanText.isEmpty()) {
-            // FIX: Route through PhonoKana instead of speaking preformatted Japanese
             SpeechService.speak(cleanText);
         }
     }

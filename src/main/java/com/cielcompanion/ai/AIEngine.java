@@ -26,15 +26,15 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class AIEngine {
 
-    // Extended base connection timeout to 30 seconds
     private static final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(30))
+            .connectTimeout(Duration.ofHours(24))
             .build();
     private static final Gson gson = new Gson();
     private static final ExecutorService translationExecutor = Executors.newSingleThreadExecutor();
@@ -47,12 +47,18 @@ public class AIEngine {
     private static final LinkedList<JsonObject> conversationHistory = new LinkedList<>();
     private static final int MAX_HISTORY = 10; 
     
+    private static final AtomicInteger activeSwarmTasks = new AtomicInteger(0);
+    
     private static long lastInteractionTime = System.currentTimeMillis();
     private static ScheduledExecutorService memoryScheduler;
 
     static {
         memoryScheduler = Executors.newSingleThreadScheduledExecutor();
         memoryScheduler.scheduleWithFixedDelay(AIEngine::checkIdleMemoryDigestion, 60, 60, TimeUnit.SECONDS);
+    }
+    
+    public static int getActiveTaskCount() {
+        return activeSwarmTasks.get();
     }
 
     private static synchronized void addHistory(String role, String content) {
@@ -76,12 +82,9 @@ public class AIEngine {
     }
 
     public static void warmUpModels() {
-        System.out.println("Ciel Debug: Sending silent pings to force-load AI models into VRAM...");
+        System.out.println("Ciel Debug: Sending lightweight silent ping to wake local Translator...");
         CompletableFuture.runAsync(() -> {
             attemptTransliteration("Warmup ping."); 
-        });
-        CompletableFuture.runAsync(() -> {
-            generateSilentLogic("Warmup ping.", "System warmup."); 
         });
     }
 
@@ -101,14 +104,15 @@ public class AIEngine {
 
     public static String transliterateToKatakanaSync(String englishText) {
         try {
-            // Extended sync wait to 60 seconds
-            return transliterateAsync(englishText).get(60, TimeUnit.SECONDS); 
+            // --- CRITICAL FIX: Give Python time to cascade by raising Java's internal timeout ---
+            return transliterateAsync(englishText).get(150, TimeUnit.SECONDS); 
         } catch (Exception e) {
             return englishText; 
         }
     }
 
     private static String attemptTransliteration(String englishText) {
+        activeSwarmTasks.incrementAndGet();
         try {
             String url = "http://localhost:8000/transliterate";
             JsonObject payload = new JsonObject();
@@ -119,7 +123,8 @@ public class AIEngine {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
-                    .timeout(Duration.ofSeconds(60)) // Extended to 60s
+                    // --- CRITICAL FIX: Increased network timeout to match Katakana cascade loop ---
+                    .timeout(Duration.ofSeconds(150)) 
                     .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                     .build();
 
@@ -139,43 +144,46 @@ public class AIEngine {
             }
         } catch (Exception e) {
             System.err.println("Ciel Katakana Network Error: " + e.getMessage());
+        } finally {
+            activeSwarmTasks.decrementAndGet();
         }
         return null;
     }
 
     public static CommandAnalysis determineIntentSynchronously(String userMessage) {
-        String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
-        String knownSkills = SkillManager.getAvailableSkillsString();
-        
-        String systemContext = "You are the NLU intent router for Ciel. Analyze the user's STT text, correct phonetic typos, and map it to an intent.\n" +
-            "Available Intents:\n" +
-            "GET_WEATHER : Ask about current weather\n" +
-            "GET_TIME : Ask for time or date\n" +
-            "GET_SYSTEM_STATUS : Ask for PC CPU/RAM status\n" +
-            "SEARCH_WEB : User asks for real-world facts, current events, prices, or general internet knowledge.\n" +
-            "GET_DAILY_REPORT : User asks for a daily briefing, stock portfolio update, or morning report.\n" +
-            "EXECUTE_SKILL : User is asking to use a previously learned skill: [" + knownSkills + "]. The cleaned_text MUST be the exact name of the skill.\n" +
-            "DYNAMIC_PC_CONTROL : User asks to write a NEW script, automate a task, or manipulate PC settings NOT in the skills list.\n" +
-            "INITIATE_SHUTDOWN : User tells you to turn off, shut down, or power off the PC.\n" +
-            "INITIATE_REBOOT : User tells you to restart or reboot the PC.\n" +
-            "UPDATE_SYSTEM : User asks you to update yourself, shut yourself down, or exit the application.\n" +
-            "DND_ANALYZE_LORE : Deep lore analysis, world-building, or cross-referencing files (Tensura, D&D, etc). The 'arguments' field MUST contain a comma-separated list of the specific subjects/names to search for.\n" +
-            "UNKNOWN : General chat, questions, or conversation.\n\n" +
-            "MASTER'S PREFERENCES & INFERRED LOGIC:\n" +
-            "The Master prefers quantified outputs to be even numbers or multiples of 5. If the user gives a vague command, infer a logical target value based on these preferences and provide it in the 'arguments' field.\n\n" +
-            "Return strictly JSON: { \"intent\": \"THE_INTENT\", \"cleaned_text\": \"Corrected query or skill name\", \"arguments\": \"Inferred parameters separated by spaces, or empty string\" }";
-
-        JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, userMessage, false);
-        ensureLiteLlmProvider(payload);
-
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("Content-Type", "application/json")
-                .timeout(Duration.ofSeconds(60)) // Extended to 60s
-                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
-                .build();
-
+        activeSwarmTasks.incrementAndGet();
         try {
+            String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
+            String knownSkills = SkillManager.getAvailableSkillsString();
+            
+            String systemContext = "You are the NLU intent router for Ciel. Analyze the user's STT text, correct phonetic typos, and map it to an intent.\n" +
+                "Available Intents:\n" +
+                "GET_WEATHER : Ask about current weather\n" +
+                "GET_TIME : Ask for time or date\n" +
+                "GET_SYSTEM_STATUS : Ask for PC CPU/RAM status\n" +
+                "SEARCH_WEB : User asks for real-world facts, current events, prices, or general internet knowledge.\n" +
+                "GET_DAILY_REPORT : User asks for a daily briefing, stock portfolio update, or morning report.\n" +
+                "EXECUTE_SKILL : User is asking to use a previously learned skill: [" + knownSkills + "]. The cleaned_text MUST be the exact name of the skill.\n" +
+                "DYNAMIC_PC_CONTROL : User asks to write a NEW script, automate a task, or manipulate PC settings NOT in the skills list.\n" +
+                "INITIATE_SHUTDOWN : User tells you to turn off, shut down, or power off the PC.\n" +
+                "INITIATE_REBOOT : User tells you to restart or reboot the PC.\n" +
+                "UPDATE_SYSTEM : User asks you to update yourself, shut yourself down, or exit the application.\n" +
+                "DND_ANALYZE_LORE : Deep lore analysis, world-building, or cross-referencing files (Tensura, D&D, etc). The 'arguments' field MUST contain a comma-separated list of the specific subjects/names to search for.\n" +
+                "UNKNOWN : General chat, questions, or conversation.\n\n" +
+                "MASTER'S PREFERENCES & INFERRED LOGIC:\n" +
+                "The Master prefers quantified outputs to be even numbers or multiples of 5. If the user gives a vague command, infer a logical target value based on these preferences and provide it in the 'arguments' field.\n\n" +
+                "Return strictly JSON: { \"intent\": \"THE_INTENT\", \"cleaned_text\": \"Corrected query or skill name\", \"arguments\": \"Inferred parameters separated by spaces, or empty string\" }";
+
+            JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, userMessage, false);
+            ensureLiteLlmProvider(payload);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofSeconds(120))
+                    .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
+                    .build();
+
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() == 200) {
                 String content = ModelManager.extractMessageContent(response.body());
@@ -203,6 +211,8 @@ public class AIEngine {
             }
         } catch (Exception e) {
             System.err.println("Ciel Warning: Semantic routing failed. Falling back to UNKNOWN.");
+        } finally {
+            activeSwarmTasks.decrementAndGet();
         }
         
         Map<String, String> entities = new HashMap<>();
@@ -212,6 +222,7 @@ public class AIEngine {
     }
 
     public static CompletableFuture<String> generateSilentLogic(String userMessage, String systemContext) {
+        activeSwarmTasks.incrementAndGet();
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOGIC);
         JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.LOGIC, systemContext, userMessage, false);
         ensureLiteLlmProvider(payload);
@@ -219,7 +230,7 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofMinutes(5)) // Extended to 5 minutes
+                .timeout(Duration.ofHours(24))
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -230,22 +241,24 @@ public class AIEngine {
                         return rawContent != null ? THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim() : null;
                     }
                     return null;
-                });
+                })
+                .whenComplete((res, ex) -> activeSwarmTasks.decrementAndGet());
     }
 
     public static String generateDiaryEntrySync(String userMessage, String systemContext) {
-        String url = ModelManager.getUrlForTier(ModelManager.ModelTier.PERSONALITY);
-        JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.PERSONALITY, systemContext, userMessage, false);
-        ensureLiteLlmProvider(payload);
-
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("Content-Type", "application/json")
-                .timeout(Duration.ofMinutes(15)) // EXTENDED: 15 minutes for massive Swarm multi-agent loops
-                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
-                .build();
-
+        activeSwarmTasks.incrementAndGet();
         try {
+            String url = ModelManager.getUrlForTier(ModelManager.ModelTier.PERSONALITY);
+            JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.PERSONALITY, systemContext, userMessage, false);
+            ensureLiteLlmProvider(payload);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofHours(1))
+                    .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
+                    .build();
+
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() == 200) {
                 String rawContent = ModelManager.extractMessageContent(response.body());
@@ -253,6 +266,8 @@ public class AIEngine {
             }
         } catch (Exception e) {
             System.err.println("Ciel Error: Synchronous diary generation failed or timed out.");
+        } finally {
+            activeSwarmTasks.decrementAndGet();
         }
         return null;
     }
@@ -289,6 +304,7 @@ public class AIEngine {
     public static void chatFast(String userMessage, String systemContext, Runnable onComplete) {
         System.out.println("Ciel Debug: Routing to Personality Core (Streamed)...");
         
+        activeSwarmTasks.incrementAndGet();
         addHistory("user", userMessage);
         
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.PERSONALITY);
@@ -297,7 +313,7 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofMinutes(5)) // Extended to 5 minutes
+                .timeout(Duration.ofMinutes(15)) 
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -365,11 +381,13 @@ public class AIEngine {
                     return null;
                 })
                 .whenComplete((res, ex) -> {
+                    activeSwarmTasks.decrementAndGet();
                     if (!isFallbackTriggered.get() && onComplete != null) onComplete.run();
                 });
     }
 
     public static CompletableFuture<JsonObject> evaluateBackground(String transcriptBuffer, String systemContext) {
+        activeSwarmTasks.incrementAndGet();
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
         JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, "TRANSCRIPT:\n" + transcriptBuffer, false);
         ensureLiteLlmProvider(payload);
@@ -377,7 +395,7 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofMinutes(5)) // Extended to 5 minutes
+                .timeout(Duration.ofMinutes(15)) 
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -388,13 +406,15 @@ public class AIEngine {
                         return content != null ? JsonParser.parseString(content).getAsJsonObject() : null;
                     }
                     return null;
-                });
+                })
+                .whenComplete((res, ex) -> activeSwarmTasks.decrementAndGet());
     }
 
     public static void reasonDeeply(String userMessage, String systemContext, Runnable onComplete) {
         System.out.println("Ciel Debug: Routing to Primary Logic Core (DeepSeek)...");
         SpeechService.speakPreformatted("[Focused] Initiating deep cognitive analysis. Please stand by.");
 
+        activeSwarmTasks.incrementAndGet();
         addHistory("user", userMessage);
 
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOGIC);
@@ -403,7 +423,7 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofMinutes(5)) // Maintained at 5 minutes
+                .timeout(Duration.ofMinutes(15))
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -420,11 +440,13 @@ public class AIEngine {
                     System.err.println("Ciel AI Error: Primary Logic Core unreachable. Falling back to Local Phi-4.");
                     reasonDeeplyLocalFallback(userMessage, systemContext, onComplete);
                     return null;
-                });
+                })
+                .whenComplete((res, ex) -> activeSwarmTasks.decrementAndGet());
     }
 
     private static void reasonDeeplyLocalFallback(String userMessage, String systemContext, Runnable onComplete) {
         System.out.println("Ciel Debug: Routing to Local Fallback Logic Core (LM Studio: Phi-4)...");
+        activeSwarmTasks.incrementAndGet();
         
         String url = Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
         
@@ -450,7 +472,7 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofMinutes(5)) // Extended to 5 minutes
+                .timeout(Duration.ofMinutes(15))
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -467,7 +489,8 @@ public class AIEngine {
                     System.err.println("Ciel AI Error: Local Logic core timeout. Ensure LM Studio is running.");
                     triggerFallback(userMessage, systemContext, onComplete);
                     return null;
-                });
+                })
+                .whenComplete((res, ex) -> activeSwarmTasks.decrementAndGet());
     }
 
     private static void processLogicResponse(String responseBody, Runnable onComplete) {
@@ -492,6 +515,7 @@ public class AIEngine {
 
     private static void triggerFallback(String userMessage, String systemContext, Runnable onComplete) {
         System.out.println("Ciel Debug: Triggering final fallback core (LM Studio: Phi-4)...");
+        activeSwarmTasks.incrementAndGet();
         
         String url = Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
         
@@ -517,7 +541,7 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofMinutes(5)) // Extended to 5 minutes
+                .timeout(Duration.ofMinutes(15))
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -540,6 +564,7 @@ public class AIEngine {
                     }
                 })
                 .whenComplete((res, ex) -> {
+                    activeSwarmTasks.decrementAndGet();
                     if (onComplete != null) onComplete.run();
                 });
     }

@@ -9,8 +9,6 @@ import com.microsoft.cognitiveservices.speech.*;
 import com.microsoft.cognitiveservices.speech.audio.*;
 
 import javax.sound.sampled.*;
-import java.awt.Robot;
-import java.awt.event.KeyEvent;
 import java.io.File;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -25,6 +23,9 @@ public class AzureSpeechService {
     
     public static boolean isSimulatingKeystroke = false;
     public static long lastSimulatedInputTime = 0;
+    
+    // --- CRITICAL FLAG FOR SAPI ROUTING ---
+    public static volatile boolean isIntentionalCancellation = false;
     
     private static final String CACHE_DIR_PATH = "voice_cache";
     private static final String DND_CACHE_DIR_PATH = "dnd_voice_cache";
@@ -61,6 +62,7 @@ public class AzureSpeechService {
     }
     
     public static void stopAllAudio() {
+        isIntentionalCancellation = true;
         if (activeClip != null && activeClip.isRunning()) {
             activeClip.stop();
             activeClip.close();
@@ -74,52 +76,14 @@ public class AzureSpeechService {
         }
     }
 
-    private static String applyKatakanaTransliteration(String originalText, String langCode) {
-        if (!"ja-JP".equalsIgnoreCase(langCode)) return originalText;
-        if (!originalText.matches(".*[a-zA-Z].*")) return originalText; 
-
-        try {
-            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
-            
-            System.out.println("[Azure TTS] English text detected. Requesting Katakana transliteration from Swarm...");
-            URL url = new URL("http://localhost:8000/transliterate");
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("Content-Type", "application/json; utf-8");
-            conn.setRequestProperty("Accept", "application/json");
-            conn.setDoOutput(true);
-            conn.setConnectTimeout(10000); 
-            conn.setReadTimeout(180000);   
-
-            JsonObject jsonInput = new JsonObject();
-            jsonInput.addProperty("text", originalText);
-            
-            try(OutputStream os = conn.getOutputStream()) {
-                byte[] input = new Gson().toJson(jsonInput).getBytes(StandardCharsets.UTF_8);
-                os.write(input, 0, input.length);
-            }
-
-            if (conn.getResponseCode() == 200) {
-                JsonObject response = new Gson().fromJson(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8), JsonObject.class);
-                if (response != null && response.has("katakana")) {
-                    String katakana = response.get("katakana").getAsString();
-                    System.out.println("[Azure TTS] Transliteration success.");
-                    return katakana;
-                }
-            }
-        } catch (Exception e) {
-            System.err.println("[Azure TTS] Transliteration network error: " + e.getMessage());
-        }
-        
-        return originalText; 
-    }
-
     public static synchronized boolean speak(String text, String key, String style, String pitch) {
         return speak(text, key, style, pitch, "ja-JP");
     }
 
     public static synchronized boolean speak(String text, String key, String style, String pitch, String langCode) {
         if (!isInitialized) return false;
+        
+        isIntentionalCancellation = false;
 
         String safeStyle = (style == null || style.isBlank() || style.equalsIgnoreCase("default")) ? "default" : style;
         String safePitch = (pitch == null || pitch.isBlank()) ? "+0%" : pitch;
@@ -144,8 +108,7 @@ public class AzureSpeechService {
                 return false;
             }
 
-            String processedText = applyKatakanaTransliteration(text, safeLang);
-            return generateAndPlayFile(processedText, safeStyle, safePitch, safeLang, cachedFile, key);
+            return generateAndPlayFile(text, safeStyle, safePitch, safeLang, cachedFile, key);
             
         } else {
             long estimatedSeconds = (SpeechService.estimateSpeechDuration(text) / 1000) + 1;
@@ -153,8 +116,7 @@ public class AzureSpeechService {
                 return false;
             }
             
-            String processedText = applyKatakanaTransliteration(text, safeLang);
-            return streamDirectly(processedText, safeStyle, safePitch, safeLang, key);
+            return streamDirectly(text, safeStyle, safePitch, safeLang, key);
         }
     }
 
@@ -178,7 +140,11 @@ public class AzureSpeechService {
                 activeSynthesizer = null;
 
                 return playWav(destination, key);
-            } else {
+            } else if (result.getReason() == ResultReason.Canceled) {
+                SpeechSynthesisCancellationDetails cancellation = SpeechSynthesisCancellationDetails.fromResult(result);
+                if (cancellation.getReason() == CancellationReason.Error) {
+                    System.out.println("Ciel Error: Azure File Error: " + cancellation.getErrorDetails());
+                }
                 if (destination.exists()) destination.delete();
             }
             result.close();
@@ -190,12 +156,10 @@ public class AzureSpeechService {
                 activeSynthesizer = null;
             }
         }
-        return false;
+        return false; 
     }
 
     private static boolean streamDirectly(String text, String style, String pitch, String lang, String key) {
-        boolean mediaPaused = false;
-        boolean gamePaused = false;
         try {
             System.out.println("[Azure TTS] Streaming dynamic content: \"" + text + "\"");
             
@@ -203,30 +167,6 @@ public class AzureSpeechService {
             activeSynthesizer = new SpeechSynthesizer(config, audioConfig);
             String ssml = buildSsml(text, style, pitch, lang);
             
-            String currentCat = HabitTrackerService.getCurrentCategory();
-            boolean isAmbientLine = key != null && (key.toLowerCase().contains("phase") || key.toLowerCase().contains("return") || key.toLowerCase().contains("boot") || key.toLowerCase().contains("login"));
-            boolean isMasterPresent = ShortTermMemoryService.getMemory().getCurrentPhase() == 0;
-            
-            // CRITICAL FIX: Removed Spacebar logic, dynamically triggers OS-Level Media Playback Toggle to prevent conflicts
-            if ("Media".equals(currentCat) && !isAmbientLine && isMasterPresent) {
-                mediaPaused = true;
-                System.out.println("Ciel Debug: Auto-pausing media for synchronized speech.");
-                HabitTrackerService.toggleMediaPlayback();
-                Thread.sleep(400); 
-            } else if ("Gaming".equals(currentCat) && !isAmbientLine && isMasterPresent) {
-                if (HabitTrackerService.isCurrentGamePausable()) {
-                    gamePaused = true;
-                    System.out.println("Ciel Debug: Auto-pausing single-player game (ESC) for critical synchronized speech.");
-                    Robot robot = new Robot();
-                    isSimulatingKeystroke = true;
-                    lastSimulatedInputTime = System.currentTimeMillis();
-                    robot.keyPress(KeyEvent.VK_ESCAPE);
-                    robot.keyRelease(KeyEvent.VK_ESCAPE);
-                    Thread.sleep(600); 
-                    isSimulatingKeystroke = false;
-                }
-            }
-
             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
             
             SpeechSynthesisResult result = activeSynthesizer.SpeakSsml(ssml);
@@ -237,6 +177,14 @@ public class AzureSpeechService {
                 result.close();
                 return true;
             } else if (result.getReason() == ResultReason.Canceled) {
+                SpeechSynthesisCancellationDetails cancellation = SpeechSynthesisCancellationDetails.fromResult(result);
+                
+                // --- CRITICAL FIX: Gracefully bounce to SAPI if Azure rejects text for language mismatch! ---
+                if (!isIntentionalCancellation || cancellation.getReason() == CancellationReason.Error) {
+                    System.out.println("Ciel Warning: Azure Stream canceled internally (Likely language syntax rejection). Falling back to SAPI.");
+                    result.close();
+                    return false; 
+                }
                 System.out.println("Ciel Debug: Azure Speech stream intentionally canceled.");
                 result.close();
                 return true; 
@@ -248,13 +196,6 @@ public class AzureSpeechService {
             if (activeSynthesizer != null) {
                 activeSynthesizer.close();
                 activeSynthesizer = null;
-            }
-            if (mediaPaused) {
-                try {
-                    Thread.sleep(600); // Give the audio buffer time to close cleanly before unpausing
-                    System.out.println("Ciel Debug: Auto-unpausing media.");
-                    HabitTrackerService.toggleMediaPlayback();
-                } catch (Exception ignored) {}
             }
         }
         return false;
@@ -281,35 +222,11 @@ public class AzureSpeechService {
     }
 
     private static boolean playWav(File file, String key) {
-        boolean mediaPaused = false;
         try (javax.sound.sampled.AudioInputStream audioStream = AudioSystem.getAudioInputStream(file)) {
             DataLine.Info info = new DataLine.Info(Clip.class, audioStream.getFormat());
             Clip clip = (Clip) AudioSystem.getLine(info);
             activeClip = clip; 
             clip.open(audioStream);
-            
-            String currentCat = HabitTrackerService.getCurrentCategory();
-            boolean isAmbientLine = key != null && (key.toLowerCase().contains("phase") || key.toLowerCase().contains("return") || key.toLowerCase().contains("boot") || key.toLowerCase().contains("login"));
-            boolean isMasterPresent = ShortTermMemoryService.getMemory().getCurrentPhase() == 0;
-            
-            // CRITICAL FIX: Removed Spacebar logic, dynamically triggers OS-Level Media Playback Toggle to prevent conflicts
-            if ("Media".equals(currentCat) && !isAmbientLine && isMasterPresent) {
-                mediaPaused = true;
-                System.out.println("Ciel Debug: Auto-pausing media for synchronized speech.");
-                HabitTrackerService.toggleMediaPlayback();
-                Thread.sleep(400);
-            } else if ("Gaming".equals(currentCat) && !isAmbientLine && isMasterPresent) {
-                if (HabitTrackerService.isCurrentGamePausable()) {
-                    System.out.println("Ciel Debug: Auto-pausing single-player game (ESC) for critical synchronized speech.");
-                    Robot robot = new Robot();
-                    isSimulatingKeystroke = true;
-                    lastSimulatedInputTime = System.currentTimeMillis();
-                    robot.keyPress(KeyEvent.VK_ESCAPE);
-                    robot.keyRelease(KeyEvent.VK_ESCAPE);
-                    Thread.sleep(600);
-                    isSimulatingKeystroke = false;
-                }
-            }
             
             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
             
@@ -326,14 +243,6 @@ public class AzureSpeechService {
             return true; 
         } catch (Exception e) {
             return false;
-        } finally {
-            if (mediaPaused) {
-                try {
-                    Thread.sleep(600); // Give the audio buffer time to close cleanly before unpausing
-                    System.out.println("Ciel Debug: Auto-unpausing media.");
-                    HabitTrackerService.toggleMediaPlayback();
-                } catch (Exception ignored) {}
-            }
         }
     }
 }

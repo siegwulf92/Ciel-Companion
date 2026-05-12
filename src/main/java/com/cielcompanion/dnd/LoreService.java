@@ -73,6 +73,10 @@ public class LoreService {
 
     private boolean isMarkdownOrTxt(Path file) {
         String name = file.getFileName().toString().toLowerCase();
+        // Self-Healing Support: Ignore files being actively purged or 0-byte ghosts
+        try {
+            if (Files.size(file) < 5) return false;
+        } catch (Exception e) { return false; }
         return name.endsWith(".md") || name.endsWith(".txt");
     }
 

@@ -75,6 +75,12 @@ public class HabitTrackerService {
     private static String activeSeriesDom = "";
     private static final List<String> activeSeriesEpisodes = new ArrayList<>();
 
+    // Quick truncator to stop massive JSON prompts from bleeding into the Java terminal
+    private static String truncateLog(String text) {
+        if (text == null) return "null";
+        return text.length() > 80 ? text.substring(0, 80) + "..." : text;
+    }
+
     public static void initialize() {
         habitScheduler = Executors.newSingleThreadScheduledExecutor();
         tripwireScheduler = Executors.newSingleThreadScheduledExecutor();
@@ -127,6 +133,7 @@ public class HabitTrackerService {
         if (lower.contains("hulu")) return "hulu";
         if (lower.contains("prime video")) return "prime video";
         if (lower.contains("viz")) return "viz";
+        if (lower.contains("hidive")) return "hidive";
         return "unknown";
     }
 
@@ -135,12 +142,13 @@ public class HabitTrackerService {
         String activeTitle = metrics.activeWindowTitle();
         if (activeTitle == null || activeTitle.isBlank()) return;
         
-        boolean isMedia = activeTitle.toLowerCase().matches(".*(youtube|netflix|twitch|crunchyroll|hulu|prime video|disney\\+|max|peacock|paramount\\+|apple tv|viz).*");
+        // CRITICAL FIX: Enhanced Regex to capture fullscreen anime/manga tabs where the browser drops the suffix
+        boolean isMedia = activeTitle.matches("(?i).*( - youtube| - netflix| - twitch| - crunchyroll| - hulu| - prime video| - disney\\+| - max| - peacock| - paramount\\+| - apple tv|viz \\|| - viz| - hidive).*") || activeTitle.matches("(?i)^(watch |read ).*");
         
         if (isMedia && !activeTitle.equals(lastTripwireTitle)) {
-            System.out.println("Ciel Debug: Active media window changed to: " + activeTitle);
+            System.out.println("Ciel Debug: Active media window changed to: " + truncateLog(activeTitle));
             
-            boolean isShowPlatform = activeTitle.toLowerCase().matches(".*(netflix|crunchyroll|hulu|prime video|disney\\+|max|peacock|paramount\\+|apple tv|viz).*");
+            boolean isShowPlatform = activeTitle.matches("(?i).*( - netflix| - crunchyroll| - hulu| - prime video| - disney\\+| - max| - peacock| - paramount\\+| - apple tv|viz \\|| - viz| - hidive).*") || activeTitle.matches("(?i)^(watch |read ).*");
             
             // CRITICAL FIX: Strip episode identifiers to isolate the core series name for fuzzy matching
             String rawTitlePrefix = activeTitle.split("-")[0].split("\\|")[0].trim();
@@ -155,7 +163,7 @@ public class HabitTrackerService {
                 
                 if (prefixNew.startsWith(prefixOld) || prefixOld.startsWith(prefixNew) || rawTitlePrefix.toLowerCase().contains(activeSeriesName.toLowerCase())) {
                     tempIsSameSeries = true;
-                    System.out.println("Ciel Debug: Same series detected ('" + activeSeriesName + "'). Preserving existing Series DOM context.");
+                    System.out.println("Ciel Debug: Same series detected ('" + truncateLog(activeSeriesName) + "'). Preserving existing Series DOM context.");
                 }
             }
             
@@ -165,7 +173,7 @@ public class HabitTrackerService {
                 activeSeriesName = newSeriesName;
                 activeSeriesDom = "";
                 activeSeriesEpisodes.clear();
-                System.out.println("Ciel Debug: New series initialized: " + activeSeriesName);
+                System.out.println("Ciel Debug: New series initialized: " + truncateLog(activeSeriesName));
             } else if (!isShowPlatform) {
                 activeSeriesName = "";
                 activeSeriesDom = "";
@@ -202,7 +210,7 @@ public class HabitTrackerService {
                                     String newUrl = newData.get("url").getAsString();
                                     if (!newUrl.isEmpty() && !newUrl.equals(cachedActiveUrl)) {
                                         cachedActiveUrl = newUrl;
-                                        System.out.println("Ciel Debug: URL captured: " + cachedActiveUrl);
+                                        System.out.println("Ciel Debug: URL captured: " + (cachedActiveUrl.length() > 120 ? cachedActiveUrl.substring(0, 120) + "..." : cachedActiveUrl));
                                     }
                                 }
                                 if (newData.has("dom") && !newData.get("dom").isJsonNull()) {
@@ -234,7 +242,7 @@ public class HabitTrackerService {
                             cycle++;
                         }
                     }
-                    System.out.println("Ciel Debug: Media Tripwire polling finalized. Best cache secured for: " + cleanMediaTitle(activeTitle));
+                    System.out.println("Ciel Debug: Media Tripwire polling finalized. Best cache secured for: " + truncateLog(cleanMediaTitle(activeTitle)));
                     
                     // Transparent DOM Logging
                     if (!cachedDomText.isEmpty() && !cachedDomText.contains("Bypassed")) {
@@ -308,7 +316,7 @@ public class HabitTrackerService {
 
     private static String cleanMediaTitle(String rawTitle) {
         if (rawTitle == null) return "";
-        return rawTitle.replaceAll("(?i)\\s*-\\s*(youtube|twitch|netflix|hulu|crunchyroll|prime video|disney\\+|max|peacock|paramount\\+|apple tv|google chrome|mozilla firefox|microsoft edge|brave|opera).*", "").trim();
+        return rawTitle.replaceAll("(?i)\\s*-\\s*(youtube|twitch|netflix|hulu|crunchyroll|prime video|disney\\+|max|peacock|paramount\\+|apple tv|viz|hidive|google chrome|mozilla firefox|microsoft edge|brave|opera).*", "").trim();
     }
 
     private static void pollAndTrack() {
@@ -330,7 +338,8 @@ public class HabitTrackerService {
         String activeTitle = metrics.activeWindowTitle();
         String activeProcess = metrics.activeProcessName().toLowerCase();
 
-        boolean isMedia = activeTitle.toLowerCase().matches(".*(youtube|netflix|twitch|crunchyroll|hulu|prime video|disney\\+|max|peacock|paramount\\+|apple tv|viz).*");
+        // CRITICAL FIX: Enhanced Regex to capture fullscreen anime/manga tabs where the browser drops the suffix
+        boolean isMedia = activeTitle.matches("(?i).*( - youtube| - netflix| - twitch| - crunchyroll| - hulu| - prime video| - disney\\+| - max| - peacock| - paramount\\+| - apple tv|viz \\|| - viz| - hidive).*") || activeTitle.matches("(?i)^(watch |read ).*");
 
         boolean isGaming = !isMedia && (
                            (activeProcess.contains("game") && !activeProcess.contains("razer") && !activeProcess.contains("epicgameslauncher")) || 
@@ -443,7 +452,7 @@ public class HabitTrackerService {
                 }
             } else {
                 if (!currentMediaTitle.isEmpty() && !currentMediaTitle.equals(cleanTitle)) {
-                    System.out.println("Ciel Debug: Media transition detected. Old: '" + currentMediaTitle + "' -> New: '" + cleanTitle + "'.");
+                    System.out.println("Ciel Debug: Media transition detected. Old: '" + truncateLog(currentMediaTitle) + "' -> New: '" + truncateLog(cleanTitle) + "'.");
                     currentBingeCount++;
                     
                     // CRITICAL FIX: Track Episode Continuity internally and reliably
@@ -453,7 +462,7 @@ public class HabitTrackerService {
                     }
                     
                     if (deferredIntenseMediaTitle != null) {
-                        System.out.println("Ciel Debug: Episode transition detected. Firing deferred high-tension commentary for: " + deferredIntenseMediaTitle);
+                        System.out.println("Ciel Debug: Episode transition detected. Firing deferred high-tension commentary for: " + truncateLog(deferredIntenseMediaTitle));
                         triggerConfidentMediaCommentary(cleanTitle, activeTitle, cachedActiveUrl, cachedDomText, currentBingeCount, deferredIntenseMediaTitle);
                         deferredIntenseMediaTitle = null; 
                     }

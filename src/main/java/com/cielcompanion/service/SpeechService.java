@@ -1,15 +1,18 @@
 package com.cielcompanion.service;
 
 import com.cielcompanion.CielState;
+import com.cielcompanion.memory.SpokenLine;
+import com.cielcompanion.memory.MemoryService;
+import com.cielcompanion.memory.stwm.ShortTermMemory;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
 import com.cielcompanion.mood.Emotion;
 import com.cielcompanion.mood.MoodConfig;
 import com.cielcompanion.service.LineManager.DialogueLine;
+import com.cielcompanion.service.SystemMonitor.SystemMetrics;
 import com.cielcompanion.ui.CielGui;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
@@ -20,6 +23,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -27,7 +31,7 @@ import java.util.stream.Collectors;
 
 /**
  * Handles Text-to-Speech operations using Azure Cognitive Services.
- * INTEGRATED: Combines original logic with World Voice (Tensura) support,
+ * INTEGRATED: Universal Media Queuing, World Voice (Tensura) support,
  * dynamic emotion variance, and stuttering logic.
  */
 public class SpeechService {
@@ -37,13 +41,18 @@ public class SpeechService {
     private static volatile Future<?> currentSpeechTask = null; 
     private static final AtomicBoolean isActivelySpeaking = new AtomicBoolean(false);
     
-    // Unbreakable sequence termination flag
     private static volatile boolean sequenceCancelled = false;
     
     private static final AtomicReference<Process> activeProcess = new AtomicReference<>();
     
     private static VoiceListener voiceListener;
     private static final Random random = new Random();
+
+    // --- GLOBAL MEDIA MANAGER ---
+    private static final AtomicInteger speechQueueCount = new AtomicInteger(0);
+    private static volatile boolean mediaWasPausedForSpeech = false;
+    private static volatile boolean gameWasPausedForSpeech = false;
+    private static final Object pauseLock = new Object();
 
     public static void initialize(VoiceListener listener) {
         voiceListener = listener;
@@ -55,6 +64,78 @@ public class SpeechService {
         return Optional.ofNullable(voiceListener);
     }
     
+    // External exposure for CommandService termination waiting
+    public static boolean isActivelySpeaking() {
+        return isActivelySpeaking.get();
+    }
+    
+    // --- THE UNIFIED PAUSE PROTOCOL ---
+    private static void enqueueSpeech() {
+        synchronized(pauseLock) {
+            if (speechQueueCount.getAndIncrement() == 0) {
+                SystemMetrics metrics = SystemMonitor.getSystemMetrics();
+                ShortTermMemory memory = ShortTermMemoryService.getMemory();
+                String currentCategory = HabitTrackerService.getCurrentCategory();
+                
+                boolean isMediaActive = metrics.isPlayingMedia() || "Media".equalsIgnoreCase(currentCategory);
+                boolean isGamingActive = memory.isInGamingSession() || "Gaming".equalsIgnoreCase(currentCategory);
+                
+                if (isMediaActive && !isGamingActive) {
+                    System.out.println("Ciel Debug: Global Speech Queue active. Media detected. Suspending playback immediately.");
+                    mediaWasPausedForSpeech = true;
+                    HabitTrackerService.toggleMediaPlayback();
+                    try { Thread.sleep(400); } catch(Exception ignored) {}
+                }
+                
+                if (isGamingActive && HabitTrackerService.isCurrentGamePausable()) {
+                    System.out.println("Ciel Debug: Global Speech Queue active. Suspending game immediately.");
+                    gameWasPausedForSpeech = true;
+                    try {
+                        java.awt.Robot robot = new java.awt.Robot();
+                        AzureSpeechService.isSimulatingKeystroke = true;
+                        AzureSpeechService.lastSimulatedInputTime = System.currentTimeMillis();
+                        robot.keyPress(java.awt.event.KeyEvent.VK_ESCAPE);
+                        robot.keyRelease(java.awt.event.KeyEvent.VK_ESCAPE);
+                        Thread.sleep(600);
+                        AzureSpeechService.isSimulatingKeystroke = false;
+                    } catch (Exception ignored) {}
+                }
+            }
+        }
+    }
+
+    private static void dequeueSpeech() {
+        if (speechQueueCount.decrementAndGet() == 0) {
+            // Schedule unpause with a short delay to bridge rapid consecutive speak() calls smoothly
+            Executors.newSingleThreadScheduledExecutor().schedule(() -> {
+                synchronized(pauseLock) {
+                    if (speechQueueCount.get() == 0) {
+                        if (mediaWasPausedForSpeech) {
+                            System.out.println("Ciel Debug: Global Speech Queue empty. Restoring media playback.");
+                            mediaWasPausedForSpeech = false;
+                            HabitTrackerService.toggleMediaPlayback();
+                        }
+                        if (gameWasPausedForSpeech) {
+                            System.out.println("Ciel Debug: Global Speech Queue empty. Restoring game.");
+                            gameWasPausedForSpeech = false;
+                            try {
+                                java.awt.Robot robot = new java.awt.Robot();
+                                AzureSpeechService.isSimulatingKeystroke = true;
+                                AzureSpeechService.lastSimulatedInputTime = System.currentTimeMillis();
+                                robot.keyPress(java.awt.event.KeyEvent.VK_ESCAPE);
+                                robot.keyRelease(java.awt.event.KeyEvent.VK_ESCAPE);
+                                Thread.sleep(100);
+                                AzureSpeechService.isSimulatingKeystroke = false;
+                            } catch (Exception ignored) {}
+                        }
+                        // --- CRITICAL GUI FIX: Set GUI to IDLE only after the entire queue bridge resolves! ---
+                        CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
+                    }
+                }
+            }, 1500, TimeUnit.MILLISECONDS);
+        }
+    }
+
     public static void cancelSequentialSpeech() {
         sequenceCancelled = true;
         if (sequentialSpeechTask != null) {
@@ -72,7 +153,6 @@ public class SpeechService {
             p.destroyForcibly();
         }
         
-        // EXPLICIT HARDWARE KILL SWITCH
         if (AzureSpeechService.isAvailable()) {
             AzureSpeechService.stopAllAudio();
         }
@@ -165,39 +245,39 @@ public class SpeechService {
         final String finalCleanText = cleanText; 
         
         currentSpeechTask = speechExecutor.submit(() -> {
-            String textToSpeak = finalCleanText;
+            boolean hasEnqueued = false;
+            try {
+                String textToSpeak = finalCleanText;
 
-            if (CielVoiceManager.isLanguageLocked()) {
-                CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
-                textToSpeak = TranslationService.toJapanese(textToSpeak);
-                System.out.println("[Ciel World Voice]: Translated to: " + textToSpeak);
-            } 
-            else if (langCode.equals("en-US")) {
-                // English TTS, do nothing
-            }
-            else if (langCode.equals("ja-JP")) {
-                if (Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
-                    // GUI SYNC FIX: Explicitly signal she is processing/calculating before speaking!
+                // 1. Allow media to play while she thinks/translates
+                if (CielVoiceManager.isLanguageLocked()) {
                     CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
-                    
+                    textToSpeak = TranslationService.toJapanese(textToSpeak);
+                    System.out.println("[Ciel World Voice]: Translated to: " + textToSpeak);
+                } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                    CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
                     textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
-                    
-                    if (Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
-                        System.out.println("[Ciel Speech Fallback]: Translation failed. Speaking raw English text.");
-                    } else {
-                        System.out.println("[Ciel AI PhonoKana]: Translated to: " + textToSpeak);
-                    }
+                }
+
+                if ("Glitched".equals(finalAttitude) || "Concerned".equals(finalAttitude)) {
+                    textToSpeak = applyStutter(textToSpeak);
+                }
+
+                // 2. CRITICAL FIX: Lock the media exactly as the audio is prepared to fire!
+                enqueueSpeech();
+                hasEnqueued = true;
+
+                long estimatedDuration = estimateSpeechDuration(textToSpeak);
+                ShortTermMemoryService.getMemory().setSpeechEndTime(System.currentTimeMillis() + estimatedDuration);
+
+                // 3. Audio physically outputs to speakers
+                executeSpeechBlocking(textToSpeak, key, Settings.getTtsRate(), finalStyle, finalPitch, langCode);
+            } finally {
+                // 4. Cleanly release lock when finished
+                if (hasEnqueued) {
+                    dequeueSpeech();
                 }
             }
-
-            if ("Glitched".equals(finalAttitude) || "Concerned".equals(finalAttitude)) {
-                textToSpeak = applyStutter(textToSpeak);
-            }
-
-            long estimatedDuration = estimateSpeechDuration(textToSpeak);
-            ShortTermMemoryService.getMemory().setSpeechEndTime(System.currentTimeMillis() + estimatedDuration);
-
-            executeSpeechBlocking(textToSpeak, key, Settings.getTtsRate(), finalStyle, finalPitch, langCode);
         });
     }
     
@@ -230,19 +310,19 @@ public class SpeechService {
     }
     
     public static void speakSequentially(List<DialogueLine> lines, long delayMs, boolean preformatted, Runnable onComplete) {
-        if (lines == null || lines.isEmpty()) {
-            if (onComplete != null) onComplete.run();
-            return;
+        if (lines == null || lines.isEmpty()) { 
+            if (onComplete != null) onComplete.run(); 
+            return; 
         }
 
-        sequenceCancelled = false; // Reset the kill switch for the new sequence
+        sequenceCancelled = false;
 
         sequentialSpeechTask = speechExecutor.submit(() -> {
+            boolean hasEnqueued = false;
             try {
                 CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Curious", 0.7, "SequenceDialogue"));
                 for (int i = 0; i < lines.size(); i++) {
                     
-                    // CRITICAL FIX: Unbreakable volatile kill switch check
                     if (sequenceCancelled || Thread.currentThread().isInterrupted()) {
                         System.out.println("Ciel Debug: Sequential speech loop explicitly broken via flag.");
                         break; 
@@ -288,31 +368,27 @@ public class SpeechService {
 
                         String langCode = CielVoiceManager.getActiveLanguageCode();
                         
+                        // 1. Think & Translate first
                         if (CielVoiceManager.isLanguageLocked()) {
                             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
                             textToSpeak = TranslationService.toJapanese(textToSpeak);
-                        } 
-                        else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
-                            // GUI SYNC FIX: Explicitly signal she is processing/calculating before speaking!
+                        } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
                             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
-                            
                             textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
-                            
-                            if (Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
-                                System.out.println("[Ciel Speech Fallback]: Translation failed. Speaking raw English text.");
-                            } else {
-                                System.out.println("[Ciel AI PhonoKana (Seq)]: Translated to: " + textToSpeak);
-                            }
                         }
                          
-                         if ("Glitched".equals(attitude) || "Concerned".equals(attitude)) {
-                             textToSpeak = applyStutter(textToSpeak);
-                         }
+                        if ("Glitched".equals(attitude) || "Concerned".equals(attitude)) {
+                            textToSpeak = applyStutter(textToSpeak);
+                        }
 
-                        stopCurrentPlayback();
+                        // 2. Lock the media directly before the first sentence fires, and hold it
+                        if (!hasEnqueued) {
+                            enqueueSpeech();
+                            hasEnqueued = true;
+                        }
+
                         executeSpeechBlocking(textToSpeak, line.key(), Settings.getTtsRate(), style, pitch, langCode);
                         
-                        // Second Unbreakable check immediately after speech completes
                         if (sequenceCancelled || Thread.currentThread().isInterrupted()) {
                             System.out.println("Ciel Debug: Sequential speech loop explicitly broken via flag.");
                             break;
@@ -331,6 +407,9 @@ public class SpeechService {
             } catch (Exception e) {
                 Thread.currentThread().interrupt();
             } finally {
+                if (hasEnqueued) {
+                    dequeueSpeech();
+                }
                 if (onComplete != null) onComplete.run();
                 sequentialSpeechTask = null;
             }
@@ -347,9 +426,7 @@ public class SpeechService {
         try {
             if (voiceListener != null) voiceListener.setInternalMute(true);
             isActivelySpeaking.set(true);
-            
-            // GUI SYNC FIX: Removed the SPEAKING state trigger from here.
-            // It is now perfectly synced inside AzureSpeechService right as the audio fires.
+            AzureSpeechService.isIntentionalCancellation = false;
 
             boolean azureSuccess = false;
 
@@ -362,8 +439,8 @@ public class SpeechService {
                 }
             }
             
-            if (!azureSuccess) {
-                // If falling back to local SAPI, trigger the SPEAKING state now
+            // Only trigger SAPI if Azure failed, AND we didn't explicitly tell it to stop via VoiceAttack
+            if (!azureSuccess && !AzureSpeechService.isIntentionalCancellation) {
                 CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
                 
                 String targetVoice = Settings.getVoiceNameHint();
@@ -380,7 +457,6 @@ public class SpeechService {
                     activeProcess.set(p);
                     p.waitFor(15, TimeUnit.SECONDS); 
                 } catch (Exception e) {
-                    // Handle interruption 
                 } finally {
                     activeProcess.set(null);
                 }
@@ -388,7 +464,8 @@ public class SpeechService {
         } finally {
             isActivelySpeaking.set(false);
             if (voiceListener != null) voiceListener.setInternalMute(false);
-            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
+            // --- CRITICAL GUI FIX: The IDLE state is no longer forced here. 
+            // It is deferred to the 1500ms delay in dequeueSpeech() to prevent blipping! ---
         }
     }
 

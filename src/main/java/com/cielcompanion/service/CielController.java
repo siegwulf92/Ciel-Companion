@@ -17,6 +17,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class CielController {
@@ -29,6 +33,7 @@ public class CielController {
     private static final int REQUIRED_ACTIVE_TICKS_FOR_RETURN = 3;
 
     private static final AppLauncherService appLauncher = new AppLauncherService();
+    private static ScheduledExecutorService logoutScheduler;
 
     public static void checkAndSpeak() {
         long currentTime = System.currentTimeMillis();
@@ -51,14 +56,16 @@ public class CielController {
         int oldPhase = memory.getCurrentPhase();
         int newPhase = determinePhase(metrics.idleTimeMinutes(), memory.isInGamingSession());
 
-        // --- GAMING MUTE OVERRIDE ---
-        boolean isGaming = memory.isInGamingSession();
+        String currentCat = HabitTrackerService.getCurrentCategory();
+        boolean isGaming = memory.isInGamingSession() || "Gaming".equalsIgnoreCase(currentCat);
+        boolean isMedia = metrics.isPlayingMedia() || "Media".equalsIgnoreCase(currentCat);
+
         boolean shouldBeMuted = metrics.isHardMuted() || metrics.isStreaming() || 
-                                (!isGaming && metrics.isPlayingMedia()) || 
+                                (!isGaming && isMedia) || 
                                 (!isGaming && metrics.isInFullScreen() && !metrics.isBrowserActive());
 
         if (shouldBeMuted && !CielState.isLockedOut()) {
-            System.out.println("Ciel Debug: Muting. (Stream:" + metrics.isStreaming() + ", Media:" + metrics.isPlayingMedia() + ", FS:" + metrics.isInFullScreen() + ")");
+            System.out.println("Ciel Debug: Muting. (Stream:" + metrics.isStreaming() + ", Media:" + isMedia + ", FS:" + metrics.isInFullScreen() + ")");
             CielState.setLockedOut(true);
         } else if (!shouldBeMuted && CielState.isLockedOut()) {
             System.out.println("Ciel Debug: Unmuting. Media conditions cleared.");
@@ -112,9 +119,15 @@ public class CielController {
 
         if (oldPhase >= 4) {
             memory.setInPhase4Monologue(false);
-            // CRITICAL FIX: If the user wiggled their mouse to interrupt an idle logout,
-            // we must release the memory lock so she can write a new final diary later!
             VaultService.resetFinalLogFlag(); 
+            
+            if (logoutScheduler != null && !logoutScheduler.isShutdown()) {
+                logoutScheduler.shutdownNow();
+                System.out.println("Ciel Debug: Idle logout aborted via user return.");
+            }
+            
+            // Note: CRITICAL FIX. All manual pauseMediaIfPlaying() calls have been eradicated. 
+            // SpeechService handles it flawlessly in the background now.
             speakRandomLine(LineManager.getPhase4InterruptLines(), null, 1, false, false);
         } else {
             if (memory.isInGamingSession()) {
@@ -200,6 +213,8 @@ public class CielController {
                 List<String> linesToSpeak = new ArrayList<>(finalReport.sequentialEvents().values());
                 linesToSpeak.addAll(finalReport.reportAmbientLines()); 
 
+                HolidayService.getDailyReportAddition().ifPresent(linesToSpeak::add);
+
                 if (!linesToSpeak.isEmpty()) {
                     speakSpecialEventsSequentially(linesToSpeak, () -> speakSubsequentPhase1Chatter());
                 } else {
@@ -254,27 +269,59 @@ public class CielController {
     }
 
     private static void executeLogoutSequence() {
-        VaultService.generateSystemDiaryEntryBlocking("Master was idle for an extended period. Executing graceful OS logout to secure the environment.", false);
-        
-        SpeechService.speakAnnoyed(LineManager.getLogoutWarningLine().text());
-        SpeechService.speakPreformatted("[Focused] Memory core successfully archived to the vault. No data will be lost. Triggering graceful OS logout in 30 seconds.");
-        
-        try { Thread.sleep(30000); } catch (InterruptedException e) {} 
-        
         if (!ShortTermMemoryService.getMemory().isInPhase4Monologue()) return;
 
-        if (SystemMonitor.getSystemMetrics().idleTimeMinutes() >= Settings.getPhase4ThresholdMin()) {
-            System.out.println("Ciel Debug: Executing graceful logout.");
+        System.out.println("Ciel Debug: Initiating fast idle-logout sequence. Bypassing active tasks.");
+
+        SpeechService.speakPreformatted("[Focused] Idle limits exceeded. Securing memory core before environment termination.", "logout_init", false, true);
+
+        CompletableFuture.runAsync(() -> {
+            System.out.println("Ciel Debug: Writing final diary entry for idle logout...");
+            VaultService.generateSystemDiaryEntryBlocking("Master was idle for an extended period. Executing graceful OS logout to secure the environment.", false);
             
-            CielCompanion.killJarvis();
-            try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
-            
-            try { 
-                Runtime.getRuntime().exec("shutdown -l"); 
-            } catch (IOException e) {
-                e.printStackTrace();
+            if (!ShortTermMemoryService.getMemory().isInPhase4Monologue()) {
+                System.out.println("Ciel Debug: Logout interrupted during diary generation. Aborting.");
+                return;
             }
-        }
+
+            DialogueLine logoutLine = LineManager.getLogoutWarningLine();
+            if (logoutLine == null || logoutLine.text() == null || logoutLine.text().isBlank()) {
+                logoutLine = new DialogueLine("fallback_logout", "[Proud] メモリー コア セキュアード。 トリガリング オーエス ログアウト イン サーティー セカンズ。");
+            }
+            
+            SpeechService.speakPreformatted(logoutLine.text(), logoutLine.key(), false, false);
+            
+            System.out.println("Ciel Debug: Speech queued. Initiating 30-second internal termination timer for logout...");
+            logoutScheduler = Executors.newSingleThreadScheduledExecutor();
+
+            logoutScheduler.schedule(() -> {
+                System.out.println("Ciel Debug: 1s mark. Initiating graceful Swarm VRAM purge...");
+                CielCompanion.killJarvis();
+            }, 1, TimeUnit.SECONDS);
+
+            logoutScheduler.schedule(() -> {
+                System.out.println("Ciel Debug: 25s mark. Force-killing AI processes to prepare for clean OS logout...");
+                try {
+                    Runtime.getRuntime().exec("taskkill /F /IM ollama_llama_server.exe /T");
+                    Runtime.getRuntime().exec("taskkill /F /IM ollama.exe /T");
+                    Runtime.getRuntime().exec("taskkill /F /IM lmstudio-server.exe /T");
+                    Runtime.getRuntime().exec("taskkill /F /IM python.exe /T");
+                } catch (Exception ignored) {}
+            }, 25, TimeUnit.SECONDS);
+
+            logoutScheduler.schedule(() -> {
+                if (SystemMonitor.getSystemMetrics().idleTimeMinutes() >= Settings.getPhase4ThresholdMin() && ShortTermMemoryService.getMemory().isInPhase4Monologue()) {
+                    System.out.println("Ciel Debug: 30s mark. Executing OS logout command.");
+                    try {
+                        Runtime.getRuntime().exec("shutdown -l");
+                    } catch (IOException e) { e.printStackTrace(); }
+                    System.exit(0);
+                } else {
+                    System.out.println("Ciel Debug: 30s mark reached, but Phase 4 was interrupted. Aborting logout.");
+                }
+            }, 30, TimeUnit.SECONDS);
+        });
+
         CielState.setFinalPlayed(true);
     }
 
@@ -286,9 +333,9 @@ public class CielController {
         long currentTime = System.currentTimeMillis();
         if (CielState.getHighCpuSince() == 0) { CielState.setHighCpuSince(currentTime); return; }
         if (currentTime - CielState.getHighCpuSince() > CPU_ALERT_COOLDOWN_MS) {
-            LineManager.getCpuAlertLine().ifPresent(line -> 
-                SpeechService.speakPreformatted(line.text().replace("{cpu_load}", String.valueOf(metrics.cpuLoadPercent())))
-            );
+            LineManager.getCpuAlertLine().ifPresent(line -> {
+                SpeechService.speakPreformatted(line.text().replace("{cpu_load}", String.valueOf(metrics.cpuLoadPercent())));
+            });
             CielState.setHighCpuSince(0);
         }
     }
@@ -308,16 +355,55 @@ public class CielController {
                 CielState.setBootGreetingPlayed(true);
             } else if (!CielState.isLoginGreetingPlayed() && now >= startTime + (Settings.getLoginGreetingDelaySeconds() * 1000L)) {
                 speakRandomLine(LineManager.getLoginGreetingLines(), null, 1, false, false);
+                
+                HolidayService.getHolidayGreeting().ifPresent(greeting -> {
+                    SpeechService.speakPreformatted(greeting, null, false, false);
+                });
+                
                 CielState.setLoginGreetingPlayed(true);
             }
         }
     }
 
+    public static boolean handleDailyReportCommand(String userText) {
+        if (CielState.needsAstronomyApiFetch()) {
+            AstronomyService.performApiFetch();
+        }
+        AstronomyReport report = AstronomyService.getTodaysAstronomyReport();
+        List<String> linesToSpeak = new ArrayList<>();
+        
+        HolidayService.getDailyReportAddition().ifPresent(linesToSpeak::add);
+        
+        linesToSpeak.addAll(report.sequentialEvents().values());
+        linesToSpeak.addAll(report.reportAmbientLines());
+        
+        String data = String.join(" ", linesToSpeak);
+        if (data.isBlank()) data = "No significant daily events detected.";
+        
+        String financeData = FinanceService.getDailyFinanceReport();
+        if (financeData != null && !financeData.isBlank()) {
+            data = data + "\n\n[FINANCIAL REPORT]\n" + financeData;
+        }
+        
+        String context = com.cielcompanion.ai.ContextBuilder.buildActiveContext(null, userText) + 
+            "\n\n[SYSTEM DATA REPOSITORY]\n" + "Daily Report Data: " + data + 
+            "\n\nINSTRUCTION: Formulate a natural, conversational answer to the user's query using the SYSTEM DATA provided above.";
+        
+        ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
+        com.cielcompanion.ai.AIEngine.chatFast(userText, context, () -> {});
+        return false; 
+    }
+
     private static void logStatus(SystemMetrics metrics) {
         if (!Settings.isVerboseLoggingEnabled()) return;
-        String status = String.format("Idle:%dmin, Window:'%s'(%s), Stream:%b, Game:%b, Phase:%d",
+        String currentCat = HabitTrackerService.getCurrentCategory();
+        boolean isMedia = metrics.isPlayingMedia() || "Media".equalsIgnoreCase(currentCat);
+        boolean isGaming = ShortTermMemoryService.getMemory().isInGamingSession() || "Gaming".equalsIgnoreCase(currentCat);
+        
+        String status = String.format("Idle:%dmin, Window:'%s'(%s), Stream:%b, Game:%b, Media:%b, Phase:%d",
             metrics.idleTimeMinutes(), metrics.activeWindowTitle(), metrics.activeProcessName(), 
-            metrics.isStreaming(), ShortTermMemoryService.getMemory().isInGamingSession(), ShortTermMemoryService.getMemory().getCurrentPhase());
+            metrics.isStreaming(), isGaming, isMedia, ShortTermMemoryService.getMemory().getCurrentPhase());
+            
         if (!status.equals(CielState.getLastLoggedStatusString())) {
             System.out.println("Ciel Status: " + status);
             CielState.setLastLoggedStatusString(status);

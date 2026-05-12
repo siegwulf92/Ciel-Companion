@@ -123,7 +123,8 @@ public class SkillCrafterService {
                 finalName = nameMatcher.group(1).trim();
             }
 
-            Pattern pattern = Pattern.compile("```(bat|batch|python|py|cmd|powershell|ps1)\\s*(.*?)\\s*```", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+            // CRITICAL FIX: Added 'java' to the regex matcher to catch core modification requests
+            Pattern pattern = Pattern.compile("```(bat|batch|python|py|cmd|powershell|ps1|markdown|md|java)\\s*(.*?)\\s*```", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
             Matcher matcher = pattern.matcher(swarmOutput);
             
             if (matcher.find()) {
@@ -135,18 +136,50 @@ public class SkillCrafterService {
                     return false; 
                 }
 
+                // Detect if the Swarm is proposing an upgrade to an existing CORE file instead of making a new skill
+                boolean isDraftRequest = lang.contains("markdown") || lang.contains("md") || lang.contains("java") || originalTask.toLowerCase().contains("core system upgrade");
+
                 String extension = ".bat";
-                if (lang.contains("python") || lang.contains("py")) extension = ".py";
+                if (isDraftRequest) extension = ".md";
+                else if (lang.contains("python") || lang.contains("py")) extension = ".py";
                 else if (lang.contains("powershell") || lang.contains("ps1")) extension = ".ps1";
                 else if (lang.contains("bat") || lang.contains("batch") || lang.contains("cmd")) extension = ".bat";
                 
-                // CRITICAL FIX: We now use finalName (from the AI) instead of intendedName (from Java)
                 String safeName = finalName.replaceAll("[^a-zA-Z0-9_]", "_").toLowerCase().replaceAll("_+$", "");
                 
+                if (isDraftRequest && !safeName.startsWith("proposal_")) {
+                    safeName = "proposal_" + safeName;
+                }
+
                 String fileName = safeName + extension;
-                Path filePath = Paths.get(SKILLS_DIR, fileName);
+                Path filePath;
+                
+                if (isDraftRequest) {
+                    // CRITICAL FIX: Place in a subfolder so the VaultService Watcher doesn't instantly consume it
+                    Path draftsDir = Paths.get(System.getProperty("user.dir"), "ciel", "requests", "drafts");
+                    Files.createDirectories(draftsDir);
+                    filePath = draftsDir.resolve(fileName);
+                    
+                    // Format the code nicely for Master Taylor's review
+                    code = "# CORE UPGRADE PROPOSAL: " + finalName + "\n\n" +
+                           "> **STATUS:** PENDING MASTER REVIEW\n" +
+                           "> **INSTRUCTIONS:** Review the logic below. If approved, manually integrate the changes and recompile.\n\n" +
+                           "```" + lang + "\n" + code + "\n```";
+                } else {
+                    filePath = Paths.get(SKILLS_DIR, fileName);
+                }
                 
                 Files.writeString(filePath, code);
+
+                if (isDraftRequest) {
+                    System.out.println("Ciel Debug: Core System Upgrade Draft routed safely to quarantine folder: " + fileName);
+                    if (!isSilent) {
+                        SpeechService.speakPreformatted("[Proud] I have drafted a proposal for a core system upgrade. I have placed it in the requests/drafts folder for your review, Master.");
+                    } else {
+                        HabitTrackerService.queueNonCriticalAnnouncement("[Observing] I identified a potential architectural optimization. A draft proposal has been filed in your requests folder.", "Core Upgrade Proposal: " + safeName.replace("_", " "));
+                    }
+                    return true;
+                }
 
                 JsonObject meta = new JsonObject();
                 meta.addProperty("skill_name", safeName);
@@ -166,7 +199,6 @@ public class SkillCrafterService {
                     SpeechService.speakPreformatted("[Happy] The new skill has been successfully compiled and assimilated. You may execute it at your discretion.");
                 } else {
                     String friendlyName = safeName.replace("_", " ");
-                    // Queues the announcement instead of interrupting gameplay
                     HabitTrackerService.queueNonCriticalAnnouncement("[Proud] I have autonomously developed and assimilated a new system skill to improve your workflow: " + friendlyName + ".", "New Skill Synthesized: " + friendlyName);
                 }
 

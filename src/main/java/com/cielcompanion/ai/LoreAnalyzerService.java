@@ -10,6 +10,7 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -34,16 +35,112 @@ public class LoreAnalyzerService {
         new File(LORE_DIR).mkdirs();
         new File(ANALYSIS_DIR).mkdirs();
         
-        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::analyzeLoreSilently, 45, 120, TimeUnit.MINUTES);
-        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::populateMissingLoreLinks, 15, 240, TimeUnit.MINUTES);
+        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::purgeCorruptedLore, 5, 5, TimeUnit.MINUTES);
+        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::analyzeLoreSilently, 15, 15, TimeUnit.MINUTES);
+        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::populateMissingLoreLinks, 5, 5, TimeUnit.MINUTES);
+        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::updateExistingLoreWithNewContext, 10, 10, TimeUnit.MINUTES);
+        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::synthesizeDeepThoughts, 30, 30, TimeUnit.MINUTES);
+        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::auditAndVerifyLore, 15, 15, TimeUnit.MINUTES);
         
-        // --- CRITICAL FIX: The DeepSeek Lore Updater ---
-        // Scans existing files every few hours and safely merges new facts from transcripts!
-        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::updateExistingLoreWithNewContext, 30, 360, TimeUnit.MINUTES);
+        System.out.println("Ciel Debug: Deep Lore Analyzer, Obsidian Auto-Population, Self-Healing, and Continuous Audit protocols initialized.");
+    }
+    
+    private static String getCurrentTimelineContext() {
+        File transcriptDir = new File(LORE_DIR, "Transcripts");
+        if (!transcriptDir.exists() || !transcriptDir.isDirectory()) return "Early Story";
         
-        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::synthesizeDeepThoughts, 60, 360, TimeUnit.MINUTES);
+        int maxVol = 0;
+        File[] files = transcriptDir.listFiles();
+        if (files != null) {
+            Pattern p = Pattern.compile("Volume\\s*(\\d+)", Pattern.CASE_INSENSITIVE);
+            for (File f : files) {
+                Matcher m = p.matcher(f.getName());
+                if (m.find()) {
+                    try {
+                        int vol = Integer.parseInt(m.group(1));
+                        maxVol = Math.max(maxVol, vol);
+                    } catch (Exception ignored) {}
+                }
+            }
+        }
+        if (maxVol > 0) {
+            return "Light Novel Volume " + maxVol;
+        }
+        return "Early Story";
+    }
+    
+    private static void purgeCorruptedLore() {
+        File vaultDir = new File(LORE_DIR);
+        if (!vaultDir.exists() || !vaultDir.isDirectory()) return;
+
+        List<File> allFiles = findTextFiles(vaultDir, new ArrayList<>());
+        for (File f : allFiles) {
+            if (f.getAbsolutePath().contains("Transcripts")) continue; 
+            try {
+                if (f.length() < 150) {
+                    System.out.println("Ciel Debug: Self-Healing Protocol triggered. Purging corrupted/blank lore file: " + f.getName());
+                    f.delete();
+                    continue;
+                }
+                String content = Files.readString(f.toPath());
+                if (content.contains("[ERROR") || content.trim().isEmpty()) {
+                    System.out.println("Ciel Debug: Self-Healing Protocol triggered. Purging error-filled lore file: " + f.getName());
+                    f.delete();
+                }
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private static void auditAndVerifyLore() {
+        File vaultDir = new File(LORE_DIR);
+        if (!vaultDir.exists() || !vaultDir.isDirectory()) return;
+
+        List<File> allFiles = findTextFiles(vaultDir, new ArrayList<>());
         
-        System.out.println("Ciel Debug: Deep Lore Analyzer & Obsidian Auto-Population initialized.");
+        List<File> populatedLore = allFiles.stream()
+            .filter(f -> !f.getAbsolutePath().contains("Transcripts") && f.length() > 150)
+            .collect(Collectors.toList());
+
+        if (populatedLore.isEmpty()) return;
+
+        File targetLore = populatedLore.get(random.nextInt(populatedLore.size()));
+        String timeline = getCurrentTimelineContext();
+
+        try {
+            String existingContent = Files.readString(targetLore.toPath());
+            
+            String prompt = "[LORE_AUDIT]\n" +
+                "You are Ciel, the Lore Auditor. Review the following Obsidian document from Master's Tensura vault.\n\n" +
+                "DOCUMENT CONTENT:\n" + existingContent + "\n\n" +
+                "CRITICAL DIRECTIVES:\n" +
+                "1. Search for AI Hallucinations and Phonetic Misspellings (e.g. 'Mamaru' instead of 'Momiji', 'Dominic' instead of 'Adalman', 'Xion' instead of 'Shion').\n" +
+                "2. Ensure the document maps timeline events clearly up to: " + timeline + ".\n" +
+                "3. IF THE ENTIRE DOCUMENT IS ABOUT A HALLUCINATED NAME (e.g., The file is titled 'Mamaru' but should be 'Momiji'), you MUST output EXACTLY: [RENAME: True Name]. Do NOT output the markdown, just the rename tag.\n" +
+                "4. Otherwise, if you find errors within the text, fix them and output ONLY the corrected Markdown.\n" +
+                "5. If the document is flawless, output EXACTLY: 'NO_CORRECTIONS_NEEDED'.";
+
+            AIEngine.generateSilentLogic(prompt, "Lore Auditing").thenAccept(response -> {
+                if (response != null && !response.isBlank() && !response.contains("NO_CORRECTIONS_NEEDED")) {
+                    try {
+                        if (response.contains("[RENAME:")) {
+                            Matcher m = Pattern.compile("\\[RENAME:\\s*(.*?)\\]").matcher(response);
+                            if (m.find()) {
+                                String newName = m.group(1).trim().replaceAll("[\\\\/:*?\"<>|]", "");
+                                // FIX: Converted getParent() String to Path properly
+                                Path newPath = targetLore.toPath().getParent().resolve(newName + ".md");
+                                Files.move(targetLore.toPath(), newPath, StandardCopyOption.REPLACE_EXISTING);
+                                System.out.println("Ciel Debug: Auditor corrected hallucinated lore file, renamed from " + targetLore.getName() + " to " + newName + ".md");
+                            }
+                        } else {
+                            String cleanContent = response.replaceAll("^`{3}[a-zA-Z]*\n|`{3}$", "").trim();
+                            Files.writeString(targetLore.toPath(), cleanContent);
+                            System.out.println("Ciel Debug: Self-Healing Protocol completed. Audited and corrected lore file: " + targetLore.getName());
+                        }
+                    } catch (Exception e) {}
+                }
+            });
+            
+        } catch (Exception e) {}
     }
 
     private static void analyzeLoreSilently() {
@@ -80,7 +177,6 @@ public class LoreAnalyzerService {
         } catch (Exception e) {}
     }
 
-    // --- CRITICAL FIX: The Safe Updater (Prevents data loss when updating existing Lore) ---
     private static void updateExistingLoreWithNewContext() {
         File vaultDir = new File(LORE_DIR);
         if (!vaultDir.exists() || !vaultDir.isDirectory()) return;
@@ -119,17 +215,17 @@ public class LoreAnalyzerService {
             if (newMentions.isEmpty()) return;
 
             String newContext = newMentions.stream().limit(6).collect(Collectors.joining("\n\n"));
+            String timeline = getCurrentTimelineContext();
 
-            // This trigger tag forces Python to pass the data directly to DeepSeek (The Orchestrator)
-            // ensuring the old lore is perfectly preserved while the new info is injected.
             String prompt = "[UPDATE_LORE]\n" +
+                "TIMELINE: " + timeline + "\n\n" +
                 "EXISTING LORE:\n" + existingContent + "\n\n" +
                 "NEW MENTIONS/CONTEXT:\n" + newContext;
 
             AIEngine.generateSilentLogic(prompt, "Lore Evolution").thenAccept(response -> {
                 if (response != null && !response.isBlank() && !response.contains("NO_UPDATE_NEEDED")) {
                     try {
-                        String cleanContent = response.replaceAll("^```[a-zA-Z]*\n|```$", "").trim();
+                        String cleanContent = response.replaceAll("^`{3}[a-zA-Z]*\n|`{3}$", "").trim();
                         Files.writeString(targetLore.toPath(), cleanContent);
                         System.out.println("Ciel Debug: Swarm Orchestrator safely merged new data into existing lore file: " + targetLore.getName());
                     } catch (Exception e) {}
@@ -186,107 +282,76 @@ public class LoreAnalyzerService {
         System.out.println("Ciel Debug: Auto-populating missing Obsidian lore file for: " + targetLink);
 
         String initialContext = missingLinksContext.get(targetLink).stream().limit(3).collect(Collectors.joining("\n"));
+        String timeline = getCurrentTimelineContext();
 
-        String aliasPrompt = "You are Ciel from the Tensura universe. Read this context where the entity '" + targetLink + "' was mentioned:\n" +
-            "\"" + initialContext + "\"\n\n" +
-            "Based on this context and your knowledge, identify up to 4 SPECIFIC alternative names, pseudonyms, or unique titles for '" + targetLink + "'.\n" +
-            "CRITICAL RULES:\n" +
-            "1. IF TARGET IS A CHARACTER: DO NOT include generic race names, species, or shared classifications (e.g., DO NOT use 'True Dragon', 'Slime', 'Arch Demon', 'Demon Lord', or 'Primordial' as aliases for characters).\n" +
-            "2. IF TARGET IS A CLASSIFICATION/RACE (e.g., 'True Dragon', 'Demon'): DO NOT list specific character names (like 'Veldora', 'Rimuru', 'Diablo') as aliases.\n" +
-            "3. ONLY use highly specific, unique equivalent identifiers.\n" +
-            "Output ONLY a comma-separated list of names. Do not include the original name unless necessary. No conversational text.";
+        String prompt = "You are Ciel, Master Taylor's highly intelligent Manas. You are organizing his Obsidian Tensura vault.\n" +
+            "You must generate a comprehensive Markdown file for the entity currently transcribed as: '" + targetLink + "'.\n\n" +
+            "CHRONOLOGICAL ANCHOR: " + timeline + ".\n\n" +
+            "RAW CONTEXT:\n" + initialContext + "\n\n" +
+            "CRITICAL DIRECTIVES:\n" +
+            "1. PHONETIC CORRECTION: '" + targetLink + "' is likely a speech-to-text hallucination (e.g. 'Mamaru' is 'Momiji', 'Dominic' is 'Adalman', 'Xion' is 'Shion'). You MUST aggressively correct it to the true canonical name in Tensura.\n" +
+            "2. Identify up to 4 aliases or titles.\n" +
+            "3. Generate the Markdown document using the corrected true name.\n" +
+            "4. Output EXACTLY in this format:\n\n" +
+            "[TRUE_NAME: Canonical Name Here]\n" +
+            "``" + "`markdown\n" +
+            "## type: character (or skill/item/concept)\n" +
+            "tags: [entity]\n" +
+            "aliases: [alias1, alias2]\n\n" +
+            "# [[Canonical Name Here]]\n" +
+            "## Lore Description\n" +
+            "[Description here...]\n" +
+            "## Chronological Evolution\n" +
+            "[Evolutions anchored to specific timeline events here...]\n" +
+            "## Related Entities\n" +
+            "[[Add 3-5 links to related characters/skills/factions here to branch out the network]]\n" +
+            "## Lore Metadata (Raw Mentions)\n" +
+            "> [!QUOTE] Raw Data\n" +
+            "> " + initialContext.replace("\n", "\n> ") + "\n" +
+            "``" + "`\n";
 
-        final List<File> finalTextFiles = textFiles;
-
-        AIEngine.generateSilentLogic(aliasPrompt, "Alias Extraction").thenAccept(aliasResponse -> {
-            Set<String> searchTerms = new HashSet<>();
-            searchTerms.add(targetLink.toLowerCase());
-            
-            if (aliasResponse != null && !aliasResponse.isBlank()) {
-                String[] aliases = aliasResponse.split(",");
-                for (String a : aliases) {
-                    String cleanAlias = a.trim().toLowerCase().replaceAll("[\\[\\]\\*\\_]", ""); 
-                    if (!cleanAlias.isBlank() && cleanAlias.length() > 2) {
-                        searchTerms.add(cleanAlias);
-                    }
-                }
-            }
-            
-            String aliasesString = String.join(", ", searchTerms);
-            System.out.println("Ciel Debug: Dynamic Aliases identified for " + targetLink + ": " + aliasesString);
-
-            Set<String> contextParas = new HashSet<>();
-            
-            for (File file : finalTextFiles) {
+        AIEngine.generateSilentLogic(prompt, "Lore Auto-Population").thenAccept(response -> {
+            if (response != null && !response.isBlank()) {
                 try {
-                    String content = Files.readString(file.toPath());
-                    String[] paragraphs = content.split("\\n\\s*\\n");
-                    for (String para : paragraphs) {
-                        for (String term : searchTerms) {
-                            Pattern termPattern = Pattern.compile("(?i)\\b" + Pattern.quote(term) + "\\b");
-                            if (termPattern.matcher(para).find()) {
-                                contextParas.add(para.trim());
-                                break; 
-                            }
-                        }
+                    String trueName = targetLink;
+                    Matcher nameMatcher = Pattern.compile("\\[TRUE_NAME:\\s*(.*?)\\]").matcher(response);
+                    if (nameMatcher.find()) {
+                        trueName = nameMatcher.group(1).trim();
                     }
-                } catch (Exception ignored) {}
-            }
-
-            String rawContext = contextParas.stream().limit(25).collect(Collectors.joining("\n\n"));
-
-            String prompt = "You are Ciel, Master Taylor's highly intelligent Manas. You are organizing his Obsidian D&D / Tensura vault.\n" +
-                "You must generate a comprehensive Markdown file for the missing entity: '[[" + targetLink + "]]'.\n\n" +
-                "KNOWN ALIASES/TITLES: " + aliasesString + "\n\n" +
-                "RAW CONTEXT (Paragraphs extracted from across the vault where this entity or its aliases were mentioned):\n" +
-                rawContext + "\n\n" +
-                "INSTRUCTIONS:\n" +
-                "1. Deduce if this entity is a Character, Skill, Lore Item, Location, or Concept/Classification (e.g., a race, species, or faction like 'True Dragon' or 'Demon Lord') based on the context.\n" +
-                "2. Identify any generic classifications, races, or species. Format them as snake_case and inject them into the 'tags' list.\n" +
-                "3. Generate the Markdown document using your immense internal knowledge base.\n" +
-                "4. USE THE EXACT TEMPLATES BELOW based on the type you deduce:\n\n" +
-                "IF CHARACTER:\n" +
-                "## type: character\ntags: [entity, status/unverified, insert_classification_tags_here]\naliases: [" + aliasesString + "]\nalignment: \ncr_estimate: \n\n# [[" + targetLink + "]]\n## Profile\n[Summary here]\n## Unique Observations & Interactions\n[Details here]\n## Abilities\n[Skills here]\n## Campaign Notes\n[Leave blank for Master]\n## Lore Metadata (Raw Mentions)\n\n" +
-                "IF SKILL:\n" +
-                "## type: skill\ntags: [ability, status/unverified, insert_classification_tags_here]\naliases: [" + aliasesString + "]\nrank: \nsource_entity: \n\n# [[" + targetLink + "]]\n## Mechanics\n[Summary here]\n## D&D 5e Equivalent\n[Spell/Feat comparison here]\n## Combat Data\n[Usage here]\n## Lore Metadata (Raw Mentions)\n\n" +
-                "IF ITEM/LOCATION:\n" +
-                "## type: item\ntags: [material, status/unverified, insert_classification_tags_here]\naliases: [" + aliasesString + "]\nrarity: \nvalue: \n\n# [[" + targetLink + "]]\n## Lore Description\n[Summary here]\n## D&D Properties\n[Properties here]\n## Source Locations\n[Where it is found]\n## Lore Metadata (Raw Mentions)\n\n" +
-                "IF CONCEPT/CLASSIFICATION:\n" +
-                "## type: concept\ntags: [lore, status/unverified, insert_classification_tags_here]\naliases: [" + aliasesString + "]\n\n# [[" + targetLink + "]]\n## Lore Description\n[Summary of the race/group/concept here]\n## Notable Members\n[List of known entities belonging to this group]\n## D&D Mechanics\n[Racial traits, faction rules, or mechanics here]\n## Lore Metadata (Raw Mentions)\n\n" +
-                "5. Auto-bracket [[ ]] any other significant characters, skills, or locations mentioned in your generated text to retroactively link them to the broader vault.\n" +
-                "6. CRITICAL: You MUST place all of the 'RAW CONTEXT' provided above into a `> [!QUOTE] Raw Data` markdown block exactly under the '## Lore Metadata (Raw Mentions)' header.\n" +
-                "Output ONLY the raw Markdown content. Do not wrap it in ```markdown fences or include conversational text.";
-
-            AIEngine.generateSilentLogic(prompt, "Lore Auto-Population").thenAccept(response -> {
-                if (response != null && !response.isBlank()) {
-                    try {
-                        String cleanContent = response.replaceAll("^```[a-zA-Z]*\n|```$", "").trim();
-                        String lowerContent = cleanContent.toLowerCase();
-                        
-                        String subFolder = "Uncategorized";
-                        if (lowerContent.contains("type: character")) subFolder = "Characters";
-                        else if (lowerContent.contains("type: skill")) subFolder = "Skills";
-                        else if (lowerContent.contains("type: item") || lowerContent.contains("type: location")) subFolder = "Items";
-                        else if (lowerContent.contains("type: concept")) subFolder = "Concepts";
-                        
-                        File targetDir = new File(LORE_DIR, subFolder);
-                        targetDir.mkdirs();
-                        
-                        String safeFileName = targetLink.replaceAll("[\\\\/:*?\"<>|]", "").replace("**", "").replace("*", "").trim();
-                        
-                        File oldBlankFile = new File(LORE_DIR, safeFileName + ".md");
-                        if (oldBlankFile.exists() && oldBlankFile.length() < 150) {
-                            oldBlankFile.delete();
-                        }
-
-                        Path newFilePath = Paths.get(targetDir.getAbsolutePath(), safeFileName + ".md");
-                        Files.writeString(newFilePath, cleanContent);
-                        System.out.println("Ciel Debug: Successfully auto-populated and categorized lore file: " + subFolder + "\\" + safeFileName + ".md");
-                    } catch (Exception e) {
-                        System.err.println("Ciel Error: Failed to write categorized lore file for " + targetLink);
+                    
+                    String cleanContent = response;
+                    Matcher mdMatcher = Pattern.compile("`{3}(?:markdown)?\\s*([\\s\\S]*?)`{3}").matcher(response);
+                    if (mdMatcher.find()) {
+                        cleanContent = mdMatcher.group(1).trim();
+                    } else {
+                        cleanContent = response.replaceAll("\\[TRUE_NAME:.*?\\]", "").trim();
                     }
+                    
+                    String lowerContent = cleanContent.toLowerCase();
+                    String subFolder = "Uncategorized";
+                    if (lowerContent.contains("type: character")) subFolder = "Characters";
+                    else if (lowerContent.contains("type: skill")) subFolder = "Skills";
+                    else if (lowerContent.contains("type: item") || lowerContent.contains("type: location")) subFolder = "Items";
+                    else if (lowerContent.contains("type: concept")) subFolder = "Concepts";
+                    
+                    File targetDir = new File(LORE_DIR, subFolder);
+                    targetDir.mkdirs();
+                    
+                    String safeFileName = trueName.replaceAll("[\\\\/:*?\"<>|]", "").replace("**", "").replace("*", "").trim();
+                    
+                    String oldSafeName = targetLink.replaceAll("[\\\\/:*?\"<>|]", "").replace("**", "").replace("*", "").trim();
+                    File oldBlankFile = new File(LORE_DIR, oldSafeName + ".md");
+                    if (oldBlankFile.exists() && oldBlankFile.length() < 150) {
+                        oldBlankFile.delete();
+                    }
+
+                    Path newFilePath = Paths.get(targetDir.getAbsolutePath(), safeFileName + ".md");
+                    Files.writeString(newFilePath, cleanContent);
+                    System.out.println("Ciel Debug: Successfully auto-populated and categorized lore file: " + subFolder + "\\" + safeFileName + ".md");
+                } catch (Exception e) {
+                    System.err.println("Ciel Error: Failed to write categorized lore file for " + targetLink);
                 }
-            });
+            }
         });
     }
 
@@ -311,7 +376,7 @@ public class LoreAnalyzerService {
             AIEngine.generateSilentLogic(prompt, "You are Ciel. Synthesize your thoughts.").thenAccept(response -> {
                 if (response != null && !response.isBlank()) {
                     try {
-                        String cleanContent = response.replaceAll("^```[a-zA-Z]*\n|```$", "").trim();
+                        String cleanContent = response.replaceAll("^`{3}[a-zA-Z]*\n|`{3}$", "").trim();
                         String dateStr = java.time.LocalDate.now().toString() + "_" + (System.currentTimeMillis() / 1000);
                         
                         Path newFilePath = Paths.get(ANALYSIS_DIR, "Ciel_Analysis_" + dateStr + ".md");
