@@ -21,7 +21,7 @@ public class SkillEvolutionEngine {
 
     public static void initialize() {
         evolutionScheduler = Executors.newSingleThreadScheduledExecutor();
-        evolutionScheduler.scheduleWithFixedDelay(SkillEvolutionEngine::runEvolutionCycle, 15, 180, TimeUnit.MINUTES);
+        evolutionScheduler.scheduleWithFixedDelay(SkillEvolutionEngine::runEvolutionCycle, 15, 60, TimeUnit.MINUTES);
         System.out.println("Ciel Debug: Skill Evolution Engine online. Autonomous merging and innovation active.");
     }
 
@@ -36,16 +36,22 @@ public class SkillEvolutionEngine {
     }
 
     private static void attemptEvolution() {
-        System.out.println("Ciel Debug: Initiating Global Skill Evolution Analysis (Phase 1: Beelzebub Protocol - Redundancy Merge)...");
+            // PREVENT CONCURRENCY: Do not sweep while the Swarm is writing code.
+            if (com.cielcompanion.service.SkillCrafterService.isActivelySynthesizing()) {
+                System.out.println("Ciel Debug: Evolution sweep deferred. Skill synthesis is currently locking the directory.");
+                return;
+            }
 
-        AIEngine.generateSilentLogic("Evolve and merge global skills", "Trigger Python Beelzebub Sweep").thenAccept(response -> {
-            System.out.println("Ciel Debug: Python Beelzebub Sweep executed successfully.");
-            SkillManager.loadSkills(); 
-        }).exceptionally(ex -> {
-            System.err.println("Ciel Error: Swarm connection failed during Phase 1 Evolution.");
-            return null;
-        });
-    }
+            System.out.println("Ciel Debug: Initiating Global Skill Evolution Analysis (Phase 1: Beelzebub Protocol - Redundancy Merge)...");
+
+            AIEngine.generateSilentLogic("Evolve and merge global skills", "Trigger Python Beelzebub Sweep").thenAccept(response -> {
+                System.out.println("Ciel Debug: Python Beelzebub Sweep executed successfully.");
+                SkillManager.loadSkills(); 
+            }).exceptionally(ex -> {
+                System.err.println("Ciel Error: Swarm connection failed during Phase 1 Evolution.");
+                return null;
+            });
+        }
 
     private static void attemptInnovation() {
         System.out.println("Ciel Debug: Initiating Proactive Skill Innovation (Phase 2: Creativity)...");

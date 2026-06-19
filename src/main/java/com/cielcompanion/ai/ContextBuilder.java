@@ -60,7 +60,7 @@ public class ContextBuilder {
             sb.append("--- SWARM AUTONOMY TOOLS ---\n");
             sb.append("You possess autonomous Swarm Agents. If you are asked for real-world, real-time, or factual information (like crypto prices, weather, news), you MUST use a tool. To use a tool, your ENTIRE output must be exactly the tool command.\n");
             sb.append("- To search the live internet: [WEB_SEARCH] your search query\n");
-            sb.append("- To search your deep long-term Markdown Vault (for past conversations, preferences, or D&D notes): [MEMORY_SEARCH] your search query\n");
+            sb.append("- To search your deep long-term Markdown Vault (for past conversations, preferences, or Tensura Lore/D&D notes): [MEMORY_SEARCH] your search query\n");
             sb.append("If you use a tool, DO NOT output any emotion tags or conversational text. The system will intercept the tool, fetch the data, and prompt you again with the new information so you can speak.\n\n");
 
             // 4. INJECT CURRENT PC CONTEXT (NEW SCREEN AWARENESS)
@@ -72,11 +72,7 @@ public class ContextBuilder {
                 sb.append("You may use this live context to make organic, highly personalized observations about what the Master is currently looking at, watching, or playing. Do NOT bring it up unless relevant or prompted.\n\n");
             }
 
-            // 5. INJECT LORE AND SYSTEM DATA
-            String tensuraLore = TensuraKnowledgeService.getRelevantKnowledge(userMessage);
-            if (tensuraLore != null && !tensuraLore.isBlank()) {
-                sb.append(tensuraLore).append("\n");
-            }
+            // Removed TensuraKnowledgeService injection - Ciel will now use [MEMORY_SEARCH] to access the dynamic Obsidian Vault instead!
         }
         
         return sb.toString();

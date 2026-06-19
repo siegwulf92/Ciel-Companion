@@ -38,17 +38,17 @@ public class AIEngine {
             .build();
     private static final Gson gson = new Gson();
     private static final ExecutorService translationExecutor = Executors.newSingleThreadExecutor();
-    
+
     private static final Pattern EMOTION_TAG_PATTERN = Pattern.compile("\\[([a-zA-Z]+)\\]");
     private static final Pattern THINK_TAG_PATTERN = Pattern.compile("(?s)<think>.*?</think>");
     private static final Pattern ALPHA_NUM_PATTERN = Pattern.compile("[a-zA-Z0-9]");
     private static final Pattern ALPHA_PATTERN = Pattern.compile("[a-zA-Z]");
 
     private static final LinkedList<JsonObject> conversationHistory = new LinkedList<>();
-    private static final int MAX_HISTORY = 10; 
-    
-    private static final AtomicInteger activeSwarmTasks = new AtomicInteger(0);
-    
+    private static final int MAX_HISTORY = 10;
+
+    private static final AtomicInteger activeSwarmTasks = new AtomicInteger();
+
     private static long lastInteractionTime = System.currentTimeMillis();
     private static ScheduledExecutorService memoryScheduler;
 
@@ -56,7 +56,31 @@ public class AIEngine {
         memoryScheduler = Executors.newSingleThreadScheduledExecutor();
         memoryScheduler.scheduleWithFixedDelay(AIEngine::checkIdleMemoryDigestion, 60, 60, TimeUnit.SECONDS);
     }
-    
+
+    public static void keepLocalModelsAlive() {
+        if (com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().isInGamingSession()) return;
+        
+        CompletableFuture.runAsync(() -> {
+            try {
+                String model = ModelManager.getModelName(ModelManager.ModelTier.TRANSLATOR).replace("ollama/", "");
+                String url = "http://localhost:11434/api/generate";
+                JsonObject payload = new JsonObject();
+                payload.addProperty("model", model);
+                payload.addProperty("keep_alive", -1); 
+                
+                HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofSeconds(3))
+                    .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
+                    .build();
+                httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+            } catch (Exception e) {
+                // Silently drop heartbeat failures
+            }
+        });
+    }
+
     public static int getActiveTaskCount() {
         return activeSwarmTasks.get();
     }
@@ -84,7 +108,7 @@ public class AIEngine {
     public static void warmUpModels() {
         System.out.println("Ciel Debug: Sending lightweight silent ping to wake local Translator...");
         CompletableFuture.runAsync(() -> {
-            attemptTransliteration("Warmup ping."); 
+            attemptTransliteration("Warmup ping.");
         });
     }
 
@@ -104,7 +128,6 @@ public class AIEngine {
 
     public static String transliterateToKatakanaSync(String englishText) {
         try {
-            // --- CRITICAL FIX: Give Python time to cascade by raising Java's internal timeout ---
             return transliterateAsync(englishText).get(150, TimeUnit.SECONDS); 
         } catch (Exception e) {
             return englishText; 
@@ -123,7 +146,6 @@ public class AIEngine {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
-                    // --- CRITICAL FIX: Increased network timeout to match Katakana cascade loop ---
                     .timeout(Duration.ofSeconds(150)) 
                     .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                     .build();
@@ -222,9 +244,24 @@ public class AIEngine {
     }
 
     public static CompletableFuture<String> generateSilentLogic(String userMessage, String systemContext) {
+        double temp = systemContext.toLowerCase().contains("worker") ||
+                      systemContext.toLowerCase().contains("lore") ? 0.3 : 0.1;
+        return generateSilentLogicWithModel(userMessage, systemContext, null, temp);
+    }
+
+    public static CompletableFuture<String> generateSilentLogicWithModel(
+            String userMessage,
+            String systemContext,
+            String forcedModel,
+            double temperature) {
+
         activeSwarmTasks.incrementAndGet();
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOGIC);
-        JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.LOGIC, systemContext, userMessage, false);
+
+        JsonObject payload = (forcedModel == null)
+                ? ModelManager.buildPayload(ModelManager.ModelTier.LOGIC, systemContext, userMessage, false)
+                : buildForcedPayload(systemContext, userMessage, forcedModel, temperature);
+
         ensureLiteLlmProvider(payload);
 
         HttpRequest request = HttpRequest.newBuilder()
@@ -243,6 +280,29 @@ public class AIEngine {
                     return null;
                 })
                 .whenComplete((res, ex) -> activeSwarmTasks.decrementAndGet());
+    }
+
+    private static JsonObject buildForcedPayload(String systemContext, String userMessage,
+                                                 String forcedModel, double temperature) {
+        JsonObject payload = new JsonObject();
+        payload.addProperty("model", forcedModel != null ? forcedModel : "ollama-cloud/deepseek-v3.1:671b");
+        payload.addProperty("stream", false);
+        payload.addProperty("temperature", temperature);
+
+        JsonArray messages = new JsonArray();
+
+        JsonObject sysMsg = new JsonObject();
+        sysMsg.addProperty("role", "system");
+        sysMsg.addProperty("content", systemContext);
+        messages.add(sysMsg);
+
+        JsonObject usrMsg = new JsonObject();
+        usrMsg.addProperty("role", "user");
+        usrMsg.addProperty("content", userMessage);
+        messages.add(usrMsg);
+
+        payload.add("messages", messages);
+        return payload;
     }
 
     public static String generateDiaryEntrySync(String userMessage, String systemContext) {
@@ -274,7 +334,7 @@ public class AIEngine {
 
     private static synchronized void checkIdleMemoryDigestion() {
         if (conversationHistory.isEmpty()) return;
-        
+
         long idleTimeMs = System.currentTimeMillis() - lastInteractionTime;
         if (idleTimeMs > 5 * 60 * 1000) { 
             System.out.println("Ciel Debug: Conversation idle. Digesting short-term buffer into Long-Term Episodic Memory...");
@@ -371,8 +431,9 @@ public class AIEngine {
                     
                     addHistory("assistant", fullResponseBuffer.toString());
 
+                    // CRITICAL FIX: Add 15 extra seconds explicitly *after* the estimated speech ends
                     long durationMs = SpeechService.estimateSpeechDuration(fullResponseBuffer.toString());
-                    int extraSeconds = (int) (durationMs / 1000) + 20;
+                    int extraSeconds = (int) (durationMs / 1000) + 15;
                     com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
                     
                 })
@@ -506,8 +567,9 @@ public class AIEngine {
         
         addHistory("assistant", cleanContent);
 
+        // CRITICAL FIX: Add 15 extra seconds explicitly *after* the estimated speech ends
         long durationMs = SpeechService.estimateSpeechDuration(cleanContent);
-        int extraSeconds = (int) (durationMs / 1000) + 20;
+        int extraSeconds = (int) (durationMs / 1000) + 15;
         com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
         
         if (onComplete != null) onComplete.run();
@@ -556,7 +618,7 @@ public class AIEngine {
                             addHistory("assistant", cleanContent);
 
                             long durationMs = SpeechService.estimateSpeechDuration(cleanContent);
-                            int extraSeconds = (int) (durationMs / 1000) + 20;
+                            int extraSeconds = (int) (durationMs / 1000) + 15;
                             com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
                         }
                     } else {
@@ -572,15 +634,7 @@ public class AIEngine {
     private static JsonObject buildPayloadWithHistory(ModelManager.ModelTier tier, String systemContext, boolean stream) {
         JsonObject payload = new JsonObject();
         
-        String modelName = switch (tier) {
-            case PERSONALITY -> Settings.getLlmPersonalityModel();
-            case EVALUATOR -> Settings.getLlmEvaluatorModel();
-            case LOGIC -> Settings.getLlmLogicModel();
-            case LOCAL_LOGIC_FALLBACK -> Settings.getLlmLocalLogicFallbackModel();
-            default -> Settings.getLlmPersonalityModel(); 
-        };
-
-        payload.addProperty("model", modelName);
+        payload.addProperty("model", "local"); 
         payload.addProperty("stream", stream);
         payload.addProperty("temperature", (tier == ModelManager.ModelTier.LOGIC || tier == ModelManager.ModelTier.LOCAL_LOGIC_FALLBACK) ? 0.3 : 0.7);
 

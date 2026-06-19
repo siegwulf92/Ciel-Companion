@@ -145,9 +145,6 @@ public class CielCompanion {
             System.out.println("Ciel Debug: Initiating graceful Swarm shutdown (VRAM Purge)...");
             killJarvis();
             
-            // CRITICAL FIX: Enforce a 5-second VRAM Grace Period
-            // Ensures Python and LM Studio drop massive 100GB+ LLMs from the GPU 
-            // before Windows brutally axes the process tree, preventing "hanging" shutdowns!
             try { Thread.sleep(5000); } catch (InterruptedException ignored) {} 
             
             if (jarvisProcess != null && jarvisProcess.isAlive()) {
@@ -185,6 +182,8 @@ public class CielCompanion {
         };
         scheduler = Executors.newSingleThreadScheduledExecutor();
         scheduler.scheduleWithFixedDelay(mainTask, 0, Settings.getCheckIntervalMs(), TimeUnit.MILLISECONDS);
+        
+        scheduler.scheduleWithFixedDelay(com.cielcompanion.ai.AIEngine::keepLocalModelsAlive, 1, 4, TimeUnit.MINUTES);
     }
 
     private static void startBackgroundInitialization(
@@ -215,7 +214,11 @@ public class CielCompanion {
                 
                 startTriggerListener(5555, COMMAND_TRIGGER_PASSPHRASE, () -> {
                     System.out.println("Ciel Debug: VoiceAttack Command Trigger received. Granting Privileged Mode.");
-                    com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
+                    
+                    // CRITICAL FIX: Grants an initial generous 60-second window to survive the AI 
+                    // generating text and speaking it. SpeechService will manually reset this to EXACTLY
+                    // 15 seconds the millisecond her TTS playback stops.
+                    com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, 60);
                     
                     String pendingTask = com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().getPendingSystemTask();
                     

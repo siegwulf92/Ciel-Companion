@@ -77,14 +77,19 @@ public class SpeechService {
                 ShortTermMemory memory = ShortTermMemoryService.getMemory();
                 String currentCategory = HabitTrackerService.getCurrentCategory();
                 
-                boolean isMediaActive = metrics.isPlayingMedia() || "Media".equalsIgnoreCase(currentCategory);
+                String activeProcLower = metrics.activeProcessName() != null ? metrics.activeProcessName().toLowerCase() : "";
+                
+                boolean isMediaActive = metrics.isPlayingMedia() || "Media".equalsIgnoreCase(currentCategory) 
+                    || HabitTrackerService.isMediaTitle(metrics.activeWindowTitle())
+                    || activeProcLower.contains("stremio") || activeProcLower.contains("crunchyroll");
+                    
                 boolean isGamingActive = memory.isInGamingSession() || "Gaming".equalsIgnoreCase(currentCategory);
                 
                 if (isMediaActive && !isGamingActive) {
                     System.out.println("Ciel Debug: Global Speech Queue active. Media detected. Suspending playback immediately.");
                     mediaWasPausedForSpeech = true;
+                    // Pauses instantly via HTTP request to Python
                     HabitTrackerService.toggleMediaPlayback();
-                    try { Thread.sleep(400); } catch(Exception ignored) {}
                 }
                 
                 if (isGamingActive && HabitTrackerService.isCurrentGamePausable()) {
@@ -106,7 +111,7 @@ public class SpeechService {
 
     private static void dequeueSpeech() {
         if (speechQueueCount.decrementAndGet() == 0) {
-            // Schedule unpause with a short delay to bridge rapid consecutive speak() calls smoothly
+            // Maintains the 1.5s natural pause buffer AFTER Ciel stops speaking before resuming the media
             Executors.newSingleThreadScheduledExecutor().schedule(() -> {
                 synchronized(pauseLock) {
                     if (speechQueueCount.get() == 0) {
@@ -128,7 +133,6 @@ public class SpeechService {
                                 AzureSpeechService.isSimulatingKeystroke = false;
                             } catch (Exception ignored) {}
                         }
-                        // --- CRITICAL GUI FIX: Set GUI to IDLE only after the entire queue bridge resolves! ---
                         CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
                     }
                 }
@@ -249,7 +253,6 @@ public class SpeechService {
             try {
                 String textToSpeak = finalCleanText;
 
-                // 1. Allow media to play while she thinks/translates
                 if (CielVoiceManager.isLanguageLocked()) {
                     CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
                     textToSpeak = TranslationService.toJapanese(textToSpeak);
@@ -263,17 +266,15 @@ public class SpeechService {
                     textToSpeak = applyStutter(textToSpeak);
                 }
 
-                // 2. CRITICAL FIX: Lock the media exactly as the audio is prepared to fire!
-                enqueueSpeech();
-                hasEnqueued = true;
+                if (!hasEnqueued) {
+                    enqueueSpeech();
+                    hasEnqueued = true;
+                    // Provide a 600ms gap of pure silence between the media stopping and her speaking
+                    try { Thread.sleep(600); } catch (Exception ignored) {}
+                }
 
-                long estimatedDuration = estimateSpeechDuration(textToSpeak);
-                ShortTermMemoryService.getMemory().setSpeechEndTime(System.currentTimeMillis() + estimatedDuration);
-
-                // 3. Audio physically outputs to speakers
                 executeSpeechBlocking(textToSpeak, key, Settings.getTtsRate(), finalStyle, finalPitch, langCode);
             } finally {
-                // 4. Cleanly release lock when finished
                 if (hasEnqueued) {
                     dequeueSpeech();
                 }
@@ -368,7 +369,6 @@ public class SpeechService {
 
                         String langCode = CielVoiceManager.getActiveLanguageCode();
                         
-                        // 1. Think & Translate first
                         if (CielVoiceManager.isLanguageLocked()) {
                             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
                             textToSpeak = TranslationService.toJapanese(textToSpeak);
@@ -381,10 +381,11 @@ public class SpeechService {
                             textToSpeak = applyStutter(textToSpeak);
                         }
 
-                        // 2. Lock the media directly before the first sentence fires, and hold it
                         if (!hasEnqueued) {
                             enqueueSpeech();
                             hasEnqueued = true;
+                            // Provide a 600ms gap of pure silence between the media stopping and her speaking
+                            try { Thread.sleep(600); } catch (Exception ignored) {}
                         }
 
                         executeSpeechBlocking(textToSpeak, line.key(), Settings.getTtsRate(), style, pitch, langCode);
@@ -464,8 +465,20 @@ public class SpeechService {
         } finally {
             isActivelySpeaking.set(false);
             if (voiceListener != null) voiceListener.setInternalMute(false);
-            // --- CRITICAL GUI FIX: The IDLE state is no longer forced here. 
-            // It is deferred to the 1500ms delay in dequeueSpeech() to prevent blipping! ---
+            
+            long exactEndTime = System.currentTimeMillis();
+            
+            // Bypass the 3-second Ghost Echo window for short wake-word acknowledgments
+            if (text.length() < 15 && ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
+                System.out.println("Ciel Debug: Short acknowledgment detected. Backdating speech timer to bypass Ghost Echo filter.");
+                ShortTermMemoryService.getMemory().setSpeechEndTime(exactEndTime - 3100);
+            } else {
+                ShortTermMemoryService.getMemory().setSpeechEndTime(exactEndTime);
+            }
+            
+            if (ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
+                ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
+            }
         }
     }
 

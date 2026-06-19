@@ -27,6 +27,11 @@ public class FinanceService {
     private static String latestMarketScan = "No recent market scans available.";
     
     private static final Path SYNC_FILE = Paths.get(System.getenv("LOCALAPPDATA"), "CielCompanion", "market_sync.dat");
+    private static final Path ATTEMPT_FILE = Paths.get(System.getenv("LOCALAPPDATA"), "CielCompanion", "market_attempt.dat");
+    
+    // RAM Cache to prevent spamming if disk IO fails
+    private static long localSyncTimeMs = 0L;
+    private static long localAttemptTimeMs = 0L;
 
     public static void initialize() {
         scheduler = Executors.newSingleThreadScheduledExecutor();
@@ -39,14 +44,23 @@ public class FinanceService {
             ZoneId estZone = ZoneId.of("America/New_York");
             ZonedDateTime now = ZonedDateTime.now(estZone);
             
-            long lastFetchMs = loadLastFetchTime();
+            long lastFetchMs = loadTimestamp(SYNC_FILE, localSyncTimeMs);
+            long lastAttemptMs = loadTimestamp(ATTEMPT_FILE, localAttemptTimeMs);
+            
             ZonedDateTime lastFetch = Instant.ofEpochMilli(lastFetchMs).atZone(estZone);
 
             boolean marketOpen = isMarketOpen(now);
+            
+            // If the Swarm failed recently, back off for 1 hour before trying again to prevent spam
+            if (System.currentTimeMillis() - lastAttemptMs < TimeUnit.HOURS.toMillis(1)) {
+                return;
+            }
 
             if (marketOpen) {
                 if (Duration.between(lastFetch, now).toHours() >= 4) {
                     System.out.println("Ciel Debug: Market Live. Interval threshold reached. Initiating analysis...");
+                    localAttemptTimeMs = System.currentTimeMillis();
+                    saveTimestamp(ATTEMPT_FILE, localAttemptTimeMs);
                     silentMarketCheck();
                 }
             } else {
@@ -55,8 +69,12 @@ public class FinanceService {
 
                 if (lastFetch.isBefore(lastClose) && (now.isAfter(safeSettleTime) || now.isEqual(safeSettleTime))) {
                     System.out.println("Ciel Debug: Market Closed. Executing final daily sync for settled data.");
+                    localAttemptTimeMs = System.currentTimeMillis();
+                    saveTimestamp(ATTEMPT_FILE, localAttemptTimeMs);
                     silentMarketCheck();
                 } else if (lastFetchMs == 0L) {
+                    localAttemptTimeMs = System.currentTimeMillis();
+                    saveTimestamp(ATTEMPT_FILE, localAttemptTimeMs);
                     silentMarketCheck();
                 }
             }
@@ -105,8 +123,6 @@ public class FinanceService {
         String marketPrompt = "Perform a macro-economic scan of the S&P 500 and VIX. " +
                 "Correlate VIX fear levels with growth opportunities for a 33-year-old investor. Provide a 'Market Threat Level' (Low, Elevated, High, Critical).";
 
-        // CRITICAL FIX: The Java prompt now passes a specific trigger tag to python so Python 
-        // can intercept the command and inject a live web search for actual market trends.
         String recoPrompt = "[FINANCE_RECOMMENDATIONS] Generate stock recommendations.";
 
         CompletableFuture.runAsync(() -> {
@@ -127,7 +143,8 @@ public class FinanceService {
             }
 
             if (swarmSuccess) {
-                saveLastFetchTime(System.currentTimeMillis());
+                localSyncTimeMs = System.currentTimeMillis();
+                saveTimestamp(SYNC_FILE, localSyncTimeMs);
                 System.out.println("Ciel Debug: Background finance analysis complete. Success flag updated.");
             }
         });
@@ -147,10 +164,8 @@ public class FinanceService {
             if (recoCsv != null && recoCsv.contains(",")) {
                 String cleanCsv = recoCsv.replace("```csv", "").replace("```", "").trim();
                 
-                // CRITICAL FIX: Re-aligned the backup CSV header insertion to match the precise layout
-                // (Action, Shares, Target_Price) expected from the Python logic.
-                if (!cleanCsv.contains("Ticker")) {
-                    cleanCsv = "Date,Ticker,Action,Shares,Target_Price,Reason\n" + cleanCsv;
+                if (!cleanCsv.contains("Date")) {
+                    cleanCsv = "Date,Account,Ticker,Action,Shares,Target_Price,Reason_and_Confidence\n" + cleanCsv;
                 }
                 Files.writeString(Paths.get("C:\\Ciel Companion\\ciel\\finance", "recommendations.csv"), cleanCsv);
             }
@@ -160,10 +175,10 @@ public class FinanceService {
     }
 
     public static boolean isMarketHoliday(LocalDate date) {
-        return getHolidayName(date) != null;
+        return getHolidaryName(date) != null;
     }
 
-    public static String getHolidayName(LocalDate date) {
+    public static String getHolidaryName(LocalDate date) {
         int year = date.getYear();
         int month = date.getMonthValue();
         int day = date.getDayOfMonth();
@@ -189,7 +204,7 @@ public class FinanceService {
         LocalDate today = LocalDate.now();
         for (int i = 0; i <= 3; i++) {
             LocalDate target = today.plusDays(i);
-            String name = getHolidayName(target);
+            String name = getHolidaryName(target);
             if (name != null) {
                 if (i == 0) return "Today is " + name + ". US Markets are closed.";
                 if (i == 1) return "Tomorrow is " + name + ". Markets will be closed.";
@@ -199,19 +214,20 @@ public class FinanceService {
         return "";
     }
 
-    private static long loadLastFetchTime() {
+    private static long loadTimestamp(Path file, long ramFallback) {
+        if (ramFallback > 0) return ramFallback;
         try {
-            if (Files.exists(SYNC_FILE)) {
-                return Long.parseLong(Files.readString(SYNC_FILE).trim());
+            if (Files.exists(file)) {
+                return Long.parseLong(Files.readString(file).trim());
             }
         } catch (Exception ignored) {}
         return 0L;
     }
 
-    private static void saveLastFetchTime(long ms) {
+    private static void saveTimestamp(Path file, long ms) {
         try {
-            Files.createDirectories(SYNC_FILE.getParent());
-            Files.writeString(SYNC_FILE, String.valueOf(ms));
+            Files.createDirectories(file.getParent());
+            Files.writeString(file, String.valueOf(ms));
         } catch (Exception ignored) {}
     }
 

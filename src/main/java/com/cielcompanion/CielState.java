@@ -20,6 +20,7 @@ public class CielState {
     private static long muteConditionSince = 0; 
     private static boolean isWarmBoot = false; 
     private static boolean isPerformingColdShutdown = false;
+    private static boolean diaryWrittenThisSession = false;
     
     // DEBOUNCE STATE
     private static int consecutiveActiveTicks = 0; // NEW: Tracks sustained activity
@@ -74,6 +75,7 @@ public class CielState {
     public static boolean isPerformingColdShutdown() { return isPerformingColdShutdown; }
     public static int getConsecutiveActiveTicks() { return consecutiveActiveTicks; }
     public static double getPatience() { return patience; }
+    public static boolean isDiaryWrittenThisSession() { return diaryWrittenThisSession; }
 
     // --- Setters ---
     public static void setNextSpeakAt(long timestamp) { nextSpeakAt = timestamp; }
@@ -97,6 +99,11 @@ public class CielState {
     public static void setConsecutiveActiveTicks(int ticks) { consecutiveActiveTicks = ticks; }
     public static void incrementConsecutiveActiveTicks() { consecutiveActiveTicks++; }
     public static void setPatience(double p) { patience = Math.max(0, Math.min(1.0, p)); }
+    public static void setDiaryWrittenThisSession(boolean written) { diaryWrittenThisSession = written; }
+    
+    public static void resetShutdownState() { 
+        diaryWrittenThisSession = false; 
+    }
     
     public static void increasePatience(double amount) {
         patience = Math.min(1.0, patience + amount);
