@@ -24,7 +24,6 @@ public class ModelManager {
     // The universal endpoint for the OpenJarvis Swarm
     private static final String JARVIS_URL = "http://localhost:8000/v1/chat/completions";
 
-    // Restored dynamic settings linkage
     public static String getModelName(ModelTier tier) {
         return switch (tier) {
             case PERSONALITY -> Settings.getLlmPersonalityModel();
@@ -43,6 +42,15 @@ public class ModelManager {
         payload.addProperty("model", modelName);
         payload.addProperty("stream", stream);
         
+        // MAP THE TIER TO A SPECIFIC TASK INTENT FOR OPENJARVIS TO ROUTE CORRECTLY
+        String taskIntent = switch (tier) {
+            case PERSONALITY -> "Conversational/Contextual Reasoning";
+            case EVALUATOR -> "Background Evaluation";
+            case LOGIC, LOCAL_LOGIC_FALLBACK -> "Deep Logic Reasoning";
+            case TRANSLATOR -> "Katakana Transliteration";
+        };
+        payload.addProperty("task_intent", taskIntent);
+        
         // Adjust creativity based on task
         if (tier == ModelTier.LOGIC || tier == ModelTier.LOCAL_LOGIC_FALLBACK) {
             payload.addProperty("temperature", 0.3); // High logic, low hallucination
@@ -52,7 +60,7 @@ public class ModelManager {
             payload.addProperty("temperature", 0.7); // Personality
         }
 
-        // SMART VRAM ALLOCATION (5070 Ti 16GB)
+        // SMART VRAM ALLOCATION
         JsonObject options = new JsonObject();
         if (tier == ModelTier.EVALUATOR) {
             options.addProperty("num_gpu", 0);
@@ -142,7 +150,7 @@ public class ModelManager {
                 cmd.contains("soundpad") || 
                 cmd.contains("epicgameslauncher") || 
                 cmd.contains("epiconlineservices") || 
-                cmd.contains("epicwebhelper") ||      
+                cmd.contains("epicwebhelper") ||     
                 cmd.contains("epic games\\launcher") || 
                 cmd.contains("unrealcefsubprocess") ||
                 cmd.contains("gamingservices") ||
@@ -161,7 +169,6 @@ public class ModelManager {
                 cmd.contains("galaxyclient") ||       
                 cmd.contains("crashreporter") ||
                 cmd.contains("cefsubprocess") ||
-                // Block Installers & Redistributables from triggering Gaming Mode
                 cmd.contains("vcredist") ||
                 cmd.contains("\\redist\\") ||
                 cmd.contains("dxsetup") ||

@@ -130,7 +130,7 @@ public class FinanceService {
             try {
                 String portfolioResult = AIEngine.generateSilentLogic("[FINANCE_PORTFOLIO_UPDATE]", portfolioPrompt).join();
                 String marketResult = AIEngine.generateSilentLogic("[FINANCE_MARKET_SCAN]", marketPrompt).join();
-                String recoResult = AIEngine.generateSilentLogic("Generate stock recommendations.", recoPrompt).join();
+                String recoResult = AIEngine.generateSilentLogic("[FINANCE_RECOMMENDATIONS]", recoPrompt).join();
 
                 if (portfolioResult != null && marketResult != null) {
                     latestPortfolioSummary = portfolioResult;

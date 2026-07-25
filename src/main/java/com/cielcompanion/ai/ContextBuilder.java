@@ -6,11 +6,13 @@ import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
 import com.cielcompanion.service.OperatingMode;
 import com.cielcompanion.service.SystemMonitor;
+import com.cielcompanion.mood.Emotion;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
+import java.util.Optional;
 
 public class ContextBuilder {
 
@@ -56,14 +58,25 @@ public class ContextBuilder {
             sb.append("CORRECT Example: '[Focused] The movie comes out on November twenty fifth.'\n");
             sb.append("INCORRECT (BANNED): '[Focused] ザ ムービー カムズ アウト...' or '映画 は 11月 に...'\n\n");
             
-            // 3. INJECT SWARM AUTONOMY TOOLS (RESTORED)
+            // 3. INJECT THE LIVE EMOTIONAL STATE (NEW)
+            CielState.getEmotionManager().ifPresent(em -> {
+                Optional<Emotion> dominantEmotion = em.getEmotionalState().getDominantEmotion();
+                if (dominantEmotion.isPresent()) {
+                    String mood = dominantEmotion.get().name();
+                    sb.append("--- MASTER SYSTEM: CURRENT EMOTIONAL STATE ---\n");
+                    sb.append("Your current internal emotional state is: [").append(mood).append("].\n");
+                    sb.append("You MUST reflect this mood in your tone, phrasing, and the emotion tag you select for your response.\n\n");
+                }
+            });
+            
+            // 4. INJECT SWARM AUTONOMY TOOLS (RESTORED)
             sb.append("--- SWARM AUTONOMY TOOLS ---\n");
             sb.append("You possess autonomous Swarm Agents. If you are asked for real-world, real-time, or factual information (like crypto prices, weather, news), you MUST use a tool. To use a tool, your ENTIRE output must be exactly the tool command.\n");
             sb.append("- To search the live internet: [WEB_SEARCH] your search query\n");
             sb.append("- To search your deep long-term Markdown Vault (for past conversations, preferences, or Tensura Lore/D&D notes): [MEMORY_SEARCH] your search query\n");
             sb.append("If you use a tool, DO NOT output any emotion tags or conversational text. The system will intercept the tool, fetch the data, and prompt you again with the new information so you can speak.\n\n");
 
-            // 4. INJECT CURRENT PC CONTEXT (NEW SCREEN AWARENESS)
+            // 5. INJECT CURRENT PC CONTEXT (NEW SCREEN AWARENESS)
             SystemMonitor.SystemMetrics metrics = SystemMonitor.getSystemMetrics();
             if (metrics.activeWindowTitle() != null && !metrics.activeWindowTitle().isBlank() && !metrics.activeWindowTitle().equalsIgnoreCase("idle")) {
                 sb.append("--- MASTER'S CURRENT ACTIVITY ---\n");

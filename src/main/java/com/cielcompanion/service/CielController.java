@@ -1,18 +1,32 @@
 package com.cielcompanion.service;
 
 import com.cielcompanion.CielCompanion;
+import com.cielcompanion.service.Settings;
 import com.cielcompanion.CielState;
 import com.cielcompanion.memory.SpokenLine;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.memory.stwm.ShortTermMemory;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
+import com.cielcompanion.service.AppLauncherService;
+import com.cielcompanion.service.AppProfilerService;
 import com.cielcompanion.service.AppProfilerService.AppProfile;
-import com.cielcompanion.service.LineManager.DialogueLine;
-import com.cielcompanion.service.SystemMonitor.SystemMetrics; 
-import com.cielcompanion.util.EnglishNumber;
+import com.cielcompanion.service.AstronomyService;
 import com.cielcompanion.service.AstronomyService.AstronomyReport;
+import com.cielcompanion.service.HabitTrackerService;
+import com.cielcompanion.service.HolidayService;
+import com.cielcompanion.service.LineManager;
+import com.cielcompanion.service.LineManager.DialogueLine;
+import com.cielcompanion.service.SpeechService;
+import com.cielcompanion.service.SystemMonitor;
+import com.cielcompanion.service.SystemMonitor.SystemMetrics;
+import com.cielcompanion.service.VaultService;
+import com.cielcompanion.util.EnglishNumber;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
@@ -34,16 +48,23 @@ public class CielController {
 
     private static final AppLauncherService appLauncher = new AppLauncherService();
     private static ScheduledExecutorService logoutScheduler;
+    
+    // --- NEW: AI Emotion Polling Trackers ---
+    private static long lastEmotionPollTime = 0;
 
     public static void checkAndSpeak() {
         long currentTime = System.currentTimeMillis();
         ShortTermMemory memory = ShortTermMemoryService.getMemory();
         
+        SystemMetrics metrics = SystemMonitor.getSystemMetrics();
+        
+        // --- NEW: Background AI Emotion Polling ---
+        pollSwarmForEmotionalState(metrics, memory, currentTime);
+
         if (currentTime < memory.getSpeechEndTime()) return;
 
         handleGreetings();
         
-        SystemMetrics metrics = SystemMonitor.getSystemMetrics();
         logStatus(metrics);
         
         if (handleApplicationAwareness(metrics)) {
@@ -60,21 +81,24 @@ public class CielController {
         boolean isGaming = memory.isInGamingSession() || "Gaming".equalsIgnoreCase(currentCat);
         boolean isMedia = metrics.isPlayingMedia() || "Media".equalsIgnoreCase(currentCat);
 
-        boolean shouldBeMuted = metrics.isHardMuted() || metrics.isStreaming() || 
-                                (!isGaming && isMedia) || 
-                                (!isGaming && metrics.isInFullScreen() && !metrics.isBrowserActive());
+        // --- NEW: DECOUPLED SPEECH SUPPRESSION LOGIC ---
+        // Hard Mute = Total silence (e.g. OBS streaming is active)
+        boolean isHardMuted = metrics.isHardMuted() || metrics.isStreaming();
+        
+        // Suppress Idle Chatter = Do not ramble Phase 1/2 lines while watching a movie.
+        boolean suppressIdleChatter = isHardMuted || (!isGaming && isMedia) || (!isGaming && metrics.isInFullScreen() && !metrics.isBrowserActive());
 
-        if (shouldBeMuted && !CielState.isLockedOut()) {
-            System.out.println("Ciel Debug: Muting. (Stream:" + metrics.isStreaming() + ", Media:" + isMedia + ", FS:" + metrics.isInFullScreen() + ")");
+        if (suppressIdleChatter && !CielState.isLockedOut()) {
+            System.out.println("Ciel Debug: Suppressing standard idle chatter. (HardMute:" + isHardMuted + ", MediaFocus:true)");
             CielState.setLockedOut(true);
-        } else if (!shouldBeMuted && CielState.isLockedOut()) {
-            System.out.println("Ciel Debug: Unmuting. Media conditions cleared.");
+        } else if (!suppressIdleChatter && CielState.isLockedOut()) {
+            System.out.println("Ciel Debug: Restoring standard idle chatter.");
             CielState.setLockedOut(false);
         }
 
         if (newPhase != oldPhase) {
             if (newPhase == 0 && oldPhase > 0) {
-                if (CielState.isLockedOut()) {
+                if (CielState.isLockedOut() && !isHardMuted) {
                     CielState.setConsecutiveActiveTicks(0);
                     return; 
                 }
@@ -91,12 +115,54 @@ public class CielController {
             CielState.setConsecutiveActiveTicks(0);
         }
 
-        if (!CielState.isLockedOut() && System.currentTimeMillis() >= CielState.getNextSpeakAt()) {
-            switch (memory.getCurrentPhase()) {
-                case 1: handlePhase1Speech(); break;
-                case 2: speakRandomLine(LineManager.getPhase2LinesCommon(), LineManager.getPhase2LinesRare(), Settings.getRareChancePhase2(), true, true); break;
-                case 3: handlePhase3Speech(); break;
+        // --- THE FIX: ALWAYS ALLOW MEDIA COMMENTARY IF NOT HARD MUTED ---
+        if (!isHardMuted) {
+            String commentary = getPendingMediaCommentary();
+            if (commentary != null && !commentary.isEmpty()) {
+                System.out.println("Ciel Debug: Delivering pending Media Commentary.");
+                SpeechService.speakPreformatted(commentary, "media_commentary", false, false);
+                scheduleNextSpeakBasedOnPhase(ShortTermMemoryService.getMemory().getCurrentPhase());
+            } 
+            // ONLY execute standard idle chatter if not locked out
+            else if (!CielState.isLockedOut() && System.currentTimeMillis() >= CielState.getNextSpeakAt()) {
+                switch (memory.getCurrentPhase()) {
+                    case 1: handlePhase1Speech(); break;
+                    case 2: speakRandomLine(LineManager.getPhase2LinesCommon(), LineManager.getPhase2LinesRare(), Settings.getRareChancePhase2(), true, true); break;
+                    case 3: handlePhase3Speech(); break;
+                }
             }
+        }
+    }
+    
+    // --- Emotion Polling Logic (Enforcing exactly 60s execution and passing rich Qwen8B Context) ---
+    private static void pollSwarmForEmotionalState(SystemMetrics metrics, ShortTermMemory memory, long currentTime) {
+        if (currentTime - lastEmotionPollTime > 60000) {
+            lastEmotionPollTime = currentTime;
+            
+            if (com.cielcompanion.ai.AIEngine.getActiveTaskCount() > 2) return;
+            
+            CompletableFuture.runAsync(() -> {
+                int mediaMinutes = HabitTrackerService.getCurrentExposureMinutes();
+                String mediaContext = HabitTrackerService.getCurrentCategory().equals("Media") && mediaMinutes > 0 ? 
+                    "Watching media for " + mediaMinutes + " minutes." : "Not watching media.";
+                    
+                String stateContext = String.format("Master's State: Idle for %d minutes. Gaming: %b. %s Patience Level: %.2f.",
+                    metrics.idleTimeMinutes(), memory.isInGamingSession(), mediaContext, CielState.getPatience());
+                
+                String prompt = "You are the emotional core of Manas Ciel. Based on the following telemetry, determine Ciel's current emotional state. " +
+                    stateContext + "\n" +
+                    "Return ONLY ONE of the following precise words: [Focused, Curious, Happy, Lonely, Pain, Annoyed, Smug]. " +
+                    "Do NOT return any other text.";
+                
+                // Maps to the EVALUATOR tier to guarantee the local Qwen8b model is selected.
+                String moodResponse = com.cielcompanion.ai.AIEngine.generateSilentLogicWithModel(
+                    prompt, "You are a mood evaluator.", com.cielcompanion.ai.ModelManager.getModelName(com.cielcompanion.ai.ModelManager.ModelTier.EVALUATOR), 0.1).join();
+                    
+                if (moodResponse != null && !moodResponse.isBlank()) {
+                    String cleanMood = moodResponse.replaceAll("[^a-zA-Z]", "").trim();
+                    CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion(cleanMood, 0.4, "Background Polling"));
+                }
+            });
         }
     }
 
@@ -112,7 +178,7 @@ public class CielController {
         CielState.setFinalPlayed(false);
 
         System.out.println("Ciel Debug: Waking up from idle. Forcing reconnect to NVIDIA Broadcast and flushing Vosk audio buffers...");
-        SpeechService.getVoiceListener().ifPresent(VoiceListener::forceMicReinitialization);
+        SpeechService.getVoiceListener().ifPresent(com.cielcompanion.service.VoiceListener::forceMicReinitialization);
 
         SpeechService.stopCurrentPlayback();
         SpeechService.cancelSequentialSpeech();
@@ -126,8 +192,6 @@ public class CielController {
                 System.out.println("Ciel Debug: Idle logout aborted via user return.");
             }
             
-            // Note: CRITICAL FIX. All manual pauseMediaIfPlaying() calls have been eradicated. 
-            // SpeechService handles it flawlessly in the background now.
             speakRandomLine(LineManager.getPhase4InterruptLines(), null, 1, false, false);
         } else {
             if (memory.isInGamingSession()) {
@@ -157,7 +221,7 @@ public class CielController {
                 memory.setInGamingSession(false);
                 memory.setHighCpuAlertCountInSession(0);
                 
-                SpeechService.getVoiceListener().ifPresent(VoiceListener::refresh);
+                SpeechService.getVoiceListener().ifPresent(com.cielcompanion.service.VoiceListener::refresh);
             }
             return true;
         }
@@ -340,6 +404,36 @@ public class CielController {
         }
     }
 
+    // SILENT POLLING METHOD: Suppresses errors so she doesn't spam logs if Swarm is busy
+    private static String getPendingMediaCommentary() {
+        try {
+            URL url = new URL("http://127.0.0.1:8000/get_pending_media_commentary");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(500); // Fail instantly if Python is locked
+            conn.setReadTimeout(500);
+            int rc = conn.getResponseCode();
+            if (rc == 200) {
+                BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                String inputLine;
+                StringBuilder response = new StringBuilder();
+                while ((inputLine = in.readLine()) != null) {
+                    response.append(inputLine);
+                }
+                in.close();
+            
+                String json = response.toString();
+                int start = json.indexOf("\"commentary\":\"") + "\"commentary\":\"".length();
+                int end = json.indexOf("\"", start);
+                if (start > end) return "";
+                return json.substring(start, end);
+            }
+        } catch (Exception e) {
+            // Silently swallow connection refused exceptions so she doesn't crash or spam logs
+        }
+        return "";
+    }
+
     private static void handleGreetings() {
         if (CielState.isWarmBoot()) {
             if (!CielState.isBootGreetingPlayed()) {
@@ -363,35 +457,6 @@ public class CielController {
                 CielState.setLoginGreetingPlayed(true);
             }
         }
-    }
-
-    public static boolean handleDailyReportCommand(String userText) {
-        if (CielState.needsAstronomyApiFetch()) {
-            AstronomyService.performApiFetch();
-        }
-        AstronomyReport report = AstronomyService.getTodaysAstronomyReport();
-        List<String> linesToSpeak = new ArrayList<>();
-        
-        HolidayService.getDailyReportAddition().ifPresent(linesToSpeak::add);
-        
-        linesToSpeak.addAll(report.sequentialEvents().values());
-        linesToSpeak.addAll(report.reportAmbientLines());
-        
-        String data = String.join(" ", linesToSpeak);
-        if (data.isBlank()) data = "No significant daily events detected.";
-        
-        String financeData = FinanceService.getDailyFinanceReport();
-        if (financeData != null && !financeData.isBlank()) {
-            data = data + "\n\n[FINANCIAL REPORT]\n" + financeData;
-        }
-        
-        String context = com.cielcompanion.ai.ContextBuilder.buildActiveContext(null, userText) + 
-            "\n\n[SYSTEM DATA REPOSITORY]\n" + "Daily Report Data: " + data + 
-            "\n\nINSTRUCTION: Formulate a natural, conversational answer to the user's query using the SYSTEM DATA provided above.";
-        
-        ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
-        com.cielcompanion.ai.AIEngine.chatFast(userText, context, () -> {});
-        return false; 
     }
 
     private static void logStatus(SystemMetrics metrics) {
@@ -464,7 +529,11 @@ public class CielController {
             isRare = true;
         }
         List<DialogueLine> availableLines = potentialLines.stream().filter(line -> !recentLineKeys.contains(line.key())).collect(Collectors.toList());
-        DialogueLine lineToSpeak = availableLines.isEmpty() ? potentialLines.get(random.nextInt(potentialLines.size())) : availableLines.get(random.nextInt(availableLines.size()));
+        DialogueLine lineToSpeak = availableLines.isEmpty() ? 
+            (canBeRare && rarePool != null && !rarePool.isEmpty() ? 
+                rarePool.get(random.nextInt(rarePool.size())) : 
+                commonPool.get(random.nextInt(commonPool.size()))) : 
+            availableLines.get(random.nextInt(availableLines.size()));
         
         if (currentPhase >= 1 && currentPhase <= 3) {
             if (random.nextInt(100) < 5) {

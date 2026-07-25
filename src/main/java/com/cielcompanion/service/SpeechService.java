@@ -1,19 +1,29 @@
 package com.cielcompanion.service;
 
 import com.cielcompanion.CielState;
-import com.cielcompanion.memory.SpokenLine;
+import com.cielcompanion.ai.AIEngine;
+import com.cielcompanion.memory.Fact;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.memory.stwm.ShortTermMemory;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
 import com.cielcompanion.mood.Emotion;
 import com.cielcompanion.mood.MoodConfig;
-import com.cielcompanion.service.LineManager.DialogueLine;
 import com.cielcompanion.service.SystemMonitor.SystemMetrics;
 import com.cielcompanion.ui.CielGui;
+import com.cielcompanion.service.LineManager.DialogueLine;
+import com.cielcompanion.util.CielTools;
+import com.cielcompanion.service.Settings;
+import com.cielcompanion.service.AzureSpeechService;
+import com.cielcompanion.service.AzureUsageTracker;
+import com.cielcompanion.service.CielVoiceManager;
+import com.cielcompanion.service.VoiceListener;
+import com.cielcompanion.service.TranslationService;
 
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
+import java.awt.AWTException;
+import java.awt.Robot;
+import java.awt.event.KeyEvent;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
@@ -27,6 +37,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.nio.charset.StandardCharsets;
 import java.util.stream.Collectors;
 
 /**
@@ -36,6 +47,9 @@ import java.util.stream.Collectors;
  */
 public class SpeechService {
 
+    /* ------------------------------------------------------------------ */
+    /*  Thread-pools & state tracking                                      */
+    /* ------------------------------------------------------------------ */
     private static final ExecutorService speechExecutor = Executors.newSingleThreadExecutor();
     private static volatile Future<?> sequentialSpeechTask = null;
     private static volatile Future<?> currentSpeechTask = null; 
@@ -88,8 +102,9 @@ public class SpeechService {
                 if (isMediaActive && !isGamingActive) {
                     System.out.println("Ciel Debug: Global Speech Queue active. Media detected. Suspending playback immediately.");
                     mediaWasPausedForSpeech = true;
-                    // Pauses instantly via HTTP request to Python
                     HabitTrackerService.toggleMediaPlayback();
+                    // FORCE OS BUFFER: Ensure the Python native HWND pause finishes executing before Azure TTS hogs the sound driver
+                    try { Thread.sleep(800); } catch (Exception ignored) {}
                 }
                 
                 if (isGamingActive && HabitTrackerService.isCurrentGamePausable()) {
@@ -140,14 +155,9 @@ public class SpeechService {
         }
     }
 
-    public static void cancelSequentialSpeech() {
-        sequenceCancelled = true;
-        if (sequentialSpeechTask != null) {
-            sequentialSpeechTask.cancel(true);
-        }
-        ShortTermMemoryService.getMemory().setSpeechEndTime(System.currentTimeMillis());
-    }
-
+    /* ------------------------------------------------------------------ */
+    /*  Helper to cancel any in-flight utterance (used by CommandService)  */
+    /* ------------------------------------------------------------------ */
     public static void stopCurrentPlayback() {
         if (currentSpeechTask != null && !currentSpeechTask.isDone()) {
             currentSpeechTask.cancel(true);
@@ -172,6 +182,18 @@ public class SpeechService {
         CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
     }
 
+    /** Cancel a queued sequence of lines (used by CommandService). */
+    public static void cancelSequentialSpeech() {
+        sequenceCancelled = true;
+        if (sequentialSpeechTask != null) {
+            sequentialSpeechTask.cancel(true);
+        }
+        ShortTermMemoryService.getMemory().setSpeechEndTime(System.currentTimeMillis());
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  SPEAK API                                                          */
+    /* ------------------------------------------------------------------ */
     public static void speak(String text) { speakPreformatted(text, null, false, true); }
     public static void speak(String text, boolean isRare) { speakPreformatted(text, null, isRare, true); }
     public static void speak(String text, String key) { speakPreformatted(text, key, false, true); }
@@ -251,26 +273,46 @@ public class SpeechService {
         currentSpeechTask = speechExecutor.submit(() -> {
             boolean hasEnqueued = false;
             try {
-                String textToSpeak = finalCleanText;
-
-                if (CielVoiceManager.isLanguageLocked()) {
-                    CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
-                    textToSpeak = TranslationService.toJapanese(textToSpeak);
-                    System.out.println("[Ciel World Voice]: Translated to: " + textToSpeak);
-                } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
-                    CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
-                    textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
-                }
-
-                if ("Glitched".equals(finalAttitude) || "Concerned".equals(finalAttitude)) {
-                    textToSpeak = applyStutter(textToSpeak);
-                }
-
+                // EXPLICIT RACE CONDITION FIX: Enqueue and trigger the media pause native call 
+                // BEFORE updating GUI or translating, so Stremio doesn't lose window focus.
                 if (!hasEnqueued) {
                     enqueueSpeech();
                     hasEnqueued = true;
                     // Provide a 600ms gap of pure silence between the media stopping and her speaking
                     try { Thread.sleep(600); } catch (Exception ignored) {}
+                }
+
+                String textToSpeak = finalCleanText;
+
+                // --------------------------------------------------------------
+                //  ★  TRANSLATION / TRANSLITERATION BLOCK  ★
+                // --------------------------------------------------------------
+                boolean needsLanguageConversion = false;
+                if (CielVoiceManager.isLanguageLocked()) {
+                    needsLanguageConversion = true;
+                } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                    needsLanguageConversion = true;
+                }
+
+                if (needsLanguageConversion) {
+                    CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
+                }
+
+                if (CielVoiceManager.isLanguageLocked()) {
+                    textToSpeak = TranslationService.toJapanese(textToSpeak);
+                    System.out.println("[Ciel World Voice]: Translated to: " + textToSpeak);
+                } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                    textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
+                    System.out.println("[Ciel World Voice]: Transliterated to Katakana: " + textToSpeak);
+                }
+                // --------------------------------------------------------------
+
+                if (needsLanguageConversion) {
+                    CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
+                }
+
+                if ("Glitched".equals(finalAttitude) || "Concerned".equals(finalAttitude)) {
+                    textToSpeak = applyStutter(textToSpeak);
                 }
 
                 executeSpeechBlocking(textToSpeak, key, Settings.getTtsRate(), finalStyle, finalPitch, langCode);
@@ -280,34 +322,6 @@ public class SpeechService {
                 }
             }
         });
-    }
-    
-    private static String applyHumanVariance(String basePitch) {
-        if (basePitch.equals("default")) return "+0%";
-        try {
-            String clean = basePitch.replace("%", "").replace("+", "");
-            if (clean.isEmpty()) return "+0%";
-            int val = Integer.parseInt(clean);
-            int variance = random.nextInt(5) - 2; 
-            int newVal = val + variance;
-            return (newVal >= 0 ? "+" : "") + newVal + "%";
-        } catch (Exception e) {
-            return basePitch;
-        }
-    }
-    
-    private static String applyStutter(String input) {
-        if (random.nextInt(10) > 3) return input; 
-        String[] words = input.split(" ");
-        if (words.length == 0) return input;
-        int targetIdx = random.nextInt(words.length);
-        String targetWord = words[targetIdx];
-        if (targetWord.length() > 2) {
-            String stutter = targetWord.substring(0, 2) + "-" + targetWord;
-            words[targetIdx] = stutter;
-            return String.join(" ", words);
-        }
-        return input;
     }
     
     public static void speakSequentially(List<DialogueLine> lines, long delayMs, boolean preformatted, Runnable onComplete) {
@@ -381,10 +395,10 @@ public class SpeechService {
                             textToSpeak = applyStutter(textToSpeak);
                         }
 
+                        // PAUSE EXPLICITLY BEFORE EXECUTION
                         if (!hasEnqueued) {
                             enqueueSpeech();
                             hasEnqueued = true;
-                            // Provide a 600ms gap of pure silence between the media stopping and her speaking
                             try { Thread.sleep(600); } catch (Exception ignored) {}
                         }
 
@@ -429,6 +443,8 @@ public class SpeechService {
             isActivelySpeaking.set(true);
             AzureSpeechService.isIntentionalCancellation = false;
 
+            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
+
             boolean azureSuccess = false;
 
             if (AzureSpeechService.isAvailable()) {
@@ -440,10 +456,7 @@ public class SpeechService {
                 }
             }
             
-            // Only trigger SAPI if Azure failed, AND we didn't explicitly tell it to stop via VoiceAttack
             if (!azureSuccess && !AzureSpeechService.isIntentionalCancellation) {
-                CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
-                
                 String targetVoice = Settings.getVoiceNameHint();
                 System.out.println("Ciel Debug: SAPI Speaking: \"" + text + "\" (Target: " + targetVoice + ")");
                 
@@ -468,7 +481,6 @@ public class SpeechService {
             
             long exactEndTime = System.currentTimeMillis();
             
-            // Bypass the 3-second Ghost Echo window for short wake-word acknowledgments
             if (text.length() < 15 && ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
                 System.out.println("Ciel Debug: Short acknowledgment detected. Backdating speech timer to bypass Ghost Echo filter.");
                 ShortTermMemoryService.getMemory().setSpeechEndTime(exactEndTime - 3100);
@@ -480,6 +492,34 @@ public class SpeechService {
                 ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
             }
         }
+    }
+
+    private static String applyHumanVariance(String basePitch) {
+        if (basePitch.equals("default")) return "+0%";
+        try {
+            String clean = basePitch.replace("%", "").replace("+", "");
+            if (clean.isEmpty()) return "+0%";
+            int val = Integer.parseInt(clean);
+            int variance = random.nextInt(5) - 2;
+            int newVal = val + variance;
+            return (newVal >= 0 ? "+" : "") + newVal + "%";
+        } catch (Exception e) {
+            return basePitch;
+        }
+    }
+
+    private static String applyStutter(String input) {
+        if (random.nextInt(10) > 3) return input;
+        String[] words = input.split(" ");
+        if (words.length == 0) return input;
+        int targetIdx = random.nextInt(words.length);
+        String targetWord = words[targetIdx];
+        if (targetWord.length() > 2) {
+            String stutter = targetWord.substring(0, 2) + "-" + targetWord;
+            words[targetIdx] = stutter;
+            return String.join(" ", words);
+        }
+        return input;
     }
 
     public static long estimateSpeechDuration(String text) {

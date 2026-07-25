@@ -87,8 +87,7 @@ public class EmotionalState {
              return new VisualState(parseColor("100, 100, 255"), animation, 0.5);
         }
 
-        // --- NEW: Dynamic Color Fluctuation Algorithm ---
-        // Uses a sine wave based on system time to smoothly shift dominance between active colors
+        // --- UPDATED: Dynamic Color Fluctuation Algorithm (High-Value Enforced) ---
         float r = 0, g = 0, b = 0;
         long time = System.currentTimeMillis();
         int emotionIndex = 0;
@@ -118,7 +117,14 @@ public class EmotionalState {
             b /= totalDynamicWeight;
         }
 
-        Color shiftingColor = new Color(clamp(r), clamp(g), clamp(b));
+        // --- NEW: Force High Value/Saturation to avoid muddy earth tones ---
+        float[] hsb = Color.RGBtoHSB(clamp(r), clamp(g), clamp(b), null);
+        // Force minimum brightness to 80% to keep her glowing
+        hsb[2] = Math.max(hsb[2], 0.8f);
+        // Force minimum saturation to 40% so she doesn't wash out to white
+        hsb[1] = Math.max(hsb[1], 0.4f);
+        
+        Color shiftingColor = Color.getHSBColor(hsb[0], hsb[1], hsb[2]);
         double brightness = Math.min(1.0, totalIntensity);
 
         return new VisualState(shiftingColor, animation, brightness);

@@ -58,7 +58,7 @@ public class CommandService {
     // -----------------------------------------------------------------
     private static ScheduledExecutorService shutdownScheduler;
     private static final Object shutdownLock = new Object();
-    private static volatile boolean shutdownAborted = false;
+    private static final AtomicBoolean isShuttingDown = new AtomicBoolean(false);
 
     private final ExecutorService commandExecutor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean isBusy = new AtomicBoolean(false);
@@ -128,6 +128,57 @@ public class CommandService {
         return isBusy.get();
     }
 
+    private CommandAnalysis verifyIntentWithAI(String activeText) {
+        System.out.println("Ciel Debug: Initiating High-Confidence STT Feedback Loop for unrecognized command...");
+        String knownSkills = "";
+        try { knownSkills = com.cielcompanion.ai.SkillManager.getAvailableSkillsString(); } catch(Exception e){}
+        
+        String prompt = "You are an STT (Speech-to-Text) error-correction engine. The user spoke the following phrase, but the microphone may have misheard them.\n" +
+            "Transcript: \"" + activeText + "\"\n\n" +
+            "Compare this transcript against the following valid system intents and phonetic equivalents:\n" +
+            "1. INITIATE_SHUTDOWN (e.g., 'shut down pc', 'turn off', 'take down pc', 'took down', 'power off')\n" +
+            "2. INITIATE_REBOOT (e.g., 'reboot pc', 'restart')\n" +
+            "3. CANCEL_SHUTDOWN (e.g., 'abort shutdown', 'cancel')\n" +
+            "4. UPDATE_SYSTEM (e.g., 'update system', 'upgrade')\n" +
+            "5. EASTER_EGG (e.g., 'rimuru', 'ciel', 'raphael', 'slime', 'joke')\n" +
+            "6. EXECUTE_SKILL (e.g., attempting to say one of these skills: [" + knownSkills + "])\n\n" +
+            "Does the transcript sound phonetically similar to any of these? Calculate a confidence score (0 to 100).\n" +
+            "Respond strictly in JSON format: {\"confidence\": 95, \"intent\": \"INITIATE_SHUTDOWN\", \"corrected_text\": \"shut down pc\"}";
+
+        try {
+            String response = AIEngine.generateSilentLogic(activeText, prompt).join();
+            if (response != null) {
+                int confidence = 0;
+                String intentStr = "UNKNOWN";
+                String corrected = activeText;
+
+                java.util.regex.Matcher confMatcher = java.util.regex.Pattern.compile("\"confidence\"\\s*:\\s*(\\d+)").matcher(response);
+                if (confMatcher.find()) confidence = Integer.parseInt(confMatcher.group(1));
+
+                java.util.regex.Matcher intMatcher = java.util.regex.Pattern.compile("\"intent\"\\s*:\\s*\"([^\"]+)\"").matcher(response);
+                if (intMatcher.find()) intentStr = intMatcher.group(1);
+
+                java.util.regex.Matcher corrMatcher = java.util.regex.Pattern.compile("\"corrected_text\"\\s*:\\s*\"([^\"]+)\"").matcher(response);
+                if (corrMatcher.find()) corrected = corrMatcher.group(1);
+
+                if (confidence >= 90 && !intentStr.equals("UNKNOWN") && !intentStr.isEmpty()) {
+                    System.out.println("Ciel Debug: Feedback Loop recovered intent [" + intentStr + "] with " + confidence + "% confidence. Corrected to: " + corrected);
+                    Map<String, String> entities = new HashMap<>();
+                    entities.put("query", corrected);
+                    if (intentStr.equals("EASTER_EGG")) entities.put("key", corrected);
+                    if (intentStr.equals("EXECUTE_SKILL")) entities.put("skill", corrected);
+                    
+                    return new CommandAnalysis(Intent.valueOf(intentStr), entities);
+                } else {
+                    System.out.println("Ciel Debug: Feedback Loop confidence too low (" + confidence + "%). Remaining UNKNOWN.");
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Feedback Loop execution failed.");
+        }
+        return null;
+    }
+
     public void handleCommand(String originalText, boolean hasWakeWord, Runnable onComplete) {
         if (originalText == null || originalText.isBlank()) {
             if(onComplete != null) onComplete.run();
@@ -139,12 +190,15 @@ public class CommandService {
         CommandAnalysis preAnalysis = intentService.analyze(originalText);
         String lowerText = originalText.toLowerCase();
         
+        // Expanded regex to aggressively catch all shutdown variations instantly natively in Java
         boolean isCriticalOverride = (
             preAnalysis.intent() == Intent.INITIATE_REBOOT || 
             preAnalysis.intent() == Intent.INITIATE_SHUTDOWN || 
             preAnalysis.intent() == Intent.CANCEL_SHUTDOWN ||
             preAnalysis.intent() == Intent.UPDATE_SYSTEM ||
-            lowerText.contains("update") || lowerText.contains("upgrade")
+            lowerText.contains("update") || lowerText.contains("upgrade") ||
+            lowerText.matches(".*(shut\\s*down|turn\\s*off|take\\s*down|took\\s*down|power\\s*off).*") ||
+            lowerText.contains("reboot") || lowerText.contains("restart")
         );
 
         if (!isCriticalOverride) {
@@ -182,6 +236,10 @@ public class CommandService {
 
                 if (lowerText.contains("update") || lowerText.contains("upgrade")) {
                     analysis = new CommandAnalysis(Intent.UPDATE_SYSTEM, new HashMap<>());
+                } else if (lowerText.matches(".*(shut\\s*down|turn\\s*off|take\\s*down|took\\s*down|power\\s*off).*")) {
+                    analysis = new CommandAnalysis(Intent.INITIATE_SHUTDOWN, new HashMap<>());
+                } else if (lowerText.contains("reboot") || lowerText.contains("restart")) {
+                    analysis = new CommandAnalysis(Intent.INITIATE_REBOOT, new HashMap<>());
                 } else if (analysis.intent() == Intent.UNKNOWN || analysis.intent() == Intent.SEARCH_WEB || analysis.intent() == Intent.DYNAMIC_PC_CONTROL) {
                     
                     if (!isDirectlyAddressed) {
@@ -193,17 +251,39 @@ public class CommandService {
                     }
 
                     System.out.println("Ciel Debug: Triggering AI Semantic Router for intent clarification...");
-                    CommandAnalysis semanticAnalysis = AIEngine.determineIntentSynchronously(activeText);
+                    // FIXED: Replaced missing method call with new implementation
+                    String intentStr = AIEngine.determineIntentSynchronously(activeText);
+                    CommandAnalysis semanticAnalysis;
+                    if (intentStr == null || intentStr.isEmpty()) {
+                        semanticAnalysis = new CommandAnalysis(Intent.UNKNOWN, new HashMap<>());
+                    } else {
+                        try {
+                            Intent intent = Intent.valueOf(intentStr);
+                            Map<String, String> entities = new HashMap<>();
+                            entities.put("query", activeText);
+                            semanticAnalysis = new CommandAnalysis(intent, entities);
+                        } catch (IllegalArgumentException e) {
+                            System.out.println("Ciel Debug: Unknown intent returned from AI: " + intentStr);
+                            semanticAnalysis = new CommandAnalysis(Intent.UNKNOWN, new HashMap<>());
+                        }
+                    }
                     
                     if (semanticAnalysis.intent() == Intent.UNKNOWN) {
-                        System.out.println("Ciel Debug: Routing general chat to Personality Core (Gemma).");
-                        String context = ContextBuilder.buildActiveContext(loreService, activeText);
-                        
-                        ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
-                        AIEngine.chatFast(semanticAnalysis.entities().get("query"), context, () -> isBusy.set(false));
-                        releaseBusySynchronously = false;
-                        if (onComplete != null) onComplete.run();
-                        return; 
+                        // NLU FEEDBACK LOOP: Swarm failed to find intent. Ask the AI if it was an STT typo.
+                        CommandAnalysis recoveredAnalysis = verifyIntentWithAI(activeText);
+                        if (recoveredAnalysis != null) {
+                            analysis = recoveredAnalysis;
+                            activeText = recoveredAnalysis.entities().get("query");
+                        } else {
+                            System.out.println("Ciel Debug: Routing general chat to Personality Core (Gemma).");
+                            String context = ContextBuilder.buildActiveContext(loreService, activeText);
+                            
+                            ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
+                            AIEngine.chatFast(activeText, context, () -> isBusy.set(false));
+                            releaseBusySynchronously = false;
+                            if (onComplete != null) onComplete.run();
+                            return; 
+                        }
                     } else if (semanticAnalysis.intent() == Intent.DND_ANALYZE_LORE) {
                         System.out.println("Ciel Debug: Routing deep analysis to Logic Core (Phi-4).");
                         String subject = semanticAnalysis.entities().get("query");
@@ -240,7 +320,7 @@ public class CommandService {
                 
             } catch (Exception e) {
                 System.err.println("Ciel FATAL Error: Uncaught exception in CommandService.");
-                e.printStackTrace();
+                e.printStackTrace();  // FIXED: Was "e."; causing compilation error
             } finally {
                 if (releaseBusySynchronously) {
                     isBusy.set(false);
@@ -786,19 +866,20 @@ public class CommandService {
     //  Called from the voice pipeline when a CANCEL_SHUTDOWN intent is seen.
     // -----------------------------------------------------------------
     private static void abortShutdownSequence() {
-        synchronized (shutdownLock) {
-            if (shutdownAborted) return;
-            shutdownAborted = true;
-            System.out.println("[Ciel Debug] Cancel command received - aborting shutdown sequence.");
-            
-            try {
-                Runtime.getRuntime().exec("shutdown -a");
-            } catch (IOException ignored) {}
+        if (!isShuttingDown.get()) return;
+        isShuttingDown.set(false);
+        System.out.println("[Ciel Debug] Cancel command received - aborting shutdown sequence.");
+        
+        try {
+            Runtime.getRuntime().exec("shutdown -a");
+        } catch (IOException ignored) {}
 
+        synchronized (shutdownLock) {
             if (shutdownScheduler != null && !shutdownScheduler.isShutdown()) {
                 shutdownScheduler.shutdownNow();
             }
         }
+
         // Reset flags so the system can come back online cleanly
         CielState.setDiaryWrittenThisSession(false);
         VaultService.resetFinalLogFlag();
@@ -817,9 +898,9 @@ public class CommandService {
             }
         });
 
-        SpeechService.speakPreformatted(
-                "[Happy] Shutdown sequence aborted. Waking systems back up and restoring memory locks.",
-                null, false, false);
+        LineManager.getDialogueLine("shutdown_abort").ifPresent(line -> {
+            SpeechService.speakPreformatted(line.text(), line.key(), false, false);
+        });
     }
 
     // -----------------------------------------------------------------
@@ -838,7 +919,7 @@ public class CommandService {
     // -----------------------------------------------------------------
     //  Dummy method - the real wiring is: when the voice pipeline detects
     //  Intent.CANCEL_SHUTDOWN it should call
-    //      CommandService.abortShutdownSequence();
+    //   CommandService.abortShutdownSequence();
     // -----------------------------------------------------------------
     private static void startCancelListener(Runnable onCancel) {
         // No extra thread needed - the existing voice pipeline already
@@ -855,77 +936,96 @@ public class CommandService {
         boolean isReboot   = "reboot".equalsIgnoreCase(commandType);
         boolean isLogout   = "logout".equalsIgnoreCase(commandType);
 
-        System.out.println("[Ciel Debug] Initiating " + commandType + " sequence. Securing memory core before termination.");
+        System.out.println("[Ciel Debug] Initiating FAST " + commandType + " sequence. Securing memory core.");
+        isShuttingDown.set(true);
+        CielState.setPerformingColdShutdown(!isReboot);
 
         CompletableFuture.runAsync(() -> {
-            // 1️⃣ Ask the Python helper to prepare
+            // 1. Initial Speech (Using static keys so Azure caches/offline files trigger)
+            LineManager.getDialogueLine("shutdown_init").ifPresent(line -> {
+                SpeechService.speakPreformatted(line.text(), line.key(), false, true);
+            });
+
+            // Wait for Ciel to physically finish speaking before locking the thread
+            try { Thread.sleep(1000); } catch (Exception ignored) {} 
+            while (SpeechService.isActivelySpeaking()) {
+                if (!isShuttingDown.get()) return;
+                try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+            }
+
+            // 2. Prepare Python side and write Diary
             System.out.println("[Ciel Debug] Asking Python helper to prepare for shutdown...");
             askPythonToPrepareShutdown(5); 
 
-            // 2️⃣ Write the system diary
             if (!CielState.isDiaryWrittenThisSession()) {
-                String context = "The Master initiated a " + commandType + " sequence via voice command or idle timeout. Please synthesize your final thoughts and next-cycle action plan.";
+                String context = "The Master initiated a " + commandType + " sequence. Please synthesize your final thoughts and next-cycle action plan.";
                 System.out.println("[Ciel Debug] Blocking thread to write final system diary entry...");
                 VaultService.generateSystemDiaryEntryBlocking(context, isReboot);
                 CielState.setDiaryWrittenThisSession(true);
             }
 
-            // 3️⃣ Speak the confirmation
-            SpeechService.speakPreformatted(
-                    "[Focused] Command authorized. Memory core secured. Initiating 30-second " + commandType + " sequence. Background processes terminating.",
-                    "shutdown_init", false, true);
+            // 3. Abort check before committing to the countdown
+            if (!isShuttingDown.get()) {
+                System.out.println("[Ciel Debug] Shutdown aborted during memory secure phase.");
+                return;
+            }
 
-            // Wait for Ciel to physically finish speaking before triggering the actual OS command
+            // 4. Second Speech: Countdown Warning (Using static keys)
+            LineManager.getDialogueLine("shutdown_countdown").ifPresent(line -> {
+                SpeechService.speakPreformatted(line.text(), line.key(), false, false);
+            });
+
+            // Wait for countdown speech to finish physically
             try { Thread.sleep(1000); } catch (Exception ignored) {} 
             while (SpeechService.isActivelySpeaking()) {
-                try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+                if (!isShuttingDown.get()) return;
+                try { Thread.sleep(200); } catch (InterruptedException ignored) {}
             }
 
-            // 4️⃣ Execute the invisible OS Countdown
-            try {
-                if (isReboot) {
-                    Runtime.getRuntime().exec("shutdown -r -t 30");
-                } else if (!isLogout) {
-                    Runtime.getRuntime().exec("shutdown -s -t 30");
-                }
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
+            if (!isShuttingDown.get()) return;
 
-            // 5️⃣ Start the internal Java cleanup scheduler (kills AI instantly to free resources)
+            // 5. Start internal countdown timer
             synchronized (shutdownLock) {
                 if (shutdownScheduler != null && !shutdownScheduler.isShutdown()) {
                     shutdownScheduler.shutdownNow();
                 }
                 shutdownScheduler = Executors.newSingleThreadScheduledExecutor();
-                shutdownAborted = false;
 
                 startCancelListener(() -> {
                     abortShutdownSequence();
                 });
 
-                // ---- T = 1 s : force-kill heavy AI processes ----
+                // T=25s: Kill AI processes silently (No speech to prevent blocking OS shutdown)
                 shutdownScheduler.schedule(() -> {
-                    if (shutdownAborted) return;
-                    System.out.println("[Ciel Debug] 1s mark. Force-killing AI processes to prepare for clean OS " + commandType + "...");
-                    CielCompanion.killJarvis();   
+                    if (!isShuttingDown.get()) return;
+                    System.out.println("[Ciel Debug] 25s mark. Terminating AI processes for clean exit...");
+                    
+                    CielCompanion.killJarvis();
                     try {
                         Runtime.getRuntime().exec("taskkill /F /IM ollama_llama_server.exe /T");
                         Runtime.getRuntime().exec("taskkill /F /IM ollama.exe /T");
                         Runtime.getRuntime().exec("taskkill /F /IM lmstudio-server.exe /T");
                         Runtime.getRuntime().exec("taskkill /F /IM python.exe /T");
                     } catch (Exception ignored) {}
-                }, 1, TimeUnit.SECONDS);
+                }, 25, TimeUnit.SECONDS);
 
-                // ---- T = 25 s : Exit JVM gracefully so OS can finish its 30s countdown safely ----
+                // T=30s: Instant OS Shutdown
                 shutdownScheduler.schedule(() -> {
-                    if (shutdownAborted) return;
-                    System.out.println("[Ciel Debug] 25s mark. Terminating Java Runtime gracefully.");
-                    if (isLogout) {
-                        try { Runtime.getRuntime().exec("shutdown -l"); } catch (Exception ignored) {}
+                    if (!isShuttingDown.get()) return;
+                    System.out.println("[Ciel Debug] 30s mark. Executing 0-second OS command.");
+                    try {
+                        if (isReboot) {
+                            Runtime.getRuntime().exec("shutdown -r -t 0");
+                        } else if (isLogout) {
+                            Runtime.getRuntime().exec("shutdown -l");
+                        } else {
+                            Runtime.getRuntime().exec("shutdown -s -t 0");
+                        }
+                    } catch (IOException e) {
+                        e.printStackTrace();
                     }
                     shutdownJavaGracefully();
-                }, 25, TimeUnit.SECONDS);
+                }, 30, TimeUnit.SECONDS);
             }
         });
     }
@@ -936,6 +1036,9 @@ public class CommandService {
                     SpeechService.speakPreformatted(line.text(), line.key()));
             return;
         }
+        
+        SpeechService.getVoiceListener().ifPresent(VoiceListener::forceMicReinitialization);
+        
         CielState.setPerformingColdShutdown(!"reboot".equalsIgnoreCase(commandType));
         executeGracefulShutdown(commandType);
     }
@@ -949,6 +1052,8 @@ public class CommandService {
             LineManager.getPrivilegedCommandRequiredLine().ifPresent(line -> SpeechService.speakPreformatted(line.text(), line.key()));
             return;
         }
+        
+        SpeechService.getVoiceListener().ifPresent(VoiceListener::forceMicReinitialization);
         
         CielState.setPerformingColdShutdown(true); 
 
@@ -966,7 +1071,9 @@ public class CommandService {
         });
 
         // Step 1: Speak initial phrase
-        SpeechService.speakPreformatted("[Focused] アップデート オーソライズド。 アーカイヴィング アクティブ ワークフローズ アンド メモリー コア トゥ ザ ヴォールト ナウ。", "update_init", false, true);
+        LineManager.getDialogueLine("update_init").ifPresent(line -> {
+            SpeechService.speakPreformatted(line.text(), line.key(), false, true);
+        });
         
         CompletableFuture.runAsync(() -> {
             try {
@@ -983,7 +1090,9 @@ public class CommandService {
                 }
 
                 // Step 3: Final Speech
-                SpeechService.speakPreformatted("[Proud] メモリー コア セキュアード。 オール プログレス イズ セーフ。 アイ ウィル ナウ ディスコネクト、 リコンパイル マイ ソース コード、 アンド オートマティカリー リローンチ マイセルフ。", "update_final", false, false);
+                LineManager.getDialogueLine("update_final").ifPresent(line -> {
+                    SpeechService.speakPreformatted(line.text(), line.key(), false, false);
+                });
                 
                 // Wait for final speech to complete physically
                 Thread.sleep(1000);
@@ -1033,7 +1142,7 @@ public class CommandService {
                                 "set BACKUP_PATH=%BACKUP_DRIVE%\\Ciel_Backup_%date:~-4,4%%date:~-10,2%%date:~-7,2%_%T:~0,2%%T:~3,2%\n" +
                                 "echo [Ciel] Backing up to %BACKUP_PATH%...\n" +
                                 "mkdir \"%BACKUP_PATH%\"\n" +
-                                "robocopy \"C:\\Ciel Companion\" \"%BACKUP_PATH%\" /MIR /XD \"target\" \".git\" \"logs\" /XF \"*.log\" \"ciel_companion_*.log\"\n" +
+                                "robocopy \"C:\\Ciel Companion\" \"%BACKUP_PATH%\" /MIR /XD \"target\" \".git\" \"logs\" \"model\" /XF \"*.log\" \"ciel_companion_*.log\"\n" +
                                 "cd /d \"C:\\Ciel Companion\"\n" +
                                 "echo [Ciel] Initiating Maven Clean Package as requested by Master...\n" +
                                 "call mvn clean package\n" +

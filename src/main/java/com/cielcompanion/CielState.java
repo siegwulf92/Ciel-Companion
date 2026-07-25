@@ -44,6 +44,9 @@ public class CielState {
     private static CielGui cielGui;
     private static EmotionManager emotionManager;
 
+    // NEW: System Update State
+    private static boolean systemUpdateInProgress = false;
+
     public static void initialize(boolean warmBoot) {
         appStartTime = System.currentTimeMillis();
         isWarmBoot = warmBoot;
@@ -76,6 +79,7 @@ public class CielState {
     public static int getConsecutiveActiveTicks() { return consecutiveActiveTicks; }
     public static double getPatience() { return patience; }
     public static boolean isDiaryWrittenThisSession() { return diaryWrittenThisSession; }
+    public static boolean isSystemUpdateInProgress() { return systemUpdateInProgress; }
 
     // --- Setters ---
     public static void setNextSpeakAt(long timestamp) { nextSpeakAt = timestamp; }
@@ -100,6 +104,7 @@ public class CielState {
     public static void incrementConsecutiveActiveTicks() { consecutiveActiveTicks++; }
     public static void setPatience(double p) { patience = Math.max(0, Math.min(1.0, p)); }
     public static void setDiaryWrittenThisSession(boolean written) { diaryWrittenThisSession = written; }
+    public static void setSystemUpdateInProgress(boolean systemUpdateInProgress) { CielState.systemUpdateInProgress = systemUpdateInProgress; }
     
     public static void resetShutdownState() { 
         diaryWrittenThisSession = false; 

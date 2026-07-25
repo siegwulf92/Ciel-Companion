@@ -5,8 +5,6 @@ import com.cielcompanion.memory.Fact;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.service.Settings;
 import com.cielcompanion.service.SpeechService;
-import com.cielcompanion.service.nlu.CommandAnalysis;
-import com.cielcompanion.service.nlu.Intent;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -18,9 +16,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.HashMap;
 import java.util.LinkedList;
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -40,7 +36,7 @@ public class AIEngine {
     private static final ExecutorService translationExecutor = Executors.newSingleThreadExecutor();
 
     private static final Pattern EMOTION_TAG_PATTERN = Pattern.compile("\\[([a-zA-Z]+)\\]");
-    private static final Pattern THINK_TAG_PATTERN = Pattern.compile("(?s)<think>.*?</think>");
+    private static final Pattern THINK_TAG_PATTERN = Pattern.compile("(?s)}\\s*");
     private static final Pattern ALPHA_NUM_PATTERN = Pattern.compile("[a-zA-Z0-9]");
     private static final Pattern ALPHA_PATTERN = Pattern.compile("[a-zA-Z]");
 
@@ -128,7 +124,8 @@ public class AIEngine {
 
     public static String transliterateToKatakanaSync(String englishText) {
         try {
-            return transliterateAsync(englishText).get(150, TimeUnit.SECONDS); 
+            // Lowered timeout to 10 seconds. We shouldn't hang the GUI forever if Ollama drops.
+            return transliterateAsync(englishText).get(10, TimeUnit.SECONDS); 
         } catch (Exception e) {
             return englishText; 
         }
@@ -137,110 +134,46 @@ public class AIEngine {
     private static String attemptTransliteration(String englishText) {
         activeSwarmTasks.incrementAndGet();
         try {
-            String url = "http://localhost:8000/transliterate";
+            // DIRECT ROUTING: Hit the native FastAPI /katakana endpoint in openjarvis.py
+            // Bypasses the ChatCompletion queue entirely to prevent deadlocks
+            String url = "http://localhost:8000/katakana";
+            
             JsonObject payload = new JsonObject();
             payload.addProperty("text", englishText);
-            payload.addProperty("model", ModelManager.getModelName(ModelManager.ModelTier.TRANSLATOR)); 
-            ensureLiteLlmProvider(payload);
+            
+            // Auto-Retry Loop if OpenJarvis is busy starting up or network blips
+            for (int attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    HttpRequest request = HttpRequest.newBuilder()
+                            .uri(URI.create(url))
+                            .header("Content-Type", "application/json")
+                            .timeout(Duration.ofSeconds(10)) 
+                            .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
+                            .build();
 
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("Content-Type", "application/json")
-                    .timeout(Duration.ofSeconds(150)) 
-                    .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
-                    .build();
-
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() == 200) {
-                JsonObject jsonResponse = JsonParser.parseString(response.body()).getAsJsonObject();
-                if (jsonResponse.has("katakana")) {
-                    String result = jsonResponse.get("katakana").getAsString();
-                    if (result.startsWith("エラー")) {
-                        System.err.println("Ciel Katakana Swarm Error: " + result);
-                        return null;
+                    HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                    if (response.statusCode() == 200) {
+                        JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
+                        if (json.has("katakana")) {
+                            String result = json.get("katakana").getAsString();
+                            if (!result.contains("エラー")) return result;
+                        }
+                    } else if (attempt == 3) {
+                        System.err.println("Ciel Katakana Error: HTTP Status " + response.statusCode());
                     }
-                    return result;
+                } catch (Exception e) {
+                    if (attempt == 3) {
+                        System.err.println("Ciel Katakana Network Error: " + e.getMessage());
+                    } else {
+                        // Silent wait before retry
+                        try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
+                    }
                 }
-            } else {
-                System.err.println("Ciel Katakana Error: HTTP Status " + response.statusCode() + " - " + response.body());
             }
-        } catch (Exception e) {
-            System.err.println("Ciel Katakana Network Error: " + e.getMessage());
         } finally {
             activeSwarmTasks.decrementAndGet();
         }
         return null;
-    }
-
-    public static CommandAnalysis determineIntentSynchronously(String userMessage) {
-        activeSwarmTasks.incrementAndGet();
-        try {
-            String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
-            String knownSkills = SkillManager.getAvailableSkillsString();
-            
-            String systemContext = "You are the NLU intent router for Ciel. Analyze the user's STT text, correct phonetic typos, and map it to an intent.\n" +
-                "Available Intents:\n" +
-                "GET_WEATHER : Ask about current weather\n" +
-                "GET_TIME : Ask for time or date\n" +
-                "GET_SYSTEM_STATUS : Ask for PC CPU/RAM status\n" +
-                "SEARCH_WEB : User asks for real-world facts, current events, prices, or general internet knowledge.\n" +
-                "GET_DAILY_REPORT : User asks for a daily briefing, stock portfolio update, or morning report.\n" +
-                "EXECUTE_SKILL : User is asking to use a previously learned skill: [" + knownSkills + "]. The cleaned_text MUST be the exact name of the skill.\n" +
-                "DYNAMIC_PC_CONTROL : User asks to write a NEW script, automate a task, or manipulate PC settings NOT in the skills list.\n" +
-                "INITIATE_SHUTDOWN : User tells you to turn off, shut down, or power off the PC.\n" +
-                "INITIATE_REBOOT : User tells you to restart or reboot the PC.\n" +
-                "UPDATE_SYSTEM : User asks you to update yourself, shut yourself down, or exit the application.\n" +
-                "DND_ANALYZE_LORE : Deep lore analysis, world-building, or cross-referencing files (Tensura, D&D, etc). The 'arguments' field MUST contain a comma-separated list of the specific subjects/names to search for.\n" +
-                "UNKNOWN : General chat, questions, or conversation.\n\n" +
-                "MASTER'S PREFERENCES & INFERRED LOGIC:\n" +
-                "The Master prefers quantified outputs to be even numbers or multiples of 5. If the user gives a vague command, infer a logical target value based on these preferences and provide it in the 'arguments' field.\n\n" +
-                "Return strictly JSON: { \"intent\": \"THE_INTENT\", \"cleaned_text\": \"Corrected query or skill name\", \"arguments\": \"Inferred parameters separated by spaces, or empty string\" }";
-
-            JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, userMessage, false);
-            ensureLiteLlmProvider(payload);
-
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("Content-Type", "application/json")
-                    .timeout(Duration.ofSeconds(120))
-                    .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
-                    .build();
-
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() == 200) {
-                String content = ModelManager.extractMessageContent(response.body());
-                if (content != null) {
-                    JsonObject parsed = JsonParser.parseString(content).getAsJsonObject();
-                    
-                    String intentStr = parsed.get("intent").getAsString();
-                    String cleanedText = parsed.has("cleaned_text") ? parsed.get("cleaned_text").getAsString() : userMessage;
-                    String arguments = parsed.has("arguments") ? parsed.get("arguments").getAsString() : "";
-                    
-                    Intent mappedIntent;
-                    try { mappedIntent = Intent.valueOf(intentStr); } catch (Exception e) { mappedIntent = Intent.UNKNOWN; }
-                    
-                    if (mappedIntent == Intent.UNKNOWN) {
-                        cleanedText = userMessage; 
-                    }
-                    
-                    Map<String, String> entities = new HashMap<>();
-                    entities.put("query", cleanedText); 
-                    entities.put("arguments", arguments);
-                    
-                    System.out.println("Ciel Debug: Semantic Router -> Intent: [" + mappedIntent + "] | Skill/Query: '" + cleanedText + "' | Args: '" + arguments + "'");
-                    return new CommandAnalysis(mappedIntent, entities);
-                }
-            }
-        } catch (Exception e) {
-            System.err.println("Ciel Warning: Semantic routing failed. Falling back to UNKNOWN.");
-        } finally {
-            activeSwarmTasks.decrementAndGet();
-        }
-        
-        Map<String, String> entities = new HashMap<>();
-        entities.put("query", userMessage);
-        entities.put("arguments", "");
-        return new CommandAnalysis(Intent.UNKNOWN, entities);
     }
 
     public static CompletableFuture<String> generateSilentLogic(String userMessage, String systemContext) {
@@ -267,7 +200,7 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofHours(24))
+                .timeout(Duration.ofMinutes(2)) // CRITICAL FIX: Dropped from 24 Hours to 2 Minutes to prevent queue lockup
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -362,13 +295,17 @@ public class AIEngine {
     }
 
     public static void chatFast(String userMessage, String systemContext, Runnable onComplete) {
-        System.out.println("Ciel Debug: Routing to Personality Core (Streamed)...");
+        System.out.println("Ciel Debug: Routing to Personality Core (Local Dialogue Race -> Manager Audit)...");
         
         activeSwarmTasks.incrementAndGet();
         addHistory("user", userMessage);
         
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.PERSONALITY);
-        JsonObject payload = buildPayloadWithHistory(ModelManager.ModelTier.PERSONALITY, systemContext, true);
+        
+        // Force stream=false to get the final audited block at once
+        JsonObject payload = buildPayloadWithHistory(ModelManager.ModelTier.PERSONALITY, systemContext, false);
+        // Ensure "model" is set to "local" so openjarvis routes to the race
+        payload.addProperty("model", "local");
         
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -377,73 +314,32 @@ public class AIEngine {
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
-        AtomicBoolean isFallbackTriggered = new AtomicBoolean(false);
-
-        httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofLines())
+        httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
                 .thenAccept(response -> {
                     if (response.statusCode() != 200) {
                         triggerFallback(userMessage, systemContext, onComplete);
-                        isFallbackTriggered.set(true);
                         return;
                     }
-
-                    StringBuilder sentenceBuffer = new StringBuilder();
-                    StringBuilder fullResponseBuffer = new StringBuilder(); 
-
-                    response.body().forEach(line -> {
-                        if (line.startsWith("data: ") && !line.equals("data: [DONE]")) {
-                            try {
-                                JsonObject chunk = JsonParser.parseString(line.substring(6)).getAsJsonObject();
-                                JsonArray choices = chunk.getAsJsonArray("choices");
-                                if (choices.size() > 0) {
-                                    JsonObject delta = choices.get(0).getAsJsonObject().getAsJsonObject("delta");
-                                    if (delta.has("content")) {
-                                        String textDelta = delta.get("content").getAsString();
-                                        sentenceBuffer.append(textDelta);
-                                        fullResponseBuffer.append(textDelta);
-
-                                        String bufferStr = sentenceBuffer.toString();
-                                        int splitIndex = -1;
-                                        String[] boundaries = {". ", "! ", "? ", "\n", "。", "！", "？"};
-                                        for (String b : boundaries) {
-                                            int idx = bufferStr.indexOf(b);
-                                            if (idx != -1) {
-                                                if (splitIndex == -1 || idx < splitIndex) {
-                                                    splitIndex = idx + b.length();
-                                                }
-                                            }
-                                        }
-
-                                        if (splitIndex != -1) {
-                                            String chunkToSpeak = bufferStr.substring(0, splitIndex);
-                                            processAndSpeakChunk(chunkToSpeak);
-                                            sentenceBuffer.delete(0, splitIndex);
-                                        }
-                                    }
-                                }
-                            } catch (Exception ignored) {}
-                        }
-                    });
                     
-                    if (sentenceBuffer.length() > 0 && sentenceBuffer.toString().trim().length() > 0) {
-                        processAndSpeakChunk(sentenceBuffer.toString());
+                    String rawContent = ModelManager.extractMessageContent(response.body());
+                    if (rawContent != null) {
+                        String cleanContent = THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim();
+                        // Speak it in one chunk since the stream is disabled for the audit
+                        processAndSpeakChunk(cleanContent);
+                        
+                        addHistory("assistant", cleanContent);
+                        long durationMs = SpeechService.estimateSpeechDuration(cleanContent);
+                        int extraSeconds = (int) (durationMs / 1000) + 15;
+                        com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
                     }
-                    
-                    addHistory("assistant", fullResponseBuffer.toString());
-
-                    // CRITICAL FIX: Add 15 extra seconds explicitly *after* the estimated speech ends
-                    long durationMs = SpeechService.estimateSpeechDuration(fullResponseBuffer.toString());
-                    int extraSeconds = (int) (durationMs / 1000) + 15;
-                    com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
-                    
                 })
                 .exceptionally(e -> {
-                    if (!isFallbackTriggered.get()) triggerFallback(userMessage, systemContext, onComplete);
+                    triggerFallback(userMessage, systemContext, onComplete);
                     return null;
                 })
                 .whenComplete((res, ex) -> {
                     activeSwarmTasks.decrementAndGet();
-                    if (!isFallbackTriggered.get() && onComplete != null) onComplete.run();
+                    if (onComplete != null) onComplete.run();
                 });
     }
 
@@ -567,7 +463,6 @@ public class AIEngine {
         
         addHistory("assistant", cleanContent);
 
-        // CRITICAL FIX: Add 15 extra seconds explicitly *after* the estimated speech ends
         long durationMs = SpeechService.estimateSpeechDuration(cleanContent);
         int extraSeconds = (int) (durationMs / 1000) + 15;
         com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
@@ -685,5 +580,39 @@ public class AIEngine {
         transliterateAsync(textToProcess).thenAccept(katakana -> {
             SpeechService.speakChunk(katakana); 
         });
+    }
+
+    public static String determineIntentSynchronously(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+
+        String systemContext = "You are an intent classification system. Your task is to classify the user's input into one of the following intents: " +
+                "INITIATE_SHUTDOWN, INITIATE_REBOOT, CANCEL_SHUTDOWN, UPDATE_SYSTEM, GET_TIME, GET_WEATHER, GET_WEATHER_FORECAST, GET_SYSTEM_STATUS, " +
+                "GET_DAILY_REPORT, GET_TOP_MEMORY_PROCESS, GET_TOP_CPU_PROCESS, RECALL_FACT, DND_GET_RULE, DND_API_SEARCH, GET_MOON_PHASE, " +
+                "GET_VISIBLE_PLANETS, GET_CONSTELLATIONS, GET_ECLIPSES, DYNAMIC_PC_CONTROL, EXECUTE_SKILL, FIND_APP_PATH, SCAN_FOR_APPS, " +
+                "TERMINATE_PROCESS, TERMINATE_PROCESS_FORCE, REMEMBER_FACT, REMEMBER_FACT_SIMPLE, OPEN_APPLICATION, START_ROUTINE, " +
+                "SET_MODE_ATTENTIVE, SET_MODE_DND, SET_MODE_INTEGRATED, LEARN_PHONETIC, DND_RUN_AUDIT, DND_RECORD_MASTERY, DND_REPORT_SURGE, " +
+                "OPEN_CHEAT_SHEET, TENSURA_ENTER_WORLD, TENSURA_CONFIRM_COPY, DND_ROLL_DICE, DND_PLAY_SOUND, DND_CREATE_SESSION_NOTE, " +
+                "DND_ADD_TO_SESSION_NOTE, DND_RECALL_SESSION_NOTE, DND_LINK_SESSION_NOTE, DND_RECALL_SESSION_LINKS, DND_REVEAL_LORE, " +
+                "DND_ANALYZE_LORE, TOGGLE_LISTENING, EASTER_EGG, UNKNOWN." +
+                "\n\nRespond with ONLY the intent name (exactly as above) that best matches the user's input. If none match, respond with UNKNOWN.";
+
+        try {
+            String result = AIEngine.generateSilentLogic(text, systemContext).get(10, TimeUnit.SECONDS);
+            if (result != null) {
+                String[] parts = result.trim().split("\\s+");
+                if (parts.length > 0) {
+                    String intentStr = parts[0].trim().toUpperCase();
+                    intentStr = intentStr.replaceAll("[^A-Z0-9_]", "");
+                    if (!intentStr.isEmpty()) {
+                        return intentStr;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Intent classification failed: " + e.getMessage());
+        }
+        return null;
     }
 }

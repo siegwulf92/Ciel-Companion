@@ -97,7 +97,7 @@ public class SkillCrafterService {
                             previousFailures += "- Attempt " + attempt + " failed safety or compilation check.\n";
                         }
                     } else {
-                        previousFailures += "- Attempt " + attempt + " failed to provide a valid code block.\n";
+                        previousFailures += "- Attempt " + attempt + " failed to provide a valid code block. YOU MUST USE ``` TRIPLE BACKTICKS AROUND YOUR CODE.\n";
                     }
                 }
 
@@ -123,27 +123,34 @@ public class SkillCrafterService {
                 finalName = nameMatcher.group(1).trim();
             }
 
-            // CRITICAL FIX: Added 'java' to the regex matcher to catch core modification requests
-            Pattern pattern = Pattern.compile("```(bat|batch|python|py|cmd|powershell|ps1|markdown|md|java)\\s*(.*?)\\s*```", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+            // CRITICAL FIX: The regex now catches ANY markdown code block, even if the LLM forgets the language tag
+            Pattern pattern = Pattern.compile("```(?:bat|batch|python|py|cmd|powershell|ps1|markdown|md|java)?\\s*(.*?)\\s*```", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
             Matcher matcher = pattern.matcher(swarmOutput);
             
             if (matcher.find()) {
-                String lang = matcher.group(1).toLowerCase();
-                String code = matcher.group(2).trim();
+                String code = matcher.group(1).trim();
+                
+                // Fallback logic to detect language if the LLM forgot the tag
+                String lang = "powershell";
+                if (swarmOutput.toLowerCase().contains("```python") || swarmOutput.toLowerCase().contains("```py") || code.contains("def execute")) {
+                    lang = "python";
+                } else if (swarmOutput.toLowerCase().contains("```java") || swarmOutput.toLowerCase().contains("```markdown") || swarmOutput.toLowerCase().contains("```md")) {
+                    lang = "markdown";
+                } else if (swarmOutput.toLowerCase().contains("```bat") || swarmOutput.toLowerCase().contains("```cmd")) {
+                    lang = "bat";
+                }
                 
                 if (code.isBlank() || code.contains("Unsafe code detected")) {
                     System.out.println("Ciel Debug: Code rejected by Swarm Reviewer safety rules.");
                     return false; 
                 }
 
-                // Detect if the Swarm is proposing an upgrade to an existing CORE file instead of making a new skill
-                boolean isDraftRequest = lang.contains("markdown") || lang.contains("md") || lang.contains("java") || originalTask.toLowerCase().contains("core system upgrade");
+                boolean isDraftRequest = lang.equals("markdown") || lang.equals("java") || originalTask.toLowerCase().contains("core system upgrade");
 
-                String extension = ".bat";
+                String extension = ".ps1";
                 if (isDraftRequest) extension = ".md";
-                else if (lang.contains("python") || lang.contains("py")) extension = ".py";
-                else if (lang.contains("powershell") || lang.contains("ps1")) extension = ".ps1";
-                else if (lang.contains("bat") || lang.contains("batch") || lang.contains("cmd")) extension = ".bat";
+                else if (lang.equals("python")) extension = ".py";
+                else if (lang.equals("bat")) extension = ".bat";
                 
                 String safeName = finalName.replaceAll("[^a-zA-Z0-9_]", "_").toLowerCase().replaceAll("_+$", "");
                 
@@ -155,12 +162,10 @@ public class SkillCrafterService {
                 Path filePath;
                 
                 if (isDraftRequest) {
-                    // CRITICAL FIX: Place in a subfolder so the VaultService Watcher doesn't instantly consume it
                     Path draftsDir = Paths.get(System.getProperty("user.dir"), "ciel", "requests", "drafts");
                     Files.createDirectories(draftsDir);
                     filePath = draftsDir.resolve(fileName);
                     
-                    // Format the code nicely for Master Taylor's review
                     code = "# CORE UPGRADE PROPOSAL: " + finalName + "\n\n" +
                            "> **STATUS:** PENDING MASTER REVIEW\n" +
                            "> **INSTRUCTIONS:** Review the logic below. If approved, manually integrate the changes and recompile.\n\n" +
@@ -206,7 +211,7 @@ public class SkillCrafterService {
 
                 return true;
             } else {
-                System.out.println("Ciel Debug: Could not parse code block from Swarm.");
+                System.out.println("Ciel Debug: Could not parse code block from Swarm output:\n" + swarmOutput.substring(0, Math.min(200, swarmOutput.length())));
                 return false;
             }
         } catch (IOException e) {
