@@ -2,7 +2,10 @@ package com.cielcompanion.service;
 
 import com.cielcompanion.ai.SkillManager;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
+import com.cielcompanion.service.LineManager.DialogueLine;
+import com.cielcompanion.CielCompanion;
 
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -32,45 +35,70 @@ public class SystemLifecycleService {
         ShortTermMemoryService.getMemory().setPrivilegedMode(true, 45);
         SpeechService.getVoiceListener().ifPresent(com.cielcompanion.service.VoiceListener::forceMicReinitialization);
 
+        String chantKey;
+        String chantText;
         if (action == LifecycleAction.UPDATE) {
-            SpeechService.speakPreformatted("[Focused] System update requested. Generating core code backups to your D drive. Please stand by.");
-            
-            // We delegate the backup entirely to update_ciel.bat so it happens safely while JVM is closed.
-            startAbortTimer(action);
+            chantKey = "sys_update_ack";
+            chantText = "[Focused] System update requested. Generating core code backups. Please stand by.";
+        } else if (action == LifecycleAction.SHUTDOWN) {
+            chantKey = "sys_shutdown_ack";
+            chantText = "[Focused] Initiating shutdown sequence. Disconnecting auxiliary routines.";
         } else {
-            String chant = action == LifecycleAction.SHUTDOWN ? "shutdown" : "reboot";
-            SpeechService.speakPreformatted("[Focused] Initiating " + chant + " sequence. Disconnecting auxiliary routines.");
-            startAbortTimer(action);
+            chantKey = "sys_reboot_ack";
+            chantText = "[Focused] Initiating reboot sequence. Disconnecting auxiliary routines.";
         }
+
+        // STEP 1: Speak acknowledgment (uses cached audio file if available)
+        SpeechService.speakSequentially(List.of(new DialogueLine(chantKey, chantText)), 0, true, () -> {
+            if (!isSequenceActive) return;
+            
+            // STEP 2: Save Memory / Diary
+            System.out.println("Ciel Debug: Acknowledgment complete. Saving memory vault...");
+            VaultService.generateSystemDiaryEntryBlocking("System lifecycle action requested: " + action.name(), action == LifecycleAction.REBOOT);
+
+            if (!isSequenceActive) return;
+
+            // STEP 3: Speak 30s Warning
+            String warnKey = "sys_lifecycle_warn";
+            String warnText = "[Observing] Sequence primed. You have thirty seconds to issue an abort command.";
+            
+            SpeechService.speakSequentially(List.of(new DialogueLine(warnKey, warnText)), 0, true, () -> {
+                // STEP 4: Start timers
+                startAbortTimer(action);
+            });
+        });
     }
 
     private static void startAbortTimer(LifecycleAction action) {
-        SpeechService.speakPreformatted("[Observing] Sequence primed. You have thirty seconds to issue an abort command.");
-
+        if (!isSequenceActive) return;
+        System.out.println("Ciel Debug: 30-second system termination timer started.");
         abortTimer = Executors.newSingleThreadScheduledExecutor();
         
+        // At 25s: Kill Swarm
+        abortTimer.schedule(() -> {
+            if (!isSequenceActive) return;
+            System.out.println("Ciel Debug: 25s mark reached. Terminating AI Swarm processes.");
+            SkillManager.executeSkill("skill_system_lifecycle_manager", "kill_swarm", null);
+            CielCompanion.killJarvis();
+        }, 25, TimeUnit.SECONDS);
+
+        // At 30s: Execute OS Action
         pendingExecution = abortTimer.schedule(() -> {
             if (!isSequenceActive) return; 
             
-            System.out.println("Ciel Debug: Timer expired. Executing final lifecycle command.");
-            SpeechService.speakPreformatted("[Focused] Timer expired. Disconnecting the AI swarm. See you soon, Master.");
+            System.out.println("Ciel Debug: 30s timer expired. Executing final lifecycle command.");
             
-            SkillManager.executeSkill("skill_system_lifecycle_manager", "kill_swarm", () -> {
-                try { Thread.sleep(2000); } catch (Exception ignored) {} 
-
-                if (action == LifecycleAction.SHUTDOWN) {
-                    SkillManager.executeSkill("skill_system_lifecycle_manager", "shutdown", null);
-                } else if (action == LifecycleAction.REBOOT) {
-                    SkillManager.executeSkill("skill_system_lifecycle_manager", "reboot", null);
-                } else if (action == LifecycleAction.UPDATE) {
-                    System.out.println("Ciel Debug: Update sequence terminating JVM and launching Autonomous Re-Compiler.");
-                    try {
-                        Runtime.getRuntime().exec("cmd /c start update_ciel.bat");
-                    } catch (Exception e) { e.printStackTrace(); }
-                    System.exit(0);
-                }
-            });
-
+            if (action == LifecycleAction.SHUTDOWN) {
+                SkillManager.executeSkill("skill_system_lifecycle_manager", "shutdown", null);
+            } else if (action == LifecycleAction.REBOOT) {
+                SkillManager.executeSkill("skill_system_lifecycle_manager", "reboot", null);
+            } else if (action == LifecycleAction.UPDATE) {
+                System.out.println("Ciel Debug: Update sequence terminating JVM and launching Autonomous Re-Compiler.");
+                try {
+                    Runtime.getRuntime().exec("cmd /c start update_ciel.bat");
+                } catch (Exception e) { e.printStackTrace(); }
+            }
+            System.exit(0);
         }, 30, TimeUnit.SECONDS);
     }
 
@@ -88,6 +116,6 @@ public class SystemLifecycleService {
         }
 
         ShortTermMemoryService.getMemory().setPrivilegedMode(false, 0);
-        SpeechService.speakPreformatted("[Happy] Lifecycle sequence successfully aborted. Standing by.");
+        SpeechService.speakPreformatted("[Happy] Lifecycle sequence successfully aborted. Standing by.", "sys_lifecycle_abort");
     }
 }

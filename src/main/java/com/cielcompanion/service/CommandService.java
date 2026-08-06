@@ -128,22 +128,25 @@ public class CommandService {
         return isBusy.get();
     }
 
+    // NEW: Aggressive Failsafe STT Engine for garbled microphone input.
     private CommandAnalysis verifyIntentWithAI(String activeText) {
-        System.out.println("Ciel Debug: Initiating High-Confidence STT Feedback Loop for unrecognized command...");
+        System.out.println("Ciel Debug: Initiating Aggressive Failsafe STT Feedback Loop for unrecognized command...");
         String knownSkills = "";
         try { knownSkills = com.cielcompanion.ai.SkillManager.getAvailableSkillsString(); } catch(Exception e){}
         
-        String prompt = "You are an STT (Speech-to-Text) error-correction engine. The user spoke the following phrase, but the microphone may have misheard them.\n" +
+        String prompt = "You are a critical STT (Speech-to-Text) error-correction engine for Ciel's core. The microphone captured garbled audio.\n" +
             "Transcript: \"" + activeText + "\"\n\n" +
-            "Compare this transcript against the following valid system intents and phonetic equivalents:\n" +
-            "1. INITIATE_SHUTDOWN (e.g., 'shut down pc', 'turn off', 'take down pc', 'took down', 'power off')\n" +
-            "2. INITIATE_REBOOT (e.g., 'reboot pc', 'restart')\n" +
-            "3. CANCEL_SHUTDOWN (e.g., 'abort shutdown', 'cancel')\n" +
-            "4. UPDATE_SYSTEM (e.g., 'update system', 'upgrade')\n" +
-            "5. EASTER_EGG (e.g., 'rimuru', 'ciel', 'raphael', 'slime', 'joke')\n" +
-            "6. EXECUTE_SKILL (e.g., attempting to say one of these skills: [" + knownSkills + "])\n\n" +
-            "Does the transcript sound phonetically similar to any of these? Calculate a confidence score (0 to 100).\n" +
-            "Respond strictly in JSON format: {\"confidence\": 95, \"intent\": \"INITIATE_SHUTDOWN\", \"corrected_text\": \"shut down pc\"}";
+            "Your objective is to map this to the CLOSEST valid system command if the user is clearly trying to give an order, rather than just chatting.\n" +
+            "Valid intents:\n" +
+            "1. INITIATE_SHUTDOWN (phonetically similar to: shut down, turn off, take down, power off, should town)\n" +
+            "2. INITIATE_REBOOT (phonetically similar to: reboot, restart, re boot)\n" +
+            "3. CANCEL_SHUTDOWN (phonetically similar to: abort, stop shutdown, cancel it)\n" +
+            "4. UPDATE_SYSTEM (phonetically similar to: update, upgrade, up date)\n" +
+            "5. TOGGLE_LISTENING (phonetically similar to: mute mic, stop listening, wake up)\n" +
+            "6. EASTER_EGG (phonetically similar to: rimuru, ciel, raphael, joke)\n" +
+            "7. EXECUTE_SKILL (phonetically similar to any of these skills: [" + knownSkills + "])\n\n" +
+            "Return JSON ONLY. If it matches a command, return: {\"confidence\": 95, \"intent\": \"[INTENT_NAME]\", \"corrected_text\": \"[The fixed phrase]\"}\n" +
+            "If it's just normal conversation, return: {\"confidence\": 0, \"intent\": \"UNKNOWN\"}";
 
         try {
             String response = AIEngine.generateSilentLogic(activeText, prompt).join();
@@ -161,8 +164,8 @@ public class CommandService {
                 java.util.regex.Matcher corrMatcher = java.util.regex.Pattern.compile("\"corrected_text\"\\s*:\\s*\"([^\"]+)\"").matcher(response);
                 if (corrMatcher.find()) corrected = corrMatcher.group(1);
 
-                if (confidence >= 90 && !intentStr.equals("UNKNOWN") && !intentStr.isEmpty()) {
-                    System.out.println("Ciel Debug: Feedback Loop recovered intent [" + intentStr + "] with " + confidence + "% confidence. Corrected to: " + corrected);
+                if (confidence >= 80 && !intentStr.equals("UNKNOWN") && !intentStr.isEmpty()) {
+                    System.out.println("Ciel Debug: Failsafe Loop recovered intent [" + intentStr + "] with " + confidence + "% confidence. Corrected to: " + corrected);
                     Map<String, String> entities = new HashMap<>();
                     entities.put("query", corrected);
                     if (intentStr.equals("EASTER_EGG")) entities.put("key", corrected);
@@ -170,11 +173,11 @@ public class CommandService {
                     
                     return new CommandAnalysis(Intent.valueOf(intentStr), entities);
                 } else {
-                    System.out.println("Ciel Debug: Feedback Loop confidence too low (" + confidence + "%). Remaining UNKNOWN.");
+                    System.out.println("Ciel Debug: Failsafe Loop confidence too low (" + confidence + "%). Remaining UNKNOWN.");
                 }
             }
         } catch (Exception e) {
-            System.err.println("Ciel Error: Feedback Loop execution failed.");
+            System.err.println("Ciel Error: Failsafe Loop execution failed.");
         }
         return null;
     }
@@ -251,7 +254,6 @@ public class CommandService {
                     }
 
                     System.out.println("Ciel Debug: Triggering AI Semantic Router for intent clarification...");
-                    // FIXED: Replaced missing method call with new implementation
                     String intentStr = AIEngine.determineIntentSynchronously(activeText);
                     CommandAnalysis semanticAnalysis;
                     if (intentStr == null || intentStr.isEmpty()) {
@@ -320,7 +322,7 @@ public class CommandService {
                 
             } catch (Exception e) {
                 System.err.println("Ciel FATAL Error: Uncaught exception in CommandService.");
-                e.printStackTrace();  // FIXED: Was "e."; causing compilation error
+                e.printStackTrace(); 
             } finally {
                 if (releaseBusySynchronously) {
                     isBusy.set(false);

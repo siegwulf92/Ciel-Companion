@@ -125,7 +125,7 @@ public class AIEngine {
     public static String transliterateToKatakanaSync(String englishText) {
         try {
             // Lowered timeout to 10 seconds. We shouldn't hang the GUI forever if Ollama drops.
-            return transliterateAsync(englishText).get(10, TimeUnit.SECONDS); 
+            return transliterateAsync(englishText).get(120, TimeUnit.SECONDS); 
         } catch (Exception e) {
             return englishText; 
         }
@@ -147,7 +147,7 @@ public class AIEngine {
                     HttpRequest request = HttpRequest.newBuilder()
                             .uri(URI.create(url))
                             .header("Content-Type", "application/json")
-                            .timeout(Duration.ofSeconds(10)) 
+                            .timeout(Duration.ofSeconds(120)) 
                             .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                             .build();
 
@@ -599,7 +599,7 @@ public class AIEngine {
                 "\n\nRespond with ONLY the intent name (exactly as above) that best matches the user's input. If none match, respond with UNKNOWN.";
 
         try {
-            String result = AIEngine.generateSilentLogic(text, systemContext).get(10, TimeUnit.SECONDS);
+            String result = AIEngine.generateSilentLogic(text, systemContext).get(120, TimeUnit.SECONDS);
             if (result != null) {
                 String[] parts = result.trim().split("\\s+");
                 if (parts.length > 0) {

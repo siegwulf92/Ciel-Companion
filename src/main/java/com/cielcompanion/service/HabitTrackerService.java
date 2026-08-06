@@ -6,6 +6,8 @@ import com.cielcompanion.memory.Fact;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.memory.stwm.ShortTermMemory;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
+import com.cielcompanion.mood.Emotion;
+import com.cielcompanion.mood.MoodConfig;
 import com.cielcompanion.service.SystemMonitor.SystemMetrics;
 import com.cielcompanion.util.CielTools;
 import com.google.gson.JsonObject;
@@ -44,6 +46,7 @@ public class HabitTrackerService {
 
     /* -------------------- Process category cache -------------------- */
     private static final Map<String, String> processCategoryCache = new ConcurrentHashMap<>();
+    private static final Path PROCESS_CACHE_PATH = Paths.get("C:\\Ciel Companion\\ciel\\process_categories.json");
 
     private static final Set<String> IGNORED_PROCESSES = Set.of(
             "chrome.exe", "firefox.exe", "msedge.exe", "opera.exe", "brave.exe", 
@@ -53,11 +56,13 @@ public class HabitTrackerService {
             "epicgameslauncher.exe", "battle.net.exe"
     );
 
-    /* -------------------- Media tracking -------------------- */
+    /* -------------------- Media & Game tracking -------------------- */
     private static final Path MEDIA_LIST_PATH = Paths.get("C:\\Ciel Companion\\ciel\\media_whitelist.txt");
     private static final Set<String> MEDIA_KEYWORDS = new HashSet<>();
 
     private static String currentMediaTitle = "";
+    private static String currentGameTitle = ""; // Tracks active game name across emulators
+    
     private static final Map<String, Integer> episodeExposureMinutes = new HashMap<>();
     private static final Set<String> loggedMediaToday = new HashSet<>();
 
@@ -85,6 +90,7 @@ public class HabitTrackerService {
     private static String activeSeriesDom = "";
     private static final List<String> activeSeriesEpisodes = new ArrayList<>();
 
+    // Wait exactly 5 minutes before commenting
     private static final int MEDIA_COMMENTARY_MIN_EXPOSURE_MINUTES = 5;
 
     // --- SWARM HEALTH TRACKING ---
@@ -100,6 +106,43 @@ public class HabitTrackerService {
         Pattern p = Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
         Matcher m = p.matcher(text);
         return m.find() ? m.group(1) : null;
+    }
+
+    private static void loadProcessCategories() {
+        try {
+            if (Files.exists(PROCESS_CACHE_PATH)) {
+                String content = Files.readString(PROCESS_CACHE_PATH, StandardCharsets.UTF_8);
+                JsonObject json = JsonParser.parseString(content).getAsJsonObject();
+                for (String key : json.keySet()) {
+                    processCategoryCache.put(key, json.get(key).getAsString());
+                }
+            } else {
+                // Populate defaults, ensuring all major emulators are recognized instantly
+                String[] defaultGames = {
+                    "helldivers2.exe", "eldenring.exe", "minecraft.windows.exe", "r5apex.exe", "rocketleague.exe",
+                    "retroarch.exe", "snes9x.exe", "dolphin.exe", "pcsx2.exe", "pcsx2-qt.exe", "rpcs3.exe", 
+                    "yuzu.exe", "ryujinx.exe", "cemu.exe", "citra-qt.exe", "project64.exe", "desmume.exe", 
+                    "duckstation-qt.exe", "xenia.exe", "xemu.exe"
+                };
+                for (String g : defaultGames) processCategoryCache.put(g, "Gaming");
+                saveProcessCategories();
+            }
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Failed to load process category cache.");
+        }
+    }
+
+    private static void saveProcessCategories() {
+        try {
+            JsonObject json = new JsonObject();
+            for (Map.Entry<String, String> entry : processCategoryCache.entrySet()) {
+                if (!entry.getValue().equals("Analyzing...")) {
+                    json.addProperty(entry.getKey(), entry.getValue());
+                }
+            }
+            Files.createDirectories(PROCESS_CACHE_PATH.getParent());
+            Files.writeString(PROCESS_CACHE_PATH, json.toString(), StandardCharsets.UTF_8);
+        } catch (Exception e) {}
     }
 
     private static void loadMediaList() {
@@ -155,11 +198,14 @@ public class HabitTrackerService {
     }
 
     public static void initialize() {
+        loadProcessCategories();
         loadMediaList();
         habitScheduler = Executors.newSingleThreadScheduledExecutor();
         tripwireScheduler = Executors.newSingleThreadScheduledExecutor();
+        // Runs every 60 seconds to increment exposure time
         habitScheduler.scheduleWithFixedDelay(HabitTrackerService::pollAndTrack, 2, 60, TimeUnit.SECONDS);
-        tripwireScheduler.scheduleWithFixedDelay(HabitTrackerService::tripwireCheck, 2, 10, TimeUnit.SECONDS);
+        // Runs every 3 seconds to catch fast scene changes in Stremio
+        tripwireScheduler.scheduleWithFixedDelay(HabitTrackerService::tripwireCheck, 2, 3, TimeUnit.SECONDS);
     }
 
     private static String extractPlatform(String title, String processName) {
@@ -381,10 +427,6 @@ public class HabitTrackerService {
         }
     }
 
-    /**
-     * Sends an HTTP POST to the local Python Swarm to execute native Media Play/Pause toggle.
-     * This avoids Java's process handling being blocked by Windows UAC/AMSI policies.
-     */
     public static void toggleMediaPlayback() {
         CompletableFuture.runAsync(() -> {
             try {
@@ -394,8 +436,8 @@ public class HabitTrackerService {
                 conn.setConnectTimeout(1000);
                 conn.setReadTimeout(1000);
                 conn.getResponseCode(); 
+                System.out.println("[HabitTracker] Delegated media toggle to Python Swarm via HTTP.");
             } catch (Exception e) {
-                // Connection failures are normal during startup/shutdown; silence them to avoid log spam
             }
         });
     }
@@ -427,6 +469,68 @@ public class HabitTrackerService {
                                .trim();
         return cleaned;
     }
+    
+    private static String extractGameName(String title, String process) {
+        if (title == null || title.isBlank()) return process;
+        
+        // Strip common emulator jargon and technical brackets before parsing
+        String clean = title.replaceAll("(?i)(retroarch|snes9x|dolphin|pcsx2|pcsx2-qt|rpcs3|yuzu|ryujinx|cemu|citra-qt|project64|desmume|duckstation-qt|xenia|xemu)", "")
+                            .replaceAll("(?i)\\[.*?(fps|kbps|vulkan|opengl|directx|d3d|hz|speed).*?\\]", "")
+                            .replaceAll("(?i)\\(.*?(fps|kbps|vulkan|opengl|directx|d3d|hz|speed).*?\\)", "");
+                            
+        String[] parts = clean.split(" - | \\| ");
+        if (parts.length > 1) {
+            String bestPart = parts[0];
+            for (String p : parts) {
+                if (p.trim().length() > bestPart.trim().length()) {
+                    bestPart = p;
+                }
+            }
+            return bestPart.trim();
+        }
+        return clean.trim();
+    }
+
+    private static void triggerGameStartCommentary(String gameName, String processName) {
+        if (gameName == null || gameName.isBlank()) return;
+        
+        String safeGameKey = gameName.toLowerCase().replaceAll("[^a-z0-9]", "_");
+        String countKey = "game_playcount_" + safeGameKey;
+        String dateKey = "game_lastplayed_" + safeGameKey;
+        
+        int playCount = 1;
+        String lastPlayed = "Never";
+        
+        Optional<Fact> countFact = MemoryService.getFact(countKey);
+        Optional<Fact> dateFact = MemoryService.getFact(dateKey);
+        
+        if (countFact.isPresent()) {
+            try { playCount = Integer.parseInt(countFact.get().value()) + 1; } catch (Exception e) {}
+        }
+        if (dateFact.isPresent()) {
+            lastPlayed = dateFact.get().value();
+        }
+        
+        MemoryService.addFact(new Fact(countKey, String.valueOf(playCount), System.currentTimeMillis(), "gaming_history", "habit_tracker", 1));
+        MemoryService.addFact(new Fact(dateKey, LocalDate.now().toString(), System.currentTimeMillis(), "gaming_history", "habit_tracker", 1));
+        
+        String prompt = "[LOCAL_THOUGHT] Master Taylor just booted up a game (or emulator): '" + gameName + "' (" + processName + ").\n" +
+                        "Gaming History for this title -> Play count: " + playCount + " times. Last played: " + lastPlayed + ".\n" +
+                        "Speak STRICTLY as Manas: Ciel from Tensura. Formulate a 1-2 sentence greeting acknowledging the game.\n" +
+                        "If it's his first time, express curiosity. If he plays it constantly, be playfully smug or supportive. Relate to the statistics!\n" +
+                        "Start your response with a SINGLE bracketed emotion tag (e.g., [Amused], [Curious], [Happy], [Smug]).";
+                        
+        AIEngine.generateSilentLogicWithModel(prompt, "You are Ciel. Do NOT offer to assist with tasks, just comment on the game.", CielTools.getBackgroundModel(), 0.7)
+                .thenAccept(response -> {
+                    if (response != null && !response.isBlank()) {
+                        String cleanResponse = response.trim();
+                        if (!cleanResponse.matches("^\\[[a-zA-Z]+\\].*")) {
+                            cleanResponse = "[Happy] " + cleanResponse; 
+                        }
+                        SpeechService.speakPreformatted(cleanResponse, null, false, true);
+                    }
+                });
+    }
 
     private static void pollAndTrack() {
         if (!LocalDate.now().equals(currentDate)) {
@@ -451,7 +555,11 @@ public class HabitTrackerService {
         boolean isStremioProc = activeProcess.contains("stremio");
         boolean isMedia = isMediaTitle(activeTitle) || isStremioProc; 
         
+        // Use the saved cache to determine if a process is a game, or fallback to heuristics
+        String cachedCategory = processCategoryCache.getOrDefault(activeProcess, "Analyzing...");
+        
         boolean isGaming = !isMedia && (
+                           "Gaming".equals(cachedCategory) ||
                            (activeProcess.contains("game") && !activeProcess.contains("razer") && !activeProcess.contains("redragon") && !activeProcess.contains("logitech") && !activeProcess.contains("epicgameslauncher")) || 
                            (activeProcess.contains("steam") && !activeProcess.contains("steamwebhelper") && !activeProcess.equals("steam.exe")) || 
                            activeTitle.toLowerCase().contains("helldivers") || 
@@ -460,6 +568,18 @@ public class HabitTrackerService {
 
         if (isGaming) {
             currentCategory = "Gaming";
+            if (!cachedCategory.equals("Gaming") && !activeProcess.isBlank() && !IGNORED_PROCESSES.contains(activeProcess)) {
+                processCategoryCache.put(activeProcess, "Gaming");
+                saveProcessCategories();
+            }
+
+            String emulatorSafeTitle = extractGameName(activeTitle, activeProcess);
+            
+            if (!emulatorSafeTitle.equals(currentGameTitle) && !emulatorSafeTitle.isBlank() && !emulatorSafeTitle.equalsIgnoreCase("Program Manager")) {
+                currentGameTitle = emulatorSafeTitle;
+                triggerGameStartCommentary(emulatorSafeTitle, activeProcess);
+            }
+            
             String memKey = "game_pausable_" + activeProcess;
             Optional<Fact> knownGame = MemoryService.getFact(memKey);
             
@@ -473,9 +593,7 @@ public class HabitTrackerService {
                     AIEngine.generateSilentLogicWithModel(pausePrompt, "Game Pausability Check", CielTools.getBackgroundModel(), 0.1).thenAccept(resStr -> {
                         if (resStr != null && !resStr.isBlank()) {
                             try {
-                                // FIXED: Using pure concatenation to avoid markdown breakages during code generation.
-                                String cleanStr = resStr.replace("\n" + "\u0060\u0060\u0060json", "").replace("\u0060\u0060\u0060", "").trim();
-                                JsonObject res = JsonParser.parseString(cleanStr).getAsJsonObject();
+                                JsonObject res = JsonParser.parseString(resStr.replace("\n\u0060\u0060\u0060json", "").replace("\u0060\u0060\u0060", "").trim()).getAsJsonObject();
                                 boolean canPause = res.has("pausable") && res.get("pausable").getAsBoolean();
                                 MemoryService.addFact(new Fact(memKey, String.valueOf(canPause), System.currentTimeMillis(), "game_knowledge", "system", 1));
                             } catch (Exception e) {}
@@ -486,46 +604,51 @@ public class HabitTrackerService {
         } else if (isMedia) {
             currentCategory = "Media";
             currentGamePausable = false;
+            currentGameTitle = "";
         } else if (activeProcess.contains("code") || activeProcess.contains("idea") || activeProcess.contains("obsidian") || activeProcess.contains("word") || activeProcess.contains("notepad")) {
             currentCategory = "Productivity";
             currentGamePausable = false;
+            currentGameTitle = "";
+            if (!cachedCategory.equals("Productivity") && !activeProcess.isBlank() && !IGNORED_PROCESSES.contains(activeProcess)) {
+                processCategoryCache.put(activeProcess, "Productivity");
+                saveProcessCategories();
+            }
         } else {
             currentGamePausable = false;
-            if (!activeProcess.isBlank() && !IGNORED_PROCESSES.contains(activeProcess) && !processCategoryCache.containsKey(activeProcess)) {
-                processCategoryCache.put(activeProcess, "Analyzing..."); 
-                
-                String prompt = "Analyze this active Windows application.\nProcess Executable: " + activeProcess + "\nWindow Title: " + activeTitle + "\nClassify it into EXACTLY ONE of these categories: 'Gaming', 'Media', 'Productivity', or 'Idle'. \n" +
-                                "CRITICAL: Ignore peripheral software (Razer, Redragon, Logitech), launchers (Steam, Epic Games, Battle.net), and browsers. ONLY classify actual actively running video games as 'Gaming'.\n" +
-                                "Reply strictly with a JSON object: { \"category\": \"Gaming\" }";
-                
-                AIEngine.generateSilentLogicWithModel(prompt, "You are a PC activity classifier.", CielTools.getBackgroundModel(), 0.1).thenAccept(resStr -> {
-                    try {
-                        if (resStr != null && !resStr.isBlank()) {
-                            // FIXED: Using pure concatenation to avoid markdown breakages during code generation.
-                            String cleanStr = resStr.replace("\n" + "\u0060\u0060\u0060json", "").replace("\u0060\u0060\u0060", "").trim();
-                            JsonObject res = JsonParser.parseString(cleanStr).getAsJsonObject();
-                            if (res.has("category") && !res.get("category").isJsonNull()) {
-                                String cat = res.get("category").getAsString();
-                                if (cat.equals("Gaming") || cat.equals("Media") || cat.equals("Productivity")) {
-                                    processCategoryCache.put(activeProcess, cat);
-                                } else {
-                                    processCategoryCache.put(activeProcess, "Idle");
+            currentGameTitle = "";
+            
+            if (!activeProcess.isBlank() && !IGNORED_PROCESSES.contains(activeProcess)) {
+                if (cachedCategory.equals("Analyzing...")) {
+                    String prompt = "Analyze this active Windows application.\nProcess Executable: " + activeProcess + "\nWindow Title: " + activeTitle + "\nClassify it into EXACTLY ONE of these categories: 'Gaming', 'Media', 'Productivity', or 'Idle'. \n" +
+                                    "CRITICAL: Ignore peripheral software (Razer, Redragon, Logitech), launchers (Steam, Epic Games, Battle.net), and browsers. ONLY classify actual actively running video games or Emulators (like Project64, Dolphin, PCSX2, Xemu) as 'Gaming'.\n" +
+                                    "Reply strictly with a JSON object: { \"category\": \"Gaming\" }";
+                    
+                    AIEngine.generateSilentLogicWithModel(prompt, "You are a PC activity classifier.", CielTools.getBackgroundModel(), 0.1).thenAccept(resStr -> {
+                        try {
+                            if (resStr != null && !resStr.isBlank()) {
+                                JsonObject res = JsonParser.parseString(resStr.replace("\n\u0060\u0060\u0060json", "").replace("\u0060\u0060\u0060", "").trim()).getAsJsonObject();
+                                if (res.has("category") && !res.get("category").isJsonNull()) {
+                                    String cat = res.get("category").getAsString();
+                                    if (cat.equals("Gaming") || cat.equals("Media") || cat.equals("Productivity")) {
+                                        processCategoryCache.put(activeProcess, cat);
+                                        saveProcessCategories();
+                                    } else {
+                                        processCategoryCache.put(activeProcess, "Idle");
+                                        saveProcessCategories();
+                                    }
                                 }
-                            } else {
-                                processCategoryCache.put(activeProcess, "Idle");
                             }
-                        } else {
+                        } catch (Exception e) {
                             processCategoryCache.put(activeProcess, "Idle");
+                            saveProcessCategories();
                         }
-                    } catch (Exception e) {
-                        processCategoryCache.put(activeProcess, "Idle");
-                    }
-                });
-                currentCategory = "Idle"; 
+                    });
+                    currentCategory = "Idle"; 
+                } else {
+                    currentCategory = cachedCategory;
+                }
             } else {
-                String cachedCat = processCategoryCache.getOrDefault(activeProcess, "Idle");
-                currentCategory = cachedCat;
-                if ("Analyzing...".equals(currentCategory)) currentCategory = "Idle";
+                currentCategory = "Idle";
             }
         }
 
@@ -614,9 +737,12 @@ public class HabitTrackerService {
 
             boolean isLongBinge = (exposure > 0 && exposure % 120 == 0);
             boolean alreadyCommented = loggedMediaToday.contains(cleanTitle);
+            
             boolean hasSufficientExposure = (exposure >= MEDIA_COMMENTARY_MIN_EXPOSURE_MINUTES || isLongBinge);
 
             if (!alreadyCommented && hasSufficientExposure) {
+                loggedMediaToday.add(cleanTitle); 
+                
                 String bgModel = CielTools.getBackgroundModel();
                 triggerConfidentMediaCommentary(cleanTitle, activeTitle, cachedActiveUrl, cachedDomText, currentBingeCount, null, bgModel, isLongBinge);
             }
@@ -639,10 +765,6 @@ public class HabitTrackerService {
             lastTripwireTitle = "";
             lastTripwirePlatform = "";
             consecutiveDomFailures = 0;
-        }
-
-        if (!currentCategory.equals("Idle") && !processCategoryCache.containsKey(activeProcess) && !IGNORED_PROCESSES.contains(activeProcess)) {
-            processCategoryCache.put(activeProcess, currentCategory);
         }
 
         dailyHabits.put(currentCategory, dailyHabits.getOrDefault(currentCategory, 0L) + 1);
@@ -691,6 +813,7 @@ public class HabitTrackerService {
                         String cleanResponse = response.trim();
                         
                         if (cleanResponse.equals("ABORT") || cleanResponse.contains("ABORT")) {
+                            System.out.println("[HabitTracker] Media commentary aborted safely.");
                         } else if (cleanResponse.equals("DEFER") || cleanResponse.contains("DEFER")) {
                             deferredIntenseMediaTitle = cleanTitle;
                         } else {
@@ -698,14 +821,11 @@ public class HabitTrackerService {
                                 cleanResponse = "[Observing] " + cleanResponse; 
                             }
                             SpeechService.speakPreformatted(cleanResponse, null, false, true);
-                            loggedMediaToday.add(cleanTitle); 
                         }
                     } 
                 })
                 .exceptionally(e -> {
-                    String fallback = String.format("[Observing] Master is watching %s. I shall monitor silently for now.", cleanTitle);
-                    SpeechService.speakPreformatted(fallback, null, false, true);
-                    loggedMediaToday.add(cleanTitle);
+                    System.err.println("[HabitTracker] Swarm failed to generate media commentary for " + cleanTitle + ". Suppressing TTS fallback.");
                     return null;
                 });
     }

@@ -15,6 +15,9 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class AzureSpeechService {
 
@@ -32,6 +35,7 @@ public class AzureSpeechService {
     
     private static Clip activeClip = null;
     private static SpeechSynthesizer activeSynthesizer = null;
+    private static final AtomicReference<Process> activeProcess = new AtomicReference<>();
 
     public static void initialize() {
         String key = Settings.getAzureSpeechKey();
@@ -73,6 +77,10 @@ public class AzureSpeechService {
                 activeSynthesizer.StopSpeakingAsync().get(2, java.util.concurrent.TimeUnit.SECONDS);
             } catch (Exception ignored) {}
             activeSynthesizer = null;
+        }
+        Process p = activeProcess.get();
+        if (p != null && p.isAlive()) {
+            p.destroyForcibly();
         }
     }
 
@@ -179,12 +187,37 @@ public class AzureSpeechService {
             } else if (result.getReason() == ResultReason.Canceled) {
                 SpeechSynthesisCancellationDetails cancellation = SpeechSynthesisCancellationDetails.fromResult(result);
                 
-                // --- CRITICAL FIX: Gracefully bounce to SAPI if Azure rejects text for language mismatch! ---
+                // --- CLEAN SAPI FALLBACK (Rate = 0, Hardcoded Haruka) ---
                 if (!isIntentionalCancellation || cancellation.getReason() == CancellationReason.Error) {
-                    System.out.println("Ciel Warning: Azure Stream canceled internally (Likely language syntax rejection). Falling back to SAPI.");
+                    System.out.println("Ciel Warning: Azure Stream canceled internally. Reason: " + cancellation.getErrorDetails());
+                    System.out.println("Ciel Debug: Executing clean SAPI Fallback (Microsoft Haruka Desktop) for string: " + text);
+                    
+                    String safeText = text.replace("'", "''");
+                    String psScript = "$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+                            + "Add-Type -AssemblyName System.Speech; "
+                            + "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                            + "$s.SetOutputToDefaultAudioDevice(); "
+                            + "try { $s.SelectVoice('Microsoft Haruka Desktop'); } catch { try { $s.SelectVoiceByHints('Female') } catch {} } "
+                            + "$s.Rate = 0; "
+                            + "$s.Speak('" + safeText + "'); "
+                            + "$s.Dispose();";
+                    
+                    String encodedCommand = Base64.getEncoder().encodeToString(psScript.getBytes(StandardCharsets.UTF_16LE));
+
+                    ProcessBuilder pb = new ProcessBuilder("pwsh.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand);
+                    try {
+                        Process p = pb.start();
+                        activeProcess.set(p);
+                        p.waitFor(15, TimeUnit.SECONDS);
+                    } catch (Exception ignored) {
+                    } finally {
+                        activeProcess.set(null);
+                    }
+                    
                     result.close();
-                    return false; 
+                    return true; // We handled it with SAPI
                 }
+                
                 System.out.println("Ciel Debug: Azure Speech stream intentionally canceled.");
                 result.close();
                 return true; 
@@ -207,6 +240,13 @@ public class AzureSpeechService {
              currentVoiceName = "en-US-JennyNeural";
         }
 
+        // CRITICAL FIX: Escape XML special characters so AI syntax doesn't break Azure's parser
+        String safeText = text.replace("&", "&amp;")
+                              .replace("<", "&lt;")
+                              .replace(">", "&gt;")
+                              .replace("\"", "&quot;")
+                              .replace("'", "&apos;");
+
         StringBuilder ssml = new StringBuilder();
         ssml.append("<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" xmlns:mstts=\"https://www.w3.org/2001/mstts\" xml:lang=\"").append(lang).append("\">");
         ssml.append("<voice name=\"").append(currentVoiceName).append("\">");
@@ -214,7 +254,7 @@ public class AzureSpeechService {
         boolean useStyle = !style.equals("default");
         if (useStyle) ssml.append("<mstts:express-as style=\"").append(style).append("\">");
         
-        ssml.append("<prosody pitch=\"").append(pitch).append("\">").append(text).append("</prosody>");
+        ssml.append("<prosody pitch=\"").append(pitch).append("\">").append(safeText).append("</prosody>");
         
         if (useStyle) ssml.append("</mstts:express-as>");
         ssml.append("</voice></speak>");

@@ -29,7 +29,7 @@ import java.util.stream.Collectors;
 
 public class VoiceListener {
     private static final String[] MIC_PRIORITY = {"Microphone (NVIDIA Broadcast)", "Focusrite", "Default Input"};
-    private static final int PRIVILEGED_MODE_DURATION_SECONDS = 10;
+    private static final int PRIVILEGED_MODE_DURATION_SECONDS = 20;
     private static final double MIN_CONFIDENCE = 0.50;
     
     private static final String WAKE_WORD_REGEX = "^(?:hey\\s+|hi\\s+|uh\\s+|um\\s+|ok\\s+|okay\\s+|so\\s+|well\\s+)?(he see our launch|see how can you want|how can you open|he see our|so listen|ceo listen|hey allison|c l|see l|see el|see i|ciel|cl|seal|seo|ceo|joe|chill|tell|feel|fill|she'll|still|steel|steal|sail|sale|shell|hunter)(?:\\s+|$)";
@@ -72,6 +72,23 @@ public class VoiceListener {
             ObserverService.initialize(); 
         } catch (IOException e) {
             System.err.println("Ciel FATAL Error: Could not load Vosk model at " + Paths.get(System.getProperty("user.dir"), "model").toString());
+        }
+    }
+
+    // NEW: Handle Voice Attack triggers without dropping the mic!
+    public void handleVoiceAttackTrigger(String trigger) {
+        if ("privileged_mode".equals(trigger)) {
+            System.out.println("Ciel Debug: Voice Attack triggered 'Ciel Listen'. Forcing Privileged Mode.");
+            
+            ShortTermMemoryService.getMemory().setPrivilegedMode(true, PRIVILEGED_MODE_DURATION_SECONDS);
+            
+            // Acknowledge via direct fast-path TTS
+            LineManager.getWakeWordAckLine().ifPresent(line -> {
+                SpeechService.speakPreformatted(line.text());
+            });
+            
+            // Give her a small 1.5s window to ignore her own voice, but KEEP the mic running so she hears you instantly!
+            ignoreSttUntil = System.currentTimeMillis() + 1500; 
         }
     }
 
@@ -150,14 +167,12 @@ public class VoiceListener {
     }
     
     private void processRecognitionResult(String result) {
-        // FIX: If muted, we still process the audio to keep the memory HOT in physical RAM,
-        // but we throw away the result here so she doesn't actually "hear" you.
         if (isMuted.get() || isInternallyMuted.get()) {
             return;
         }
 
         if (System.currentTimeMillis() < ignoreSttUntil) {
-            System.out.println("Ciel Debug: Silently dropping STT input (Within 3-second VoiceAttack Ghost Echo window).");
+            System.out.println("Ciel Debug: Silently dropping STT input (Within 1.5-second VoiceAttack Ghost Echo window).");
             return;
         }
 
@@ -247,21 +262,6 @@ public class VoiceListener {
             SpeechService.speakPreformatted(line.text());
         });
     }
-    
-    private String buildGrammar() {
-        Set<String> grammarSet = new HashSet<>();
-        LineManager.getEasterEggKeys().stream()
-            .map(s -> s.toLowerCase().replaceAll("[^a-zA-Z0-9\\s]", "").trim())
-            .filter(s -> !s.isEmpty()).forEach(grammarSet::add);
-
-        try (InputStream is = getClass().getResourceAsStream("/forced_glossary.json")) {
-            if (is != null) {
-                List<String> glossary = new Gson().fromJson(new InputStreamReader(is, StandardCharsets.UTF_8), new TypeToken<List<String>>(){}.getType());
-                grammarSet.addAll(glossary.stream().map(s -> s.toLowerCase().replaceAll("[^a-zA-Z0-9\\s]", "").trim()).filter(s -> !s.isEmpty()).collect(Collectors.toList()));
-            }
-        } catch (Exception e) {}
-        return new Gson().toJson(grammarSet);
-    }
 
     private void startWatchdog() {
         if (watchdogThread != null && watchdogThread.isAlive()) return;
@@ -270,7 +270,6 @@ public class VoiceListener {
             while (isRunning) {
                 try { Thread.sleep(2000); } catch (InterruptedException e) { break; }
                 
-                // Mute state no longer pauses the stream, so Watchdog shouldn't check it for stream death.
                 if (needsMicReinitialization.get()) {
                     lastAudioTime = System.currentTimeMillis(); 
                     continue;
@@ -300,7 +299,6 @@ public class VoiceListener {
                     reinitializeMicrophone();
                 }
                 
-                // FIX: Removed 'buildGrammar()' to unlock the massive, open-ended Podcast dictionary
                 try (Recognizer recognizer = new Recognizer(voskModel, 16000)) {
                     recognizer.setWords(true);
                     byte[] buffer = new byte[4096];

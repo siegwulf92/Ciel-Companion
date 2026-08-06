@@ -215,7 +215,14 @@ public class CielCompanion {
                 startTriggerListener(5555, COMMAND_TRIGGER_PASSPHRASE, () -> {
                     System.out.println("Ciel Debug: VoiceAttack Command Trigger received. Granting Privileged Mode.");
                     
-                    // CRITICAL FIX: Grants an initial generous 60-second window to survive the AI 
+                    // CRITICAL FIX: Flush the audio buffers and rebuild the microphone line 
+                    // instantly to guarantee Vosk hasn't been paged out by a heavy game
+                    if (voiceListener != null) {
+                        System.out.println("Ciel Debug: Forcing Watchdog Mic Reinitialization for VoiceAttack Trigger...");
+                        voiceListener.forceMicReinitialization();
+                    }
+                    
+                    // Grants an initial generous 60-second window to survive the AI 
                     // generating text and speaking it. SpeechService will manually reset this to EXACTLY
                     // 15 seconds the millisecond her TTS playback stops.
                     com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, 60);

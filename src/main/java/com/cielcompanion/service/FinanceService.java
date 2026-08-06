@@ -4,7 +4,18 @@ import com.cielcompanion.ai.AIEngine;
 import com.cielcompanion.memory.Fact;
 import com.cielcompanion.memory.MemoryService;
 
+import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpExchange;
+
+import javax.swing.JOptionPane;
+import javax.swing.SwingUtilities;
+
 import java.io.File;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -20,6 +31,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class FinanceService {
     private static ScheduledExecutorService scheduler;
@@ -37,6 +49,53 @@ public class FinanceService {
         scheduler = Executors.newSingleThreadScheduledExecutor();
         scheduler.scheduleAtFixedRate(FinanceService::evaluateMarketSchedule, 5 * 60, 15 * 60, TimeUnit.SECONDS);
         System.out.println("Ciel Debug: FinanceService initialized. Smart Market Schedule and Holiday Awareness active.");
+        
+        // Start the internal HTTP server to catch 2FA prompts from the headless Python Playwright scraper
+        start2FAHttpServer();
+    }
+
+    private static void start2FAHttpServer() {
+        try {
+            HttpServer server = HttpServer.create(new InetSocketAddress(8081), 0);
+            server.createContext("/api/2fa-bridge", new HttpHandler() {
+                @Override
+                public void handle(HttpExchange exchange) throws IOException {
+                    if ("POST".equals(exchange.getRequestMethod())) {
+                        System.out.println("Ciel Debug: Received 2FA Request from Playwright Scraper.");
+                        
+                        AtomicReference<String> mfaCode = new AtomicReference<>("");
+                        
+                        // Force UI popup on main UI thread
+                        try {
+                            SwingUtilities.invokeAndWait(() -> {
+                                String code = JOptionPane.showInputDialog(null, 
+                                    "Ciel is syncing your Vanguard/Stash accounts but hit a 2FA wall.\n" +
+                                    "Please check your phone/email and enter the 6-digit code:",
+                                    "Security Override Required",
+                                    JOptionPane.WARNING_MESSAGE);
+                                if (code != null) mfaCode.set(code.trim());
+                            });
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                        
+                        String response = "{\"code\": \"" + mfaCode.get() + "\"}";
+                        exchange.getResponseHeaders().set("Content-Type", "application/json");
+                        exchange.sendResponseHeaders(200, response.length());
+                        OutputStream os = exchange.getResponseBody();
+                        os.write(response.getBytes());
+                        os.close();
+                    } else {
+                        exchange.sendResponseHeaders(405, -1); // Method Not Allowed
+                    }
+                }
+            });
+            server.setExecutor(null);
+            server.start();
+            System.out.println("Ciel Debug: 2FA HTTP Bridge is listening on port 8081");
+        } catch (IOException e) {
+            System.err.println("Ciel Error: Failed to start 2FA HTTP Bridge.");
+        }
     }
 
     private static void evaluateMarketSchedule() {
@@ -59,9 +118,7 @@ public class FinanceService {
             if (marketOpen) {
                 if (Duration.between(lastFetch, now).toHours() >= 4) {
                     System.out.println("Ciel Debug: Market Live. Interval threshold reached. Initiating analysis...");
-                    localAttemptTimeMs = System.currentTimeMillis();
-                    saveTimestamp(ATTEMPT_FILE, localAttemptTimeMs);
-                    silentMarketCheck();
+                    executePlaywrightAndSwarm();
                 }
             } else {
                 ZonedDateTime lastClose = getMostRecentMarketClose(now);
@@ -69,19 +126,35 @@ public class FinanceService {
 
                 if (lastFetch.isBefore(lastClose) && (now.isAfter(safeSettleTime) || now.isEqual(safeSettleTime))) {
                     System.out.println("Ciel Debug: Market Closed. Executing final daily sync for settled data.");
-                    localAttemptTimeMs = System.currentTimeMillis();
-                    saveTimestamp(ATTEMPT_FILE, localAttemptTimeMs);
-                    silentMarketCheck();
+                    executePlaywrightAndSwarm();
                 } else if (lastFetchMs == 0L) {
-                    localAttemptTimeMs = System.currentTimeMillis();
-                    saveTimestamp(ATTEMPT_FILE, localAttemptTimeMs);
-                    silentMarketCheck();
+                    executePlaywrightAndSwarm();
                 }
             }
         } catch (Exception e) {
             System.err.println("Ciel Error: Failed to evaluate the Smart Market Schedule.");
             e.printStackTrace();
         }
+    }
+
+    private static void executePlaywrightAndSwarm() {
+        localAttemptTimeMs = System.currentTimeMillis();
+        saveTimestamp(ATTEMPT_FILE, localAttemptTimeMs);
+        
+        CompletableFuture.runAsync(() -> {
+            try {
+                // Call Python to scrape Vanguard first so we have fresh local data before the Swarm thinks
+                System.out.println("Ciel Debug: Executing background headless scraper for accurate portfolio values...");
+                ProcessBuilder pb = new ProcessBuilder("python", "master_finance_scraper.py");
+                pb.directory(new File("C:\\Ciel Companion\\ciel\\skills"));
+                pb.start().waitFor(3, TimeUnit.MINUTES);
+            } catch (Exception e) {
+                System.out.println("Ciel Warning: Playwright scraper failed or timed out.");
+            }
+            
+            // Proceed to the AI analysis of the newly generated files
+            silentMarketCheck();
+        });
     }
 
     private static boolean isMarketOpen(ZonedDateTime now) {
@@ -125,29 +198,27 @@ public class FinanceService {
 
         String recoPrompt = "[FINANCE_RECOMMENDATIONS] Generate stock recommendations.";
 
-        CompletableFuture.runAsync(() -> {
-            boolean swarmSuccess = false;
-            try {
-                String portfolioResult = AIEngine.generateSilentLogic("[FINANCE_PORTFOLIO_UPDATE]", portfolioPrompt).join();
-                String marketResult = AIEngine.generateSilentLogic("[FINANCE_MARKET_SCAN]", marketPrompt).join();
-                String recoResult = AIEngine.generateSilentLogic("[FINANCE_RECOMMENDATIONS]", recoPrompt).join();
+        boolean swarmSuccess = false;
+        try {
+            String portfolioResult = AIEngine.generateSilentLogic("[FINANCE_PORTFOLIO_UPDATE]", portfolioPrompt).join();
+            String marketResult = AIEngine.generateSilentLogic("[FINANCE_MARKET_SCAN]", marketPrompt).join();
+            String recoResult = AIEngine.generateSilentLogic("[FINANCE_RECOMMENDATIONS]", recoPrompt).join();
 
-                if (portfolioResult != null && marketResult != null) {
-                    latestPortfolioSummary = portfolioResult;
-                    latestMarketScan = marketResult;
-                    writeFiles(recoResult);
-                    swarmSuccess = true;
-                }
-            } catch (Exception e) {
-                System.err.println("Ciel Error: Swarm Financial analysis failed or timed out.");
+            if (portfolioResult != null && marketResult != null) {
+                latestPortfolioSummary = portfolioResult;
+                latestMarketScan = marketResult;
+                writeFiles(recoResult);
+                swarmSuccess = true;
             }
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Swarm Financial analysis failed or timed out.");
+        }
 
-            if (swarmSuccess) {
-                localSyncTimeMs = System.currentTimeMillis();
-                saveTimestamp(SYNC_FILE, localSyncTimeMs);
-                System.out.println("Ciel Debug: Background finance analysis complete. Success flag updated.");
-            }
-        });
+        if (swarmSuccess) {
+            localSyncTimeMs = System.currentTimeMillis();
+            saveTimestamp(SYNC_FILE, localSyncTimeMs);
+            System.out.println("Ciel Debug: Background finance analysis complete. Success flag updated.");
+        }
     }
 
     private static void writeFiles(String recoCsv) {

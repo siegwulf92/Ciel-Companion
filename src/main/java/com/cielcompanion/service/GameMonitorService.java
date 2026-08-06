@@ -5,7 +5,11 @@ import com.cielcompanion.ai.ModelManager;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
 import com.cielcompanion.memory.stwm.ShortTermMemory;
 import com.cielcompanion.service.SystemMonitor.SystemMetrics;
+import com.cielcompanion.CielState;
 
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -15,7 +19,6 @@ public class GameMonitorService {
     private static String activeGame = null;
     private static long sessionStartTime = 0;
     
-    // NEW: Tracks when the game was first lost to provide a grace period
     private static long gameLostTimestamp = 0; 
     private static final long GRACE_PERIOD_MS = 30000; // 30 seconds
 
@@ -26,19 +29,57 @@ public class GameMonitorService {
         System.out.println("Ciel Debug: GameMonitorService initialized. Watching for gaming activity.");
     }
 
+    private static void setPythonGamingMode(boolean isGaming) {
+        CompletableFuture.runAsync(() -> {
+            try {
+                URL url = new URL("http://localhost:8000/set_gaming_mode");
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setConnectTimeout(3000);
+                conn.setReadTimeout(3000);
+                conn.setDoOutput(true);
+                String payload = "{\"is_gaming\": " + isGaming + "}";
+                conn.getOutputStream().write(payload.getBytes());
+                int rc = conn.getResponseCode();
+                if (rc == 200) {
+                    System.out.println("Ciel Debug: Synced gaming mode with Python Swarm -> " + isGaming);
+                } else {
+                    System.out.println("Ciel Warning: Python Swarm rejected gaming mode sync (HTTP " + rc + ")");
+                }
+            } catch (Exception e) {
+                System.out.println("Ciel Warning: Failed to sync gaming mode with Python Swarm (Connection refused/timeout).");
+            }
+        });
+    }
+
+    private static boolean isBaseEmulatorWindow(String windowTitle) {
+        if (windowTitle == null || windowTitle.isBlank()) return true;
+        String lower = windowTitle.toLowerCase();
+        // Catch PCSX2, RPCS3, Yuzu, Ryujinx base menus before a ROM is loaded
+        return lower.matches("^(pcsx2|rpcs3|yuzu|ryujinx).*") && !lower.contains("-");
+    }
+
     private static void checkGameState() {
         String rawCmd = ModelManager.getHeavyGameRunning();
 
-        // --- NEW: Intercept background utilities that the system misclassifies as heavy games ---
+        // Intercept background utilities that the system misclassifies as heavy games
         if (rawCmd != null && isBlacklistedUtility(rawCmd)) {
             rawCmd = null; // Override and ignore
         }
 
         ShortTermMemory memory = ShortTermMemoryService.getMemory();
+        SystemMetrics metrics = SystemMonitor.getSystemMetrics();
+        String windowTitle = metrics.activeWindowTitle();
 
         // SCENARIO 1: A game is currently running
         if (rawCmd != null) {
             String detectedGame = extractGameName(rawCmd);
+
+            // Prevent false positive commentary when only the emulator base shell has loaded
+            if (isBaseEmulatorWindow(windowTitle)) {
+                return; // Silently wait for the actual ROM/Game to load the window title
+            }
 
             if (activeGame == null) {
                 // A game just launched and no session was active
@@ -46,17 +87,26 @@ public class GameMonitorService {
                 sessionStartTime = System.currentTimeMillis();
                 gameLostTimestamp = 0; // Reset the grace period timer
 
-                SystemMetrics metrics = SystemMonitor.getSystemMetrics();
-                String windowTitle = metrics.activeWindowTitle();
-
                 System.out.println("Ciel Debug: Game launch detected -> " + activeGame + " (Path: " + rawCmd + ", Title: " + windowTitle + ")");
+                System.out.println("Ciel Debug: Purging VRAM and locking local inference...");
+                
+                // Minimize/Hide GUI to save GPU rendering overhead
+                // Safe universal AWT method that bypasses direct Class casting
+                for (java.awt.Window window : java.awt.Window.getWindows()) {
+                    if (window.isShowing()) {
+                        window.setVisible(false);
+                    }
+                }
+                
+                // Instantly notify Python to clear VRAM and lock out local models
+                setPythonGamingMode(true);
                 
                 // Update her core state trackers
                 memory.setInGamingSession(true);
                 memory.setCurrentlyTrackedGameProcess(activeGame);
                 memory.addContext("System Event: The Master just started playing " + activeGame + ".");
 
-                // Ask the Swarm for a dynamic comment
+                // Ask the Swarm for a dynamic comment using the REAL window title
                 String prompt = "You are Ciel, my AI companion. I just launched a video game.\n" +
                                 "Process Executable: '" + rawCmd + "'\n" +
                                 "Live Window Title: '" + windowTitle + "'\n" +
@@ -67,7 +117,8 @@ public class GameMonitorService {
                 
                 AIEngine.generateSilentLogic("[GAME_LAUNCH]", prompt).thenAccept(response -> {
                     if (response != null && !response.isBlank()) {
-                        SpeechService.speakPreformatted(response.trim());
+                        // Pass explicitly as "game_launch" so the SpeechService doesn't suppress it
+                        SpeechService.speakPreformatted(response.trim(), "game_launch");
                     }
                 });
             } else if (activeGame.equals(detectedGame)) {
@@ -90,6 +141,14 @@ public class GameMonitorService {
                 long durationMinutes = (System.currentTimeMillis() - sessionStartTime) / 60000;
                 System.out.println("Ciel Debug: Grace period expired. Game session ended -> " + activeGame + " (" + durationMinutes + " mins)");
                 
+                // Notify Python to re-enable local models
+                setPythonGamingMode(false);
+                
+                // Restore GUI windows
+                for (java.awt.Window window : java.awt.Window.getWindows()) {
+                    window.setVisible(true);
+                }
+                
                 // Revert state trackers and log the final playtime
                 memory.setInGamingSession(false);
                 memory.setCurrentlyTrackedGameProcess(null);
@@ -102,7 +161,7 @@ public class GameMonitorService {
         }
     }
 
-    // --- NEW: Blacklist Filter ---
+    // --- Blacklist Filter ---
     private static boolean isBlacklistedUtility(String cmd) {
         String lower = cmd.toLowerCase();
         // Ignore Razer software (Razer Cortex, Synapse, AppEngine)

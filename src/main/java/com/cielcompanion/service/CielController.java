@@ -88,6 +88,11 @@ public class CielController {
         // Suppress Idle Chatter = Do not ramble Phase 1/2 lines while watching a movie.
         boolean suppressIdleChatter = isHardMuted || (!isGaming && isMedia) || (!isGaming && metrics.isInFullScreen() && !metrics.isBrowserActive());
 
+        // Enforce Game Silence: If gaming, suppress idle chatter UNLESS we hit Phase 3 (5+ mins idle)
+        if (isGaming && newPhase < 3) {
+            suppressIdleChatter = true;
+        }
+
         if (suppressIdleChatter && !CielState.isLockedOut()) {
             System.out.println("Ciel Debug: Suppressing standard idle chatter. (HardMute:" + isHardMuted + ", MediaFocus:true)");
             CielState.setLockedOut(true);
@@ -535,7 +540,8 @@ public class CielController {
                 commonPool.get(random.nextInt(commonPool.size()))) : 
             availableLines.get(random.nextInt(availableLines.size()));
         
-        if (currentPhase >= 1 && currentPhase <= 3) {
+        // Suppress dynamic thoughts from spawning if we are gaming
+        if (currentPhase >= 1 && currentPhase <= 3 && !ShortTermMemoryService.getMemory().isInGamingSession()) {
             if (random.nextInt(100) < 5) {
                 com.cielcompanion.ai.DynamicThoughtEngine.generateAndAssimilateNewThought(currentPhase, lineToSpeak.text());
             }

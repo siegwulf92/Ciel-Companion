@@ -14,6 +14,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class SkillEvolutionEngine {
 
@@ -36,22 +38,22 @@ public class SkillEvolutionEngine {
     }
 
     private static void attemptEvolution() {
-            // PREVENT CONCURRENCY: Do not sweep while the Swarm is writing code.
-            if (com.cielcompanion.service.SkillCrafterService.isActivelySynthesizing()) {
-                System.out.println("Ciel Debug: Evolution sweep deferred. Skill synthesis is currently locking the directory.");
-                return;
-            }
-
-            System.out.println("Ciel Debug: Initiating Global Skill Evolution Analysis (Phase 1: Beelzebub Protocol - Redundancy Merge)...");
-
-            AIEngine.generateSilentLogic("Evolve and merge global skills", "Trigger Python Beelzebub Sweep").thenAccept(response -> {
-                System.out.println("Ciel Debug: Python Beelzebub Sweep executed successfully.");
-                SkillManager.loadSkills(); 
-            }).exceptionally(ex -> {
-                System.err.println("Ciel Error: Swarm connection failed during Phase 1 Evolution.");
-                return null;
-            });
+        // PREVENT CONCURRENCY: Do not sweep while the Swarm is writing code.
+        if (com.cielcompanion.service.SkillCrafterService.isActivelySynthesizing()) {
+            System.out.println("Ciel Debug: Evolution sweep deferred. Skill synthesis is currently locking the directory.");
+            return;
         }
+
+        System.out.println("Ciel Debug: Initiating Global Skill Evolution Analysis (Phase 1: Beelzebub Protocol - Redundancy Merge)...");
+
+        AIEngine.generateSilentLogic("Evolve and merge global skills", "Trigger Python Beelzebub Sweep").thenAccept(response -> {
+            System.out.println("Ciel Debug: Python Beelzebub Sweep executed successfully.");
+            SkillManager.loadSkills(); 
+        }).exceptionally(ex -> {
+            System.err.println("Ciel Error: Swarm connection failed during Phase 1 Evolution.");
+            return null;
+        });
+    }
 
     private static void attemptInnovation() {
         System.out.println("Ciel Debug: Initiating Proactive Skill Innovation (Phase 2: Creativity)...");
@@ -112,8 +114,9 @@ public class SkillEvolutionEngine {
 
         AIEngine.generateSilentLogic("Propose new skill", prompt).thenAccept(idea -> {
             if (idea != null && !idea.isBlank()) {
+                String cleanJson = idea;
                 try {
-                    String cleanJson = idea.replace("```json", "").replace("```", "").trim();
+                    cleanJson = idea.replaceAll("(?i)```json", "").replace("```", "").trim();
                     int startIdx = cleanJson.indexOf("{");
                     int endIdx = cleanJson.lastIndexOf("}");
                     if (startIdx != -1 && endIdx != -1 && endIdx >= startIdx) {
@@ -127,8 +130,19 @@ public class SkillEvolutionEngine {
                     System.out.println("Ciel Debug: Innovation Idea generated -> [" + skillName + "] " + description);
                     com.cielcompanion.service.SkillCrafterService.synthesizeNewSkill(skillName, description, true);
                 } catch (Exception e) {
-                    System.err.println("Ciel Debug: Innovation JSON format failed on attempt " + (4 - attemptsLeft) + ". Retrying...");
-                    executeInnovationLoop(basePrompt, "JSON Parse Exception. Your output was not a clean JSON object:\n" + idea, attemptsLeft - 1);
+                    // --- CRITICAL FAILSAFE: Regex extraction if Swarm AI breaks JSON formatting ---
+                    Matcher nameMatcher = Pattern.compile("\"skill_name\"\\s*:\\s*\"([^\"]+)\"").matcher(cleanJson);
+                    Matcher descMatcher = Pattern.compile("\"description\"\\s*:\\s*\"([^\"]+)\"").matcher(cleanJson);
+                    
+                    if (nameMatcher.find() && descMatcher.find()) {
+                        String skillName = nameMatcher.group(1);
+                        String description = descMatcher.group(1);
+                        System.out.println("Ciel Debug: RegEx Failsafe triggered. Innovation Idea salvaged -> [" + skillName + "] " + description);
+                        com.cielcompanion.service.SkillCrafterService.synthesizeNewSkill(skillName, description, true);
+                    } else {
+                        System.err.println("Ciel Debug: Innovation JSON format failed on attempt " + (4 - attemptsLeft) + ". Retrying...");
+                        executeInnovationLoop(basePrompt, "JSON Parse Exception. Your output was not a clean JSON object:\n" + idea, attemptsLeft - 1);
+                    }
                 }
             } else {
                 System.out.println("Ciel Debug: Innovation skipped. AI returned empty.");
