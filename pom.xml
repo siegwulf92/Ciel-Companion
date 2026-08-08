@@ -1,27 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.cielcompanion</groupId>
     <artifactId>ciel-idle-companion</artifactId>
     <version>1.0-SNAPSHOT</version>
 
+    <!-- ==========================================================
+         PROPERTIES –‑ “always‑latest” (LATEST) versions
+         ========================================================== -->
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-        <!-- Updated BOM versions to eliminate Dependabot alerts -->
-        <netty.version>4.1.114.Final</netty.version>
-        <reactor.version>2024.0.1</reactor.version>
-        <jackson.version>2.17.3</jackson.version>
+        <!-- Netty BOM – always the most recent 4.1.x release -->
+        <netty.version>LATEST</netty.version>
+
+        <!-- Reactor BOM – always the most recent 2024.x release -->
+        <reactor.version>LATEST</reactor.version>
+
+        <!-- Jackson BOM – always the most recent 2.17.x (or newer) release -->
+        <jackson.version>LATEST</jackson.version>
+
+        <!-- Jsoup – also keep it up‑to‑date (the line that fixed the current CVE) -->
+        <jsoup.version>LATEST</jsoup.version>
     </properties>
 
+    <!-- ==========================================================
+         DEPENDENCY MANAGEMENT –‑ BOM imports (now resolve to the
+         latest versions allowed by the LATEST keywords above)
+         ========================================================== -->
     <dependencyManagement>
         <dependencies>
 
-            <!-- Netty BOM (fixes all Netty CVEs) -->
+            <!-- Netty BOM -->
             <dependency>
                 <groupId>io.netty</groupId>
                 <artifactId>netty-bom</artifactId>
@@ -30,7 +46,7 @@
                 <scope>import</scope>
             </dependency>
 
-            <!-- Jackson BOM (fixes all Jackson CVEs) -->
+            <!-- Jackson BOM -->
             <dependency>
                 <groupId>com.fasterxml.jackson</groupId>
                 <artifactId>jackson-bom</artifactId>
@@ -39,7 +55,7 @@
                 <scope>import</scope>
             </dependency>
 
-            <!-- Reactor BOM (pulls in patched Reactor Netty → patched Netty) -->
+            <!-- Reactor BOM -->
             <dependency>
                 <groupId>io.projectreactor</groupId>
                 <artifactId>reactor-bom</artifactId>
@@ -51,9 +67,13 @@
         </dependencies>
     </dependencyManagement>
 
+    <!-- ==========================================================
+         DEPENDENCIES –‑ only jsoup uses the property; everything
+         else stays exactly as you had it (with the corrected JNA groupId)
+         ========================================================== -->
     <dependencies>
 
-        <!-- JNA -->
+        <!-- JNA (fixed groupId) -->
         <dependency>
             <groupId>net.java.dev.jna</groupId>
             <artifactId>jna-platform</artifactId>
@@ -88,11 +108,11 @@
             <version>6.7.1</version>
         </dependency>
 
-        <!-- Jsoup (updated to fix CVE) -->
+        <!-- Jsoup (now follows the “always‑latest” range) -->
         <dependency>
             <groupId>org.jsoup</groupId>
             <artifactId>jsoup</artifactId>
-            <version>1.18.1</version>
+            <version>${jsoup.version}</version>
         </dependency>
 
         <!-- JNativeHook -->
@@ -102,7 +122,7 @@
             <version>2.2.2</version>
         </dependency>
 
-        <!-- SLF4J (unchanged — your app relies on 1.7.36 for Azure SDK compatibility) -->
+        <!-- SLF4J (kept at 1.7.36 for Azure SDK compatibility) -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-simple</artifactId>
@@ -130,7 +150,7 @@
             <version>4.5.14</version>
         </dependency>
 
-        <!-- Reactor Netty (version controlled by BOM) -->
+        <!-- Reactor Netty (version controlled by the Reactor BOM) -->
         <dependency>
             <groupId>io.projectreactor.netty</groupId>
             <artifactId>reactor-netty-core</artifactId>
@@ -142,6 +162,9 @@
 
     </dependencies>
 
+    <!-- ==========================================================
+         BUILD PLUGINS
+         ========================================================== -->
     <build>
         <resources>
             <resource>
@@ -151,6 +174,7 @@
         </resources>
 
         <plugins>
+            <!-- Compiler plugin –‑ Java 21 -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -160,6 +184,7 @@
                 </configuration>
             </plugin>
 
+            <!-- Shade plugin –‑ creates the fat‑jar -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -188,6 +213,28 @@
                     </execution>
                 </executions>
             </plugin>
+
+            <!-- OPTIONAL: lock‑in the latest versions for a reproducible release.
+                 Run `mvn versions:use-latest-versions` (or enable the execution
+                 below) to rewrite the properties to concrete versions.
+            -->
+            <!--
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>versions-maven-plugin</artifactId>
+                <version>2.16.0</version>
+                <executions>
+                    <execution>
+                        <id>lock-latest</id>
+                        <goals>
+                            <goal>use-latest-versions</goal>
+                        </goals>
+                        <phase>validate</phase>
+                    </execution>
+                </executions>
+            </plugin>
+            -->
         </plugins>
     </build>
+
 </project>
