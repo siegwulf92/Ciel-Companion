@@ -1,240 +1,202 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<modelVersion>4.0.0</modelVersion>
 
-    <modelVersion>4.0.0</modelVersion>
+<groupId>com.cielcompanion</groupId>
+<artifactId>ciel-idle-companion</artifactId>
+<version>1.0-SNAPSHOT</version>
 
-    <groupId>com.cielcompanion</groupId>
-    <artifactId>ciel-idle-companion</artifactId>
-    <version>1.0-SNAPSHOT</version>
+<!-- ==========================================================
+     PROPERTIES –‑ Stable Semantic Versions Required
+     ========================================================== -->
+<properties>
+    <maven.compiler.source>21</maven.compiler.source>
+    <maven.compiler.target>21</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-    <!-- ==========================================================
-         PROPERTIES –‑ “always‑latest” (LATEST) versions
-         ========================================================== -->
-    <properties>
-        <maven.compiler.source>21</maven.compiler.source>
-        <maven.compiler.target>21</maven.compiler.target>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- Hardcoded Stable BOMs to prevent Azure SDK Collapse -->
+    <netty.version>4.1.110.Final</netty.version>
+    <reactor.version>2023.0.5</reactor.version>
+    <jackson.version>2.17.1</jackson.version>
+    <jsoup.version>1.17.2</jsoup.version>
+</properties>
 
-        <!-- Netty BOM – always the most recent 4.1.x release -->
-        <netty.version>LATEST</netty.version>
-
-        <!-- Reactor BOM – always the most recent 2024.x release -->
-        <reactor.version>LATEST</reactor.version>
-
-        <!-- Jackson BOM – always the most recent 2.17.x (or newer) release -->
-        <jackson.version>LATEST</jackson.version>
-
-        <!-- Jsoup – using a specific version that includes fixes for known CVEs (CVE-2021-37714, CVE-2022-36033) -->
-        <jsoup.version>1.23.1</jsoup.version>
-    </properties>
-
-    <!-- ==========================================================
-         DEPENDENCY MANAGEMENT –‑ BOM imports (now resolve to the
-         latest versions allowed by the LATEST keywords above)
-         ========================================================== -->
-    <dependencyManagement>
-        <dependencies>
-
-            <!-- Netty BOM -->
-            <dependency>
-                <groupId>io.netty</groupId>
-                <artifactId>netty-bom</artifactId>
-                <version>${netty.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-
-            <!-- Jackson BOM -->
-            <dependency>
-                <groupId>com.fasterxml.jackson</groupId>
-                <artifactId>jackson-bom</artifactId>
-                <version>${jackson.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-
-            <!-- Reactor BOM -->
-            <dependency>
-                <groupId>io.projectreactor</groupId>
-                <artifactId>reactor-bom</artifactId>
-                <version>${reactor.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-
-        </dependencies>
-    </dependencyManagement>
-
-    <!-- ==========================================================
-         DEPENDENCIES –‑ only jsoup uses the property; everything
-         else stays exactly as you had it (with the corrected JNA groupId)
-         ========================================================== -->
+<!-- ==========================================================
+     DEPENDENCY MANAGEMENT
+     ========================================================== -->
+<dependencyManagement>
     <dependencies>
-
-        <!-- JNA (fixed groupId) -->
+        <!-- Netty BOM -->
         <dependency>
-            <groupId>net.java.dev.jna</groupId>
-            <artifactId>jna-platform</artifactId>
-            <version>5.14.0</version>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-bom</artifactId>
+            <version>${netty.version}</version>
+            <type>pom</type>
+            <scope>import</scope>
         </dependency>
 
-        <!-- VOSK -->
+        <!-- Jackson BOM -->
         <dependency>
-            <groupId>com.alphacephei</groupId>
-            <artifactId>vosk</artifactId>
-            <version>0.3.45</version>
+            <groupId>com.fasterxml.jackson</groupId>
+            <artifactId>jackson-bom</artifactId>
+            <version>${jackson.version}</version>
+            <type>pom</type>
+            <scope>import</scope>
         </dependency>
 
-        <!-- Gson -->
+        <!-- Reactor BOM -->
         <dependency>
-            <groupId>com.google.code.gson</groupId>
-            <artifactId>gson</artifactId>
-            <version>2.10.1</version>
+            <groupId>io.projectreactor</groupId>
+            <artifactId>reactor-bom</artifactId>
+            <version>${reactor.version}</version>
+            <type>pom</type>
+            <scope>import</scope>
         </dependency>
-
-        <!-- SQLite JDBC -->
-        <dependency>
-            <groupId>org.xerial</groupId>
-            <artifactId>sqlite-jdbc</artifactId>
-            <version>3.46.0.0</version>
-        </dependency>
-
-        <!-- OSHI -->
-        <dependency>
-            <groupId>com.github.oshi</groupId>
-            <artifactId>oshi-core</artifactId>
-            <version>6.7.1</version>
-        </dependency>
-
-        <!-- Jsoup (now follows the “always‑latest” range) -->
-        <dependency>
-            <groupId>org.jsoup</groupId>
-            <artifactId>jsoup</artifactId>
-            <version>${jsoup.version}</version>
-        </dependency>
-
-        <!-- JNativeHook -->
-        <dependency>
-            <groupId>com.github.kwhat</groupId>
-            <artifactId>jnativehook</artifactId>
-            <version>2.2.2</version>
-        </dependency>
-
-        <!-- SLF4J (kept at 1.7.36 for Azure SDK compatibility) -->
-        <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-simple</artifactId>
-            <version>1.7.36</version>
-        </dependency>
-
-        <!-- Azure Text Analytics -->
-        <dependency>
-            <groupId>com.azure</groupId>
-            <artifactId>azure-ai-textanalytics</artifactId>
-            <version>5.3.0</version>
-        </dependency>
-
-        <!-- Azure Cognitive Services Speech -->
-        <dependency>
-            <groupId>com.microsoft.cognitiveservices.speech</groupId>
-            <artifactId>client-sdk</artifactId>
-            <version>1.36.0</version>
-        </dependency>
-
-        <!-- Apache HttpClient (unchanged per your request) -->
-        <dependency>
-            <groupId>org.apache.httpcomponents</groupId>
-            <artifactId>httpclient</artifactId>
-            <version>4.5.14</version>
-        </dependency>
-
-        <!-- Reactor Netty (version controlled by the Reactor BOM) -->
-        <dependency>
-            <groupId>io.projectreactor.netty</groupId>
-            <artifactId>reactor-netty-core</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.projectreactor.netty</groupId>
-            <artifactId>reactor-netty-http</artifactId>
-        </dependency>
-
     </dependencies>
+</dependencyManagement>
 
-    <!-- ==========================================================
-         BUILD PLUGINS
-         ========================================================== -->
-    <build>
-        <resources>
-            <resource>
-                <directory>src/main/resources</directory>
-                <filtering>true</filtering>
-            </resource>
-        </resources>
+<!-- ==========================================================
+     DEPENDENCIES
+     ========================================================== -->
+<dependencies>
 
-        <plugins>
-            <!-- Compiler plugin –‑ Java 21 -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.12.1</version>
-                <configuration>
-                    <release>21</release>
-                </configuration>
-            </plugin>
+    <!-- JNA -->
+    <dependency>
+        <groupId>net.java.dev.jna</groupId>
+        <artifactId>jna-platform</artifactId>
+        <version>5.14.0</version>
+    </dependency>
 
-            <!-- Shade plugin –‑ creates the fat‑jar -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-shade-plugin</artifactId>
-                <version>3.4.1</version>
-                <executions>
-                    <execution>
-                        <phase>package</phase>
-                        <goals><goal>shade</goal></goals>
-                        <configuration>
-                            <filters>
-                                <filter>
-                                    <artifact>*:*</artifact>
-                                    <excludes>
-                                        <exclude>META-INF/*.SF</exclude>
-                                        <exclude>META-INF/*.DSA</exclude>
-                                        <exclude>META-INF/*.RSA</exclude>
-                                    </excludes>
-                                </filter>
-                            </filters>
-                            <transformers>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>com.cielcompanion.CielCompanion</mainClass>
-                                </transformer>
-                            </transformers>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
+    <!-- VOSK -->
+    <dependency>
+        <groupId>com.alphacephei</groupId>
+        <artifactId>vosk</artifactId>
+        <version>0.3.45</version>
+    </dependency>
 
-            <!-- OPTIONAL: lock‑in the latest versions for a reproducible release.
-                 Run `mvn versions:use-latest-versions` (or enable the execution
-                 below) to rewrite the properties to concrete versions.
-            -->
-            <!--
-            <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>versions-maven-plugin</artifactId>
-                <version>2.16.0</version>
-                <executions>
-                    <execution>
-                        <id>lock-latest</id>
-                        <goals>
-                            <goal>use-latest-versions</goal>
-                        </goals>
-                        <phase>validate</phase>
-                    </execution>
-                </executions>
-            </plugin>
-            -->
-        </plugins>
-    </build>
+    <!-- Gson -->
+    <dependency>
+        <groupId>com.google.code.gson</groupId>
+        <artifactId>gson</artifactId>
+        <version>2.10.1</version>
+    </dependency>
 
-</project>
+    <!-- SQLite JDBC -->
+    <dependency>
+        <groupId>org.xerial</groupId>
+        <artifactId>sqlite-jdbc</artifactId>
+        <version>3.46.0.0</version>
+    </dependency>
+
+    <!-- OSHI -->
+    <dependency>
+        <groupId>com.github.oshi</groupId>
+        <artifactId>oshi-core</artifactId>
+        <version>6.7.1</version>
+    </dependency>
+
+    <!-- Jsoup -->
+    <dependency>
+        <groupId>org.jsoup</groupId>
+        <artifactId>jsoup</artifactId>
+        <version>${jsoup.version}</version>
+    </dependency>
+
+    <!-- JNativeHook -->
+    <dependency>
+        <groupId>com.github.kwhat</groupId>
+        <artifactId>jnativehook</artifactId>
+        <version>2.2.2</version>
+    </dependency>
+
+    <!-- SLF4J (kept at 1.7.36 for Azure SDK compatibility) -->
+    <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-simple</artifactId>
+        <version>1.7.36</version>
+    </dependency>
+
+    <!-- Azure Text Analytics -->
+    <dependency>
+        <groupId>com.azure</groupId>
+        <artifactId>azure-ai-textanalytics</artifactId>
+        <version>5.3.0</version>
+    </dependency>
+
+    <!-- Azure Cognitive Services Speech -->
+    <dependency>
+        <groupId>com.microsoft.cognitiveservices.speech</groupId>
+        <artifactId>client-sdk</artifactId>
+        <version>1.36.0</version>
+    </dependency>
+
+    <!-- Apache HttpClient -->
+    <dependency>
+        <groupId>org.apache.httpcomponents</groupId>
+        <artifactId>httpclient</artifactId>
+        <version>4.5.14</version>
+    </dependency>
+
+    <!-- Reactor Netty (version controlled by the Reactor BOM) -->
+    <dependency>
+        <groupId>io.projectreactor.netty</groupId>
+        <artifactId>reactor-netty-core</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>io.projectreactor.netty</groupId>
+        <artifactId>reactor-netty-http</artifactId>
+    </dependency>
+
+</dependencies>
+
+<!-- ==========================================================
+     BUILD PLUGINS
+     ========================================================== -->
+<build>
+    <resources>
+        <resource>
+            <directory>src/main/resources</directory>
+            <filtering>true</filtering>
+        </resource>
+    </resources>
+
+    <plugins>
+        <!-- Compiler plugin –‑ Java 21 -->
+        <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-compiler-plugin</artifactId>
+            <version>3.12.1</version>
+            <configuration>
+                <release>21</release>
+            </configuration>
+        </plugin>
+
+        <!-- Shade plugin –‑ creates the fat‑jar -->
+        <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-shade-plugin</artifactId>
+            <version>3.4.1</version>
+            <executions>
+                <execution>
+                    <phase>package</phase>
+                    <goals><goal>shade</goal></goals>
+                    <configuration>
+                        <filters>
+                            <filter>
+                                <artifact>*:*</artifact>
+                                <excludes>
+                                    <exclude>META-INF/*.SF</exclude>
+                                    <exclude>META-INF/*.DSA</exclude>
+                                    <exclude>META-INF/*.RSA</exclude>
+                                </excludes>
+                            </filter>
+                        </filters>
+                        <transformers>
+                            <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                <mainClass>com.cielcompanion.CielCompanion</mainClass>
+                            </transformer>
+                        </transformers>
+                    </configuration>
+                </execution>
+            </executions>
+        </plugin>
+    </plugins>
+</build>
