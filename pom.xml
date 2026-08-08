@@ -26,8 +26,8 @@
         <!-- Jackson BOM – always the most recent 2.17.x (or newer) release -->
         <jackson.version>LATEST</jackson.version>
 
-        <!-- Jsoup – also keep it up‑to‑date (the line that fixed the current CVE) -->
-        <jsoup.version>LATEST</jsoup.version>
+        <!-- Jsoup – using a specific version that includes fixes for known CVEs (CVE-2021-37714, CVE-2022-36033) -->
+        <jsoup.version>1.23.1</jsoup.version>
     </properties>
 
     <!-- ==========================================================
