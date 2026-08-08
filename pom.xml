@@ -4,18 +4,24 @@
 <artifactId>ciel-idle-companion</artifactId>
 <version>1.0-SNAPSHOT</version>
 
+<!-- ==========================================================
+     PROPERTIES –‑ Stable Semantic Versions Required
+     ========================================================== -->
 <properties>
     <maven.compiler.source>21</maven.compiler.source>
     <maven.compiler.target>21</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-    <!-- STRICT STABLE VERSIONS: No 'LATEST' tags. These versions resolve security CVEs while remaining perfectly compatible with Azure Speech SDK. -->
+    <!-- Hardcoded Stable BOMs to prevent Azure SDK Collapse -->
     <netty.version>4.1.107.Final</netty.version>
     <reactor.version>2023.0.4</reactor.version>
     <jackson.version>2.17.0</jackson.version>
     <jsoup.version>1.17.2</jsoup.version>
 </properties>
 
+<!-- ==========================================================
+     DEPENDENCY MANAGEMENT
+     ========================================================== -->
 <dependencyManagement>
     <dependencies>
         <!-- Netty BOM -->
@@ -47,7 +53,11 @@
     </dependencies>
 </dependencyManagement>
 
+<!-- ==========================================================
+     DEPENDENCIES
+     ========================================================== -->
 <dependencies>
+
     <!-- JNA -->
     <dependency>
         <groupId>net.java.dev.jna</groupId>
@@ -97,7 +107,7 @@
         <version>2.2.2</version>
     </dependency>
 
-    <!-- SLF4J (Kept at 1.7.36 for Azure SDK compatibility) -->
+    <!-- SLF4J (kept at 1.7.36 for Azure SDK compatibility) -->
     <dependency>
         <groupId>org.slf4j</groupId>
         <artifactId>slf4j-simple</artifactId>
@@ -125,7 +135,7 @@
         <version>4.5.14</version>
     </dependency>
 
-    <!-- Reactor Netty -->
+    <!-- Reactor Netty (version controlled by the Reactor BOM) -->
     <dependency>
         <groupId>io.projectreactor.netty</groupId>
         <artifactId>reactor-netty-core</artifactId>
@@ -134,8 +144,12 @@
         <groupId>io.projectreactor.netty</groupId>
         <artifactId>reactor-netty-http</artifactId>
     </dependency>
+
 </dependencies>
 
+<!-- ==========================================================
+     BUILD PLUGINS
+     ========================================================== -->
 <build>
     <resources>
         <resource>
@@ -145,7 +159,7 @@
     </resources>
 
     <plugins>
-        <!-- Compiler plugin -->
+        <!-- Compiler plugin –‑ Java 21 -->
         <plugin>
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-compiler-plugin</artifactId>
@@ -155,7 +169,7 @@
             </configuration>
         </plugin>
 
-        <!-- Shade plugin (Fat JAR generator) -->
+        <!-- Shade plugin –‑ creates the fat‑jar -->
         <plugin>
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-shade-plugin</artifactId>
