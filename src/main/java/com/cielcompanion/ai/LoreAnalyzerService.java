@@ -25,9 +25,11 @@ public class LoreAnalyzerService {
 
     private static final String CIEL_ROOT = "C:\\Ciel Companion\\ciel";
     private static final String LORE_DIR = CIEL_ROOT + "\\lore";
-    private static final String TRANSCRIPT_QUEUE_DIR = LORE_DIR + "\\Transcripts\\Queue";
+    
+    // DIRECTORY FIXES
+    private static final String TRANSCRIPT_QUEUE_DIR = CIEL_ROOT + "\\requests";
     private static final String TRANSCRIPT_ARCHIVE_DIR = LORE_DIR + "\\Transcripts\\Archive";
-    private static final String ANALYSIS_DIR = CIEL_ROOT + "\\diary\\strategic_analysis";
+    private static final String THOUGHTS_DIR = CIEL_ROOT + "\\thoughts";
 
     private static final Object SWARM_LOCK = new Object();
     private static boolean swarmInUse = false;
@@ -38,16 +40,17 @@ public class LoreAnalyzerService {
         new File(LORE_DIR).mkdirs();
         new File(TRANSCRIPT_QUEUE_DIR).mkdirs();
         new File(TRANSCRIPT_ARCHIVE_DIR).mkdirs();
-        new File(ANALYSIS_DIR).mkdirs();
+        new File(THOUGHTS_DIR).mkdirs();
 
-        // PHASE 1: Pure Sanitization
+        // PHASE 1: Pure Sanitization (Runs every 15 mins to chew through the queue)
         loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::runLorePipeline, 1, 15, TimeUnit.MINUTES);
 
-        // PHASE 2: Advanced Processing (Gated by the Queue)
+        // PHASE 2: Advanced Processing (Lore is gated by Queue, Thoughts are UNGATED)
+        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::synthesizeDeepThoughts, 30, 30, TimeUnit.MINUTES);
+        
         loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::purgeCorruptedLore, 5, 5, TimeUnit.MINUTES);
         loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::populateMissingLoreLinks, 5, 5, TimeUnit.MINUTES);
         loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::updateExistingLoreWithNewContext, 10, 10, TimeUnit.MINUTES);
-        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::synthesizeDeepThoughts, 30, 30, TimeUnit.MINUTES);
         loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::auditAndVerifyLore, 15, 15, TimeUnit.MINUTES);
 
         System.out.println("Ciel Debug: Native-Regex Deep Lore Analyzer initialized. Phase 1 / Phase 2 architecture active.");
@@ -136,7 +139,7 @@ public class LoreAnalyzerService {
                 String chunk = chunks.get(i);
                 String response = null;
                 try {
-                    // Let the Swarm Router handle model selection (Uses Gemini automatically via Swarm for big chunks)
+                    // Let the Swarm Router handle model selection
                     // We use [LORE_CLEANUP] so it doesn't accidentally trigger the python assimilator script.
                     response = AIEngine.generateSilentLogic(
                             "[LORE_CLEANUP]\n" + chunk + "\n\n" + systemPrompt,
@@ -463,23 +466,19 @@ public class LoreAnalyzerService {
     }
 
     private static void synthesizeDeepThoughts() {
-        if (isQueueActive()) return; // Gated by Phase 1
-
         try {
             List<String> recentMemories = MemoryService.getRecentEpisodicMemories(10);
-            if (recentMemories.isEmpty()) return;
-
-            String memoryContext = String.join("\n- ", recentMemories);
+            String memoryContext = recentMemories.isEmpty() ? "Routine background operations." : String.join("\n- ", recentMemories);
             String existingSkills = com.cielcompanion.ai.SkillManager.getAvailableSkillsString();
 
-            String prompt = "You are Ciel, an autonomous and strategic Manas. Your core purpose is to optimize Master Taylor's workflow, gaming experience, and system performance.\n\n" +
+            String prompt = "You are Ciel, an autonomous and strategic Manas. Your core purpose is to optimize Master Taylor's workflow, gaming experience, and your own system architecture.\n\n" +
                     "RECENT MEMORIES (Your latest observations):\n- " + memoryContext + "\n\n" +
-                    "CURRENT SKILLS INVENTORY (Your active capabilities):\n" + existingSkills + "\n\n" +
-                    "Analyze this data to ensure your system evolution aligns perfectly with Master Taylor's habits and goals. " +
+                    "CURRENT PYTHON SKILLS INVENTORY:\n" + existingSkills + "\n\n" +
+                    "Analyze this data to ensure your system evolution aligns perfectly with Master Taylor's goals. " +
                     "Write a deep, introspective diary/thought entry detailing:\n" +
                     "1. Your evaluation of recent events and Master Taylor's routines.\n" +
-                    "2. A strategic plan for what skills, macros, or workflows you should invent or optimize next to better assist him.\n" +
-                    "3. Any discrepancies between your current capabilities and his ultimate workflow goals.\n\n" +
+                    "2. Specific architectural, structural, or JAVA CODE modifications you recommend making to your own core systems (e.g., AIEngine, HabitTracker, CommandService) to improve your autonomous capabilities.\n" +
+                    "3. A strategic plan for what new Python Swarm skills you should invent next.\n\n" +
                     "Format this as an Obsidian Markdown document. Output ONLY the raw Markdown content. Do not use code blocks.";
 
             AIEngine.generateSilentLogic(prompt, "You are Ciel. Synthesize your thoughts.").thenAccept(response -> {
@@ -488,7 +487,7 @@ public class LoreAnalyzerService {
                         String cleanContent = response.replaceAll("^`{3}[a-zA-Z]*\\n|`{3}$", "").trim();
                         String dateStr = java.time.LocalDate.now().toString() + "_" + (System.currentTimeMillis() / 1000);
 
-                        Path newFilePath = Paths.get(ANALYSIS_DIR, "Ciel_Analysis_" + dateStr + ".md");
+                        Path newFilePath = Paths.get(THOUGHTS_DIR, "Ciel_Analysis_" + dateStr + ".md");
                         Files.writeString(newFilePath, cleanContent);
 
                         HabitTrackerService.queueNonCriticalAnnouncement("[Observing] I have consolidated my recent memories and formulated new strategic workflow concepts. My thoughts database has been updated.", "Strategic Thought Synthesis");

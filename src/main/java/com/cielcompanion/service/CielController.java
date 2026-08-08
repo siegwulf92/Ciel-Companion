@@ -442,6 +442,9 @@ public class CielController {
     private static void handleGreetings() {
         if (CielState.isWarmBoot()) {
             if (!CielState.isBootGreetingPlayed()) {
+                // If OpenJarvis hasn't finished booting yet, defer the greeting.
+                if (!isSwarmOnline()) return;
+
                 speakRandomLine(LineManager.getWarmLoginGreetingLines(), null, 1, false, true);
                 CielState.setBootGreetingPlayed(true);
                 CielState.setLoginGreetingPlayed(true);
@@ -450,9 +453,15 @@ public class CielController {
             long now = System.currentTimeMillis();
             long startTime = CielState.getAppStartTime();
             if (!CielState.isBootGreetingPlayed() && now >= startTime + (Settings.getFirstGreetingDelaySeconds() * 1000L)) {
+                // If OpenJarvis hasn't finished booting yet, defer the greeting.
+                if (!isSwarmOnline()) return;
+
                 speakRandomLine(LineManager.getBootGreetingLines(), null, 1, false, true);
                 CielState.setBootGreetingPlayed(true);
             } else if (!CielState.isLoginGreetingPlayed() && now >= startTime + (Settings.getLoginGreetingDelaySeconds() * 1000L)) {
+                // Defer second greeting if Swarm is offline to prevent Katakana failure.
+                if (!isSwarmOnline()) return;
+
                 speakRandomLine(LineManager.getLoginGreetingLines(), null, 1, false, false);
                 
                 HolidayService.getHolidayGreeting().ifPresent(greeting -> {
@@ -461,6 +470,21 @@ public class CielController {
                 
                 CielState.setLoginGreetingPlayed(true);
             }
+        }
+    }
+
+    private static boolean isSwarmOnline() {
+        try {
+            // THE FIX: Ping the instant `/docs` endpoint instead of the heavy UI-scraping endpoint
+            URL url = new URL("http://127.0.0.1:8000/docs");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(1000);
+            conn.setReadTimeout(1000);
+            int rc = conn.getResponseCode();
+            return (rc >= 200 && rc < 400);
+        } catch (Exception e) {
+            return false;
         }
     }
 
