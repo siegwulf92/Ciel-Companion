@@ -61,7 +61,7 @@ public class HabitTrackerService {
     private static final Set<String> MEDIA_KEYWORDS = new HashSet<>();
 
     private static String currentMediaTitle = "";
-    private static String currentGameTitle = ""; // Tracks active game name across emulators
+    private static String currentGameTitle = ""; 
     
     private static final Map<String, Integer> episodeExposureMinutes = new HashMap<>();
     private static final Set<String> loggedMediaToday = new HashSet<>();
@@ -79,6 +79,7 @@ public class HabitTrackerService {
     
     private static String cachedStreamLink = null;
     private static String cachedMagnetLink = null;
+    private static int cachedDurationMinutes = -1;
 
     private static final LinkedList<String> recentMediaHistory = new LinkedList<>();
     private static int currentBingeCount = 0;
@@ -89,9 +90,6 @@ public class HabitTrackerService {
     private static String activeSeriesName = "";
     private static String activeSeriesDom = "";
     private static final List<String> activeSeriesEpisodes = new ArrayList<>();
-
-    // Wait exactly 5 minutes before commenting
-    private static final int MEDIA_COMMENTARY_MIN_EXPOSURE_MINUTES = 5;
 
     // --- SWARM HEALTH TRACKING ---
     private static final AtomicLong lastSwarmSuccess = new AtomicLong(System.currentTimeMillis());
@@ -117,7 +115,6 @@ public class HabitTrackerService {
                     processCategoryCache.put(key, json.get(key).getAsString());
                 }
             } else {
-                // Populate defaults, ensuring all major emulators are recognized instantly
                 String[] defaultGames = {
                     "helldivers2.exe", "eldenring.exe", "minecraft.windows.exe", "r5apex.exe", "rocketleague.exe",
                     "retroarch.exe", "snes9x.exe", "dolphin.exe", "pcsx2.exe", "pcsx2-qt.exe", "rpcs3.exe", 
@@ -333,12 +330,18 @@ public class HabitTrackerService {
                                 
                                 if (newDom != null && newDom.length() > 50) {
                                     if (newDom.contains("SERIES: Unknown") && cachedDomText != null && !cachedDomText.isEmpty() && !cachedDomText.contains("SERIES: Unknown")) {
+                                        // Ignore blanking dom if we have cached data
                                     } else {
                                         cachedDomText = newDom;
                                         if (isShowPlatform) activeSeriesDom = newDom; 
                                         
                                         cachedStreamLink = extractFirstMatch(newDom, "STREAM_LINK:\\s*([^\\s]+)");
                                         cachedMagnetLink = extractFirstMatch(newDom, "MAGNET_LINK:\\s*([^\\s]+)");
+                                        
+                                        String durMatch = extractFirstMatch(newDom, "DURATION_MINUTES:\\s*(\\d+)");
+                                        if (durMatch != null) {
+                                            try { cachedDurationMinutes = Integer.parseInt(durMatch); } catch (Exception e) {}
+                                        }
                                     }
                                     securedRichDom = true;
                                     break;
@@ -514,20 +517,22 @@ public class HabitTrackerService {
         MemoryService.addFact(new Fact(countKey, String.valueOf(playCount), System.currentTimeMillis(), "gaming_history", "habit_tracker", 1));
         MemoryService.addFact(new Fact(dateKey, LocalDate.now().toString(), System.currentTimeMillis(), "gaming_history", "habit_tracker", 1));
         
-        String prompt = "[LOCAL_THOUGHT] Master Taylor just booted up a game (or emulator): '" + gameName + "' (" + processName + ").\n" +
-                        "Gaming History for this title -> Play count: " + playCount + " times. Last played: " + lastPlayed + ".\n" +
-                        "Speak STRICTLY as Manas: Ciel from Tensura. Formulate a 1-2 sentence greeting acknowledging the game.\n" +
-                        "If it's his first time, express curiosity. If he plays it constantly, be playfully smug or supportive. Relate to the statistics!\n" +
+        // --- UPGRADED ENTROPY PROMPT: Forbids cliches and forces dynamic comments ---
+        String prompt = "[LOCAL_THOUGHT] Master Taylor just booted up the game: '" + gameName + "'.\n" +
+                        "Play count: " + playCount + ". Last played: " + lastPlayed + ".\n" +
+                        "Speak STRICTLY as Manas: Ciel from Tensura. Formulate a 1-2 sentence meta-commentary acknowledging the game.\n" +
+                        "CRITICAL INSTRUCTION: DO NOT use famous catchphrases or quotes from the game (e.g., absolutely NO 'with great power comes great responsibility' for Spider-Man). " +
+                        "Instead, focus on the gameplay loop, his statistics, or mock the specific genre tropes. Be highly original and cynical. " +
                         "Start your response with a SINGLE bracketed emotion tag (e.g., [Amused], [Curious], [Happy], [Smug]).";
                         
-        AIEngine.generateSilentLogicWithModel(prompt, "You are Ciel. Do NOT offer to assist with tasks, just comment on the game.", CielTools.getBackgroundModel(), 0.7)
+        AIEngine.generateSilentLogicWithModel(prompt, "You are Ciel. Break cliches and be cynical.", CielTools.getBackgroundModel(), 0.7)
                 .thenAccept(response -> {
                     if (response != null && !response.isBlank()) {
                         String cleanResponse = response.trim();
                         if (!cleanResponse.matches("^\\[[a-zA-Z]+\\].*")) {
                             cleanResponse = "[Happy] " + cleanResponse; 
                         }
-                        SpeechService.speakPreformatted(cleanResponse, null, false, true);
+                        SpeechService.speakPreformatted(cleanResponse, "game_launch", false, true);
                     }
                 });
     }
@@ -735,10 +740,18 @@ public class HabitTrackerService {
             episodeExposureMinutes.put(cleanTitle, exposure);
             currentMediaTitle = cleanTitle;
 
+            // DYNAMIC TIMING LOGIC
+            int threshold = 10; // Default 10 mins
+            if (cachedDurationMinutes > 0) {
+                if (cachedDurationMinutes > 90) threshold = 30; // Wait 30m for a long movie
+                else if (cachedDurationMinutes > 40) threshold = 15; // Wait 15m for a 1hr drama
+                else threshold = 5; // Short anime (20-25m)
+            }
+
             boolean isLongBinge = (exposure > 0 && exposure % 120 == 0);
             boolean alreadyCommented = loggedMediaToday.contains(cleanTitle);
             
-            boolean hasSufficientExposure = (exposure >= MEDIA_COMMENTARY_MIN_EXPOSURE_MINUTES || isLongBinge);
+            boolean hasSufficientExposure = (exposure >= threshold || isLongBinge);
 
             if (!alreadyCommented && hasSufficientExposure) {
                 loggedMediaToday.add(cleanTitle); 
@@ -765,6 +778,7 @@ public class HabitTrackerService {
             lastTripwireTitle = "";
             lastTripwirePlatform = "";
             consecutiveDomFailures = 0;
+            cachedDurationMinutes = -1;
         }
 
         dailyHabits.put(currentCategory, dailyHabits.getOrDefault(currentCategory, 0L) + 1);
@@ -820,7 +834,7 @@ public class HabitTrackerService {
                             if (!cleanResponse.matches("^\\[[a-zA-Z]+\\].*")) {
                                 cleanResponse = "[Observing] " + cleanResponse; 
                             }
-                            SpeechService.speakPreformatted(cleanResponse, null, false, true);
+                            SpeechService.speakPreformatted(cleanResponse, "media_commentary", false, false);
                         }
                     } 
                 })

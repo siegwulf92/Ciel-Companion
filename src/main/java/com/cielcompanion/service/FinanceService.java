@@ -188,9 +188,9 @@ public class FinanceService {
         String portfolioPrompt = "You are Ciel, Master Taylor's elite financial advisor. Master Taylor's DOB is 12/30/1992 (currently 33 years old), and his ultimate goal is aggressive growth and early retirement. " +
                 "Analyze the provided portfolio spreadsheet. " +
                 "CRITICAL CONTEXT: The accounts labeled 'taxable' and 'smart' (which hold assets like MINT, TFLO, bonds, or dividend ETFs) function as his liquid Emergency Fund and cash reserves. " +
-                "DO NOT recommend selling assets from the 'taxable' or 'smart' accounts to 'buy the dip', as this would trigger unwanted capital gains taxes and compromise his safety net. " +
-                "Focus your aggressive growth, 'Buy the Dip', and reallocation recommendations STRICTLY on his tax-advantaged 'Roth' account. " +
-                "Note how any newly added funds align with his long-term goals. " +
+                "RULE 1 - TAX-LOSS HARVESTING (< 0% Gain): It is ALWAYS safe to recommend selling assets at a loss in the taxable account to harvest tax benefits. " +
+                "RULE 2 - ROTH IRA FUNDING (> 5% Gain): DO NOT recommend selling assets in the taxable account with > 5% gains UNLESS Master Taylor needs the liquidity to max out his Annual Roth IRA Contribution. " +
+                "RULE 3 - ROTH IRA ALGORITHMS: Focus your 'Buy the Dip' and massive growth allocations STRICTLY on his tax-advantaged 'Roth' account. Check the JSON data for his exact Roth Contribution progress. " +
                 "CRITICAL: You MUST include a 'TL;DR' section at the very end summarizing everything in simple, plain English.";
 
         String marketPrompt = "Perform a macro-economic scan of the S&P 500 and VIX. " +

@@ -25,40 +25,51 @@ public class LoreAnalyzerService {
 
     private static final String CIEL_ROOT = "C:\\Ciel Companion\\ciel";
     private static final String LORE_DIR = CIEL_ROOT + "\\lore";
+    private static final String TRANSCRIPT_QUEUE_DIR = LORE_DIR + "\\Transcripts\\Queue";
+    private static final String TRANSCRIPT_ARCHIVE_DIR = LORE_DIR + "\\Transcripts\\Archive";
     private static final String ANALYSIS_DIR = CIEL_ROOT + "\\diary\\strategic_analysis";
 
-    private static final Object DEEPSEEK_LOCK = new Object();
-    private static boolean deepseekInUse = false;
+    private static final Object SWARM_LOCK = new Object();
+    private static boolean swarmInUse = false;
 
     public static void initialize() {
         loreScheduler = Executors.newSingleThreadScheduledExecutor();
 
         new File(LORE_DIR).mkdirs();
+        new File(TRANSCRIPT_QUEUE_DIR).mkdirs();
+        new File(TRANSCRIPT_ARCHIVE_DIR).mkdirs();
         new File(ANALYSIS_DIR).mkdirs();
 
+        // PHASE 1: Pure Sanitization
+        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::runLorePipeline, 1, 15, TimeUnit.MINUTES);
+
+        // PHASE 2: Advanced Processing (Gated by the Queue)
         loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::purgeCorruptedLore, 5, 5, TimeUnit.MINUTES);
         loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::populateMissingLoreLinks, 5, 5, TimeUnit.MINUTES);
         loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::updateExistingLoreWithNewContext, 10, 10, TimeUnit.MINUTES);
         loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::synthesizeDeepThoughts, 30, 30, TimeUnit.MINUTES);
         loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::auditAndVerifyLore, 15, 15, TimeUnit.MINUTES);
 
-        // Run the highly optimized 1-Pass pipeline
-        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::runLorePipeline, 1, 15, TimeUnit.MINUTES);
+        System.out.println("Ciel Debug: Native-Regex Deep Lore Analyzer initialized. Phase 1 / Phase 2 architecture active.");
+    }
 
-        System.out.println("Ciel Debug: Native-Regex Deep Lore Analyzer initialized.");
+    private static boolean isQueueActive() {
+        File queueDir = new File(TRANSCRIPT_QUEUE_DIR);
+        if (!queueDir.exists()) return false;
+        File[] files = queueDir.listFiles((dir, name) -> name.endsWith(".txt") || name.endsWith(".md"));
+        return files != null && files.length > 0;
     }
 
     private static void runLorePipeline() {
-        File vaultDir = new File(LORE_DIR);
-        if (!vaultDir.exists() || !vaultDir.isDirectory()) return;
+        File queueDir = new File(TRANSCRIPT_QUEUE_DIR);
+        if (!queueDir.exists() || !queueDir.isDirectory()) return;
 
-        List<File> mdFiles = findTextFiles(vaultDir, new ArrayList<>());
-        mdFiles.removeIf(f -> f.getAbsolutePath().contains("Transcripts")
-                || f.getAbsolutePath().contains("Indexes"));
-        if (mdFiles.isEmpty()) return;
+        List<File> queuedFiles = findTextFiles(queueDir, new ArrayList<>());
+        if (queuedFiles.isEmpty()) return;
 
-        File target = mdFiles.get(random.nextInt(mdFiles.size()));
-        System.out.println("Ciel Debug: Starting optimized lore pipeline on " + target.getName());
+        // Pick a file to clean
+        File target = queuedFiles.get(0);
+        System.out.println("Ciel Debug: Starting Phase 1 Sanitization pipeline on " + target.getName());
 
         try {
             // STEP 1: NATIVE TIMESTAMP REMOVAL (Instant, 0 API Calls)
@@ -73,66 +84,72 @@ public class LoreAnalyzerService {
             File tsrFile = new File(target.getParentFile(), baseName + "_TSR.md");
             Files.writeString(tsrFile.toPath(), tsRemoved);
 
-            // STEP 2: AI SPELLCHECK & OBSIDIAN LINKING
-            File completeFile = processPass(tsrFile, "Complete",
-                    "You are a strict text processor for the novel '" + baseName + "'.\n"
-                            + "CRITICAL RULES:\n"
-                            + "1. Fix phonetically misspelled Tensura names (e.g., Xion->Shion).\n"
-                            + "2. Add [[brackets]] around proper nouns (characters, skills, locations).\n"
-                            + "3. DO NOT change the narrative prose. DO NOT output bullet points, summaries, or character profiles.\n"
-                            + "4. Output ONLY the flowing, bracketed story prose.",
-                    0.3);
+            // STEP 2: AI SPELLCHECK (Phase 1 Only - No Links)
+            String systemPrompt = "You are a specialized proofreader for the light novel 'That Time I Got Reincarnated as a Slime' (Tensura). " +
+                    "This text is a raw, unedited speech-to-text (TTS) transcript.\n\n" +
+                    "CRITICAL DIRECTIVES:\n" +
+                    "1. CORRECT phonetic misspellings of Tensura proper nouns (e.g., 'Rimmer' -> 'Rimuru', 'Zion' -> 'Shion', 'Milim', 'Diablo').\n" +
+                    "2. DO NOT change the narrative, prose, or formatting. DO NOT summarize.\n" +
+                    "3. DO NOT insert characters or events that are not present in the raw text. Do not swap names if the context does not dictate it.\n" +
+                    "4. DO NOT add Markdown links or brackets yet. Just output the cleaned story text.";
+
+            File completeFile = processPass(tsrFile, "Cleaned", systemPrompt);
 
             if (completeFile == null) {
-                System.out.println("Ciel Debug: Pipeline halted due to timeout or error. Bookmark saved. Will retry.");
+                System.out.println("Ciel Debug: Pipeline encountered a fatal disk error. Will retry later.");
                 return;
             }
 
-            System.out.println("Ciel Debug: Lore pipeline finished successfully – produced " + completeFile.getName());
+            System.out.println("Ciel Debug: Sanitization finished successfully – produced " + completeFile.getName());
+            
+            // Move the cleaned file to the Archive
+            Path archivePath = Paths.get(TRANSCRIPT_ARCHIVE_DIR, completeFile.getName());
+            Files.move(completeFile.toPath(), archivePath, StandardCopyOption.REPLACE_EXISTING);
             
             // Cleanup intermediate files ONLY on 100% success
             tsrFile.delete();
             target.delete();
 
         } catch (Exception e) {
-            System.err.println("Ciel Error: Lore pipeline failed: " + e.getMessage());
+            System.err.println("Ciel Error: Phase 1 pipeline failed: " + e.getMessage());
         }
     }
 
-    private static File processPass(File sourceFile, String suffix, String systemPrompt, double temperature) throws Exception {
-        synchronized (DEEPSEEK_LOCK) {
-            while (deepseekInUse) {
-                try { DEEPSEEK_LOCK.wait(2000); } catch (InterruptedException ignored) {}
+    private static File processPass(File sourceFile, String suffix, String systemPrompt) throws Exception {
+        synchronized (SWARM_LOCK) {
+            while (swarmInUse) {
+                try { SWARM_LOCK.wait(2000); } catch (InterruptedException ignored) {}
             }
-            deepseekInUse = true;
+            swarmInUse = true;
         }
 
         try {
             String raw = Files.readString(sourceFile.toPath());
             if (raw.isBlank()) return null;
 
-            // Strict 4000 character chunks to prevent model overload
-            List<String> chunks = splitIntoChunks(raw, 4000);
+            // Expanded chunk size to 15,000 characters. This preserves massive narrative context 
+            // so the AI doesn't hallucinate character swaps out of confusion.
+            List<String> chunks = splitIntoChunks(raw, 15000);
             List<String> processed = new ArrayList<>();
 
             for (int i = 0; i < chunks.size(); i++) {
                 String chunk = chunks.get(i);
                 String response = null;
                 try {
-                    // Prepend [LORE_ASSIMILATION] so Python routes it correctly to the Swarm
-                    response = AIEngine.generateSilentLogicWithModel(
-                            "[LORE_ASSIMILATION]\n" + chunk,
-                            systemPrompt,
-                            "ollama-cloud/deepseek-v3.1:671b",
-                            temperature).join();
+                    // Let the Swarm Router handle model selection (Uses Gemini automatically via Swarm for big chunks)
+                    // We use [LORE_CLEANUP] so it doesn't accidentally trigger the python assimilator script.
+                    response = AIEngine.generateSilentLogic(
+                            "[LORE_CLEANUP]\n" + chunk + "\n\n" + systemPrompt,
+                            "Lore Processing").get(5, TimeUnit.MINUTES);
                 } catch (Exception ex) {
                     response = null;
                 }
 
-                // HARD HALT FAILSAFE: Reject any form of timeout or error
+                // If Swarm fails, DO NOT halt the whole book. Append the raw text and keep going!
                 if (response == null || response.toLowerCase().contains("timeout") || response.contains("[ERROR") || response.contains("[SYSTEM_ERROR]")) {
-                    System.err.println("Ciel Warning: Inference engine timeout or error detected on chunk " + (i+1) + ". Halting pipeline immediately to protect data integrity.");
-                    return null;
+                    System.err.println("Ciel Warning: Inference engine timeout on chunk " + (i+1) + ". Salvaging raw text and continuing pipeline.");
+                    processed.add(chunk); 
+                    continue;
                 }
 
                 String clean = response.replaceAll("^`{3}[a-zA-Z]*\\n|`{3}$", "").trim();
@@ -146,10 +163,11 @@ public class LoreAnalyzerService {
             File outFile = new File(sourceFile.getParentFile(), baseName + "_" + suffix + ".md");
             Files.writeString(outFile.toPath(), result);
             return outFile;
+            
         } finally {
-            synchronized (DEEPSEEK_LOCK) {
-                deepseekInUse = false;
-                DEEPSEEK_LOCK.notifyAll();
+            synchronized (SWARM_LOCK) {
+                swarmInUse = false;
+                SWARM_LOCK.notifyAll();
             }
         }
     }
@@ -172,6 +190,8 @@ public class LoreAnalyzerService {
     }
 
     private static void purgeCorruptedLore() {
+        if (isQueueActive()) return; // Gated by Phase 1
+
         File vaultDir = new File(LORE_DIR);
         if (!vaultDir.exists() || !vaultDir.isDirectory()) return;
 
@@ -193,6 +213,8 @@ public class LoreAnalyzerService {
     }
 
     private static void auditAndVerifyLore() {
+        if (isQueueActive()) return; // Gated by Phase 1
+
         File vaultDir = new File(LORE_DIR);
         if (!vaultDir.exists() || !vaultDir.isDirectory()) return;
 
@@ -212,7 +234,7 @@ public class LoreAnalyzerService {
                     "You are Ciel, the Lore Auditor. Review the following Obsidian document from Master's Tensura vault.\n\n" +
                     "DOCUMENT CONTENT:\n" + existingContent + "\n\n" +
                     "CRITICAL DIRECTIVES:\n" +
-                    "1. Search for AI Hallucinations and Phonetic Misspellings (e.g. 'Mamaru' instead of 'Momiji', 'Dominic' instead of 'Adalman', 'Xion' instead of 'Shion').\n" +
+                    "1. Search for AI Hallucinations and Phonetic Misspellings.\n" +
                     "2. Ensure the document maps timeline events clearly up to: " + timeline + ".\n" +
                     "3. IF THE ENTIRE DOCUMENT IS ABOUT A HALLUCINATED NAME (e.g., The file is titled 'Mamaru' but should be 'Momiji'), you MUST output EXACTLY: [RENAME: True Name]. Do NOT output the markdown, just the rename tag.\n" +
                     "4. Otherwise, if you find errors within the text, fix them and output ONLY the corrected Markdown.\n" +
@@ -245,6 +267,8 @@ public class LoreAnalyzerService {
     }
 
     private static void updateExistingLoreWithNewContext() {
+        if (isQueueActive()) return; // Gated by Phase 1
+
         File vaultDir = new File(LORE_DIR);
         if (!vaultDir.exists() || !vaultDir.isDirectory()) return;
 
@@ -254,11 +278,7 @@ public class LoreAnalyzerService {
                 .collect(Collectors.toList());
 
         List<File> transcripts = allFiles.stream()
-                .filter(f -> f.getAbsolutePath().contains("Transcripts"))
-                .filter(f -> {
-                    String baseName = f.getName().replace("_Complete.md", "").replace("_Cleaned.md", "").replace(".md", "").replace(".txt", "");
-                    return new File(LORE_DIR + File.separator + "Indexes" + File.separator + baseName + " Master Index.md").exists();
-                })
+                .filter(f -> f.getAbsolutePath().contains("Transcripts\\Archive"))
                 .collect(Collectors.toList());
 
         if (populatedLore.isEmpty() || transcripts.isEmpty()) return;
@@ -305,6 +325,8 @@ public class LoreAnalyzerService {
     }
 
     private static void populateMissingLoreLinks() {
+        if (isQueueActive()) return; // Gated by Phase 1
+
         File vaultDir = new File(LORE_DIR);
         if (!vaultDir.exists() || !vaultDir.isDirectory()) return;
 
@@ -328,11 +350,7 @@ public class LoreAnalyzerService {
         }
 
         List<File> validTranscripts = textFiles.stream()
-                .filter(f -> f.getAbsolutePath().contains("Transcripts"))
-                .filter(f -> {
-                    String baseName = f.getName().replace("_Complete.md", "").replace("_Cleaned.md", "").replace(".md", "").replace(".txt", "");
-                    return new File(LORE_DIR + File.separator + "Indexes" + File.separator + baseName + " Master Index.md").exists();
-                })
+                .filter(f -> f.getAbsolutePath().contains("Transcripts\\Archive"))
                 .collect(Collectors.toList());
 
         for (File file : validTranscripts) {
@@ -445,6 +463,8 @@ public class LoreAnalyzerService {
     }
 
     private static void synthesizeDeepThoughts() {
+        if (isQueueActive()) return; // Gated by Phase 1
+
         try {
             List<String> recentMemories = MemoryService.getRecentEpisodicMemories(10);
             if (recentMemories.isEmpty()) return;
@@ -493,7 +513,7 @@ public class LoreAnalyzerService {
     }
 
     private static String getCurrentTimelineContext() {
-        File transcriptDir = new File(LORE_DIR, "Transcripts");
+        File transcriptDir = new File(TRANSCRIPT_ARCHIVE_DIR);
         if (!transcriptDir.exists() || !transcriptDir.isDirectory()) return "Early Story";
 
         int maxVol = 0;

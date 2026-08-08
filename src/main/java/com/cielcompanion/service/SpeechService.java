@@ -41,7 +41,7 @@ import java.util.stream.Collectors;
 /**
  * Handles Text-to-Speech operations using Azure Cognitive Services.
  * Integrated: universal media queuing, World Voice (Tensura) support,
- * dynamic emotion variance, and stuttering logic.
+ * and dynamic emotion variance.
  */
 public class SpeechService {
 
@@ -315,10 +315,6 @@ public class SpeechService {
                     CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
                 }
 
-                if ("Glitched".equals(finalAttitude) || "Concerned".equals(finalAttitude)) {
-                    textToSpeak = applyStutter(textToSpeak);
-                }
-
                 executeSpeechBlocking(textToSpeak, key, Settings.getTtsRate(),
                         finalStyle, finalPitch, langCode);
             } finally {
@@ -407,10 +403,6 @@ public class SpeechService {
                         } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
                             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
                             textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
-                        }
-
-                        if ("Glitched".equals(attitude) || "Concerned".equals(attitude)) {
-                            textToSpeak = applyStutter(textToSpeak);
                         }
 
                         // CRITICAL FIX: Only pause media AFTER translation is done and speech is imminent
@@ -530,20 +522,6 @@ public class SpeechService {
         } catch (Exception e) {
             return basePitch;
         }
-    }
-
-    private static String applyStutter(String input) {
-        if (random.nextInt(10) > 3) return input;
-        String[] words = input.split(" ");
-        if (words.length == 0) return input;
-        int targetIdx = random.nextInt(words.length);
-        String targetWord = words[targetIdx];
-        if (targetWord.length() > 2) {
-            String stutter = targetWord.substring(0, 2) + "-" + targetWord;
-            words[targetIdx] = stutter;
-            return String.join(" ", words);
-        }
-        return input;
     }
 
     public static long estimateSpeechDuration(String text) {
