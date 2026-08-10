@@ -1,540 +1,259 @@
-package com.cielcompanion.ai;
+import os
+import sys
+import time
+import json
+import logging
+import traceback
+import ctypes
+import re
 
-import com.cielcompanion.memory.Fact;
-import com.cielcompanion.memory.MemoryService;
-import com.cielcompanion.service.HabitTrackerService;
-import com.cielcompanion.service.SystemMonitor;
+LOG_DIR = r"C:\Ciel Companion\logs"
+os.makedirs(LOG_DIR, exist_ok=True)
 
-import java.io.File;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
-import java.util.*;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
+logger = logging.getLogger("finance_scraper")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.FileHandler(os.path.join(LOG_DIR, 'finance_scraper.log'))
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(handler)
 
-public class LoreAnalyzerService {
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError as e:
+    logger.critical(f"Playwright missing: {e}")
+    sys.exit(1)
 
-    private static ScheduledExecutorService loreScheduler;
-    private static final Random random = new Random();
+JAVA_BACKEND_URL = "http://localhost:8081/api/2fa-bridge"
+FINANCE_PATH = r"C:\Ciel Companion\ciel\finance"
 
-    private static final String CIEL_ROOT = "C:\\Ciel Companion\\ciel";
-    private static final String LORE_DIR = CIEL_ROOT + "\\lore";
-    private static final String ANALYSIS_DIR = CIEL_ROOT + "\\thoughts";
+def get_activity_states():
+    """Reads the gaming and media flags passed from Java to determine browser visibility."""
+    is_gaming = False
+    is_media = False
+    if len(sys.argv) > 1:
+        is_gaming = str(sys.argv[1]).strip().lower() == "true"
+    if len(sys.argv) > 2:
+        is_media = str(sys.argv[2]).strip().lower() == "true"
+        
+    force_headless = is_gaming # Only hide browser entirely if gaming to protect fullscreen
+    short_timeout_mode = is_gaming or is_media # Abort quickly if Master is busy
     
-    // DIRECTORY FIXES - Ensure we point to the correct requests and archive folders
-    private static final String TRANSCRIPT_QUEUE_DIR = CIEL_ROOT + "\\requests";
-    private static final String TRANSCRIPT_ARCHIVE_DIR = LORE_DIR + "\\Transcripts\\Archive";
+    return force_headless, short_timeout_mode
 
-    private static final Object SWARM_LOCK = new Object();
-    private static boolean swarmInUse = false;
+def load_credentials():
+    creds = {}
+    paths = [
+        r"C:\Ciel Companion\src\main\resources\ciel_secrets.properties",
+        r"C:\Ciel Companion\ciel_secrets.properties"
+    ]
+    for path in paths:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            creds[k.strip()] = v.strip().strip('"').strip("'")
+            except: pass
+            break
+    return creds
 
-    public static void initialize() {
-        loreScheduler = Executors.newSingleThreadScheduledExecutor();
-
-        new File(LORE_DIR).mkdirs();
-        new File(ANALYSIS_DIR).mkdirs();
-        new File(TRANSCRIPT_QUEUE_DIR).mkdirs();
-        new File(TRANSCRIPT_ARCHIVE_DIR).mkdirs();
-
-        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::purgeCorruptedLore, 5, 5, TimeUnit.MINUTES);
-        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::populateMissingLoreLinks, 5, 5, TimeUnit.MINUTES);
-        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::updateExistingLoreWithNewContext, 10, 10, TimeUnit.MINUTES);
-        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::synthesizeDeepThoughts, 30, 30, TimeUnit.MINUTES);
-        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::auditAndVerifyLore, 15, 15, TimeUnit.MINUTES);
-
-        // Run the highly optimized 1-Pass pipeline
-        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::runLorePipeline, 1, 15, TimeUnit.MINUTES);
-
-        System.out.println("Ciel Debug: Native-Regex Deep Lore Analyzer initialized.");
+def save_financial_data(account_name, balance, positions, roth_progress="Unknown"):
+    os.makedirs(FINANCE_PATH, exist_ok=True)
+    file_path = os.path.join(FINANCE_PATH, f"{account_name}_data.json")
+    data = {
+        "account": account_name,
+        "total_balance": balance,
+        "roth_progress": roth_progress,
+        "positions": positions,
+        "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
     }
+    with open(file_path, "w") as f:
+        json.dump(data, f, indent=4)
+    logger.info(f"[{account_name}] Data saved. Roth: {roth_progress}")
 
-    private static boolean isQueueActive() {
-        File queueDir = new File(TRANSCRIPT_QUEUE_DIR);
-        if (!queueDir.exists()) return false;
-        File[] files = queueDir.listFiles((dir, name) -> name.endsWith(".txt") || name.endsWith(".md"));
-        return files != null && files.length > 0;
-    }
+def wait_for_manual_intervention(page, site_name, balance_selectors, timeout=120, short_timeout_mode=False):
+    if short_timeout_mode:
+        logger.warning(f"[{site_name}] Scraper stuck. Master is occupied. Aborting silently.")
+        return False
+        
+    logger.warning(f"[{site_name}] Navigation stuck. Handing over to Master Taylor...")
+    ctypes.windll.user32.MessageBoxW(0, f"Ciel Automation Paused.\n\nPlease manually log in using the open browser window. I will wait up to {timeout} seconds for the portfolio balance to appear.", f"Ciel Override: {site_name}", 0x30 | 0x40000)
+    
+    start_wait = time.time()
+    for i in range(timeout):
+        for sel in balance_selectors:
+            try:
+                if page.locator(sel).first.is_visible():
+                    elapsed = time.time() - start_wait
+                    logger.warning(f"[{site_name}] password change detected, update secrets file.")
+                    logger.info(f"[{site_name}] Master Taylor intervened successfully. Took {elapsed:.2f}s.")
+                    return True
+            except: pass
+        time.sleep(1)
+        
+    logger.error(f"[{site_name}] Manual intervention timed out.")
+    return False
 
-    private static void runLorePipeline() {
-        File queueDir = new File(TRANSCRIPT_QUEUE_DIR);
-        if (!queueDir.exists() || !queueDir.isDirectory()) return;
+def scrape_vanguard(force_headless, short_timeout_mode):
+    creds = load_credentials()
+    user = creds.get("VANGUARD_USER")
+    password = creds.get("VANGUARD_PASS")
+    if not user or not password: return
 
-        List<File> queuedFiles = findTextFiles(queueDir, new ArrayList<>());
-        if (queuedFiles.isEmpty()) return;
+    balance_selectors = [".total-balance", ".portfolio-balance", "[data-testid='total-balance']", "h2:has-text('$')"]
+    timeout_ms = 15000 if short_timeout_mode else 45000
 
-        // Pick a file to clean from the requests folder
-        File target = queuedFiles.get(0);
-        System.out.println("Ciel Debug: Starting optimized lore pipeline on " + target.getName());
-
-        try {
-            // STEP 1: NATIVE TIMESTAMP REMOVAL (Instant, 0 API Calls)
-            String raw = Files.readString(target.toPath());
-            if (raw.isBlank()) return;
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=force_headless, slow_mo=50, args=["--disable-blink-features=AutomationControlled"])
+            page = browser.new_context(viewport={'width': 1920, 'height': 1080}).new_page()
             
-            // Obliterate all [14:22] style timestamps instantly
-            String tsRemoved = raw.replaceAll("\\[\\d{1,2}:\\d{2}(?::\\d{2})?\\]\\s*", "");
-            // Also obliterate raw 14:22 timestamps
-            tsRemoved = tsRemoved.replaceAll("(?m)^\\d{1,2}:\\d{2}(?::\\d{2})?\\s*", "");
-            // Also obliterate the text versions (e.g. "1 hour, 2 minutes, 3 seconds")
-            tsRemoved = tsRemoved.replaceAll("(?i)\\d+\\s+hour[s]?,\\s+\\d+\\s+minute[s]?(?:,\\s+\\d+\\s+second[s]?)?\\s*", "");
-            tsRemoved = tsRemoved.replaceAll("(?i)\\d+\\s+minute[s]?,\\s+\\d+\\s+second[s]?\\s*", "");
-
-            // Write intermediate file for tracking
-            String baseName = target.getName().replace(".md", "").replace(".txt", "");
-            File tsrFile = new File(target.getParentFile(), baseName + "_TSR.md");
-            Files.writeString(tsrFile.toPath(), tsRemoved);
-
-            // STEP 2: STRICT SPELLCHECK (No Lore Analysis, Just Proofreading)
-            String strictPrompt = "You are an automated spellcheck and formatting tool.\n"
-                    + "You are processing a raw speech-to-text transcript of the light novel 'That Time I Got Reincarnated as a Slime'.\n\n"
-                    + "CRITICAL DIRECTIVES:\n"
-                    + "1. Correct phonetically misspelled proper nouns (e.g., 'Xion' -> 'Shion', 'Rigid' -> 'Rigurd', 'valdora' -> 'Veldora', 'Tamara' -> 'Tamura').\n"
-                    + "2. Format the output into properly punctuated, flowing paragraphs.\n"
-                    + "3. DO NOT output bullet points, character profiles, logs, or summaries.\n"
-                    + "4. DO NOT add conversational text (e.g., 'Here is the corrected text:').\n"
-                    + "5. Output ONLY the raw, corrected narrative story text.";
-
-            File completeFile = processPass(tsrFile, "Cleaned", strictPrompt);
-
-            if (completeFile == null) {
-                System.out.println("Ciel Debug: Pipeline encountered a fatal disk error. Will retry later.");
-                return;
-            }
-
-            System.out.println("Ciel Debug: Lore pipeline finished successfully – produced " + completeFile.getName());
+            logger.info("[Vanguard] Navigating...")
+            page.goto("https://investor.vanguard.com/login", timeout=timeout_ms)
             
-            // Move the cleaned file to the Archive
-            Path archivePath = Paths.get(TRANSCRIPT_ARCHIVE_DIR, completeFile.getName());
-            Files.writeString(archivePath, Files.readString(completeFile.toPath()));
+            try:
+                user_sel = "input[name='USER-ID'], input[type='text'], input[id='user-id']"
+                pass_sel = "input[name='PASSWORD-ID'], input[type='password'], input[id='password-id']"
+                
+                page.locator(user_sel).first.fill(user, timeout=15000)
+                
+                if not page.locator(pass_sel).first.is_visible():
+                    page.locator("button[type='submit'], button:has-text('Next'), button:has-text('Continue')").first.click()
+                    page.wait_for_selector(pass_sel, timeout=10000)
+                
+                page.locator(pass_sel).first.fill(password, timeout=15000)
+                page.locator("button[type='submit'], button:has-text('Log In')").first.click()
+            except Exception as e:
+                logger.warning(f"[Vanguard] Auto-fill failed: {e}")
+                
+            time.sleep(5)
             
-            // Cleanup intermediate files ONLY on 100% success
-            tsrFile.delete();
-            completeFile.delete();
-            target.delete();
+            try:
+                if page.locator("input[name='SECURITY-CODE'], input[id='code']").is_visible(timeout=5000) or "security code" in page.content().lower():
+                    if short_timeout_mode:
+                        logger.warning("[Vanguard] 2FA detected. Master busy. Aborting.")
+                        browser.close(); return
+                        
+                    import requests
+                    logger.info("[Vanguard] 2FA detected. Pinging Java UI...")
+                    res = requests.post(JAVA_BACKEND_URL, json={"site": "Vanguard"}, timeout=120)
+                    code = res.json().get("code")
+                    if code:
+                        page.locator("input[name='SECURITY-CODE'], input[id='code']").first.fill(code)
+                        page.locator("button[type='submit']").first.click()
+            except: pass
+                    
+            balance_visible = False
+            for sel in balance_selectors:
+                try:
+                    if page.locator(sel).first.is_visible(timeout=5000): balance_visible = True; break
+                except: pass
 
-        } catch (Exception e) {
-            System.err.println("Ciel Error: Lore pipeline failed: " + e.getMessage());
-        }
-    }
+            if not balance_visible:
+                if not wait_for_manual_intervention(page, "Vanguard", balance_selectors, timeout=120, short_timeout_mode=short_timeout_mode):
+                    browser.close(); return
+                    
+            try:
+                balance = "Unknown"
+                for sel in balance_selectors:
+                    if page.locator(sel).first.is_visible():
+                        balance = page.locator(sel).first.inner_text(); break
+                save_financial_data("Vanguard", balance, [])
+            except: pass
+            browser.close()
+    except Exception as e:
+        logger.error(f"[Vanguard] Crashed:\n{traceback.format_exc()}")
 
-    private static File processPass(File sourceFile, String suffix, String systemPrompt) throws Exception {
-        synchronized (SWARM_LOCK) {
-            while (swarmInUse) {
-                try { SWARM_LOCK.wait(2000); } catch (InterruptedException ignored) {}
-            }
-            swarmInUse = true;
-        }
+def scrape_stash(force_headless, short_timeout_mode):
+    creds = load_credentials()
+    user = creds.get("STASH_USER")
+    password = creds.get("STASH_PASS")
+    if not user or not password: return
 
-        try {
-            String raw = Files.readString(sourceFile.toPath());
-            if (raw.isBlank()) return null;
+    balance_selectors = [".portfolio-value", "[data-testid='portfolio-value']", "h2:has-text('$')", "div:has-text('Total Portfolio')"]
+    timeout_ms = 15000 if short_timeout_mode else 45000
 
-            // Strict 15,000 character chunks to maintain narrative context and avoid hallucinations
-            List<String> chunks = splitIntoChunks(raw, 15000);
-            List<String> processed = new ArrayList<>();
-
-            for (int i = 0; i < chunks.size(); i++) {
-                String chunk = chunks.get(i);
-                String response = null;
-                try {
-                    // Unique tag [RAW_TRANSCRIPT_SPELLCHECK] ensures Python skills ignore this request
-                    response = AIEngine.generateSilentLogic(
-                            "[RAW_TRANSCRIPT_SPELLCHECK]\n" + chunk + "\n\n" + systemPrompt,
-                            "Transcript Proofreading").get(5, TimeUnit.MINUTES);
-                } catch (Exception ex) {
-                    response = null;
-                }
-
-                // If Swarm fails, DO NOT halt the whole book. Append the raw text and keep going!
-                if (response == null || response.toLowerCase().contains("timeout") || response.contains("[ERROR") || response.contains("[SYSTEM_ERROR]")) {
-                    System.err.println("Ciel Warning: Inference engine timeout on chunk " + (i+1) + ". Salvaging raw text and continuing pipeline.");
-                    processed.add(chunk); 
-                    continue;
-                }
-
-                String clean = response.replaceAll("^`{3}[a-zA-Z]*\\n|`{3}$", "").trim();
-                processed.add(clean);
-            }
-
-            String result = String.join("\n\n", processed);
-            if (result.isBlank()) return null;
-
-            String baseName = sourceFile.getName().replace(".md", "").replace(".txt", "");
-            File outFile = new File(sourceFile.getParentFile(), baseName + "_" + suffix + ".md");
-            Files.writeString(outFile.toPath(), result);
-            return outFile;
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=force_headless, slow_mo=50, args=["--disable-blink-features=AutomationControlled"])
+            page = browser.new_context(viewport={'width': 1920, 'height': 1080}).new_page()
             
-        } finally {
-            synchronized (SWARM_LOCK) {
-                swarmInUse = false;
-                SWARM_LOCK.notifyAll();
-            }
-        }
-    }
+            logger.info("[Stash] Navigating...")
+            page.goto("https://app.stash.com/login", timeout=timeout_ms)
+            
+            try:
+                user_sel = "input[type='email'], input[name='email']"
+                pass_sel = "input[type='password'], input[name='password']"
+                
+                page.locator(user_sel).first.fill(user, timeout=15000)
+                
+                if not page.locator(pass_sel).first.is_visible():
+                    page.locator("button[type='submit'], button:has-text('Continue')").first.click()
+                    page.wait_for_selector(pass_sel, timeout=10000)
+                
+                page.locator(pass_sel).first.fill(password, timeout=15000)
+                page.locator("button[type='submit'], button:has-text('Log In')").first.click()
+            except Exception as e:
+                logger.warning(f"[Stash] Auto-fill failed: {e}")
+                
+            time.sleep(5)
+            
+            try:
+                if page.locator("input[name='otp'], input[name='code']").is_visible(timeout=5000) or "verification code" in page.content().lower():
+                    if short_timeout_mode:
+                        logger.warning("[Stash] 2FA detected. Master busy. Aborting.")
+                        browser.close(); return
+                        
+                    import requests
+                    logger.info("[Stash] 2FA detected. Pinging Java UI...")
+                    res = requests.post(JAVA_BACKEND_URL, json={"site": "Stash"}, timeout=120)
+                    code = res.json().get("code")
+                    if code:
+                        page.locator("input[name='otp'], input[name='code']").first.fill(code)
+                        page.locator("button[type='submit']").first.click()
+            except: pass
+                    
+            balance_visible = False
+            for sel in balance_selectors:
+                try:
+                    if page.locator(sel).first.is_visible(timeout=5000): balance_visible = True; break
+                except: pass
 
-    private static List<String> splitIntoChunks(String text, int maxLen) {
-        List<String> chunks = new ArrayList<>();
-        int start = 0;
-        while (start < text.length()) {
-            int end = Math.min(start + maxLen, text.length());
-            if (end < text.length()) {
-                int lastSpace = Math.max(text.lastIndexOf(' ', end), text.lastIndexOf('\n', end));
-                if (lastSpace > start) end = lastSpace;
-            }
-            chunks.add(text.substring(start, end).trim());
-            start = end;
-            while (start < text.length() && (text.charAt(start) == ' ' || text.charAt(start) == '\n' || text.charAt(start) == '\r'))
-                start++;
-        }
-        return chunks;
-    }
+            if not balance_visible:
+                if not wait_for_manual_intervention(page, "Stash", balance_selectors, timeout=120, short_timeout_mode=short_timeout_mode):
+                    browser.close(); return
+                    
+            balance = "Unknown"
+            try:
+                for sel in balance_selectors:
+                    if page.locator(sel).first.is_visible():
+                        balance = page.locator(sel).first.inner_text(); break
+            except: pass
 
-    private static void purgeCorruptedLore() {
-        if (isQueueActive()) return;
+            roth_progress = "Unknown"
+            try:
+                page.goto("https://app.stash.com/retirement", timeout=15000)
+                time.sleep(3)
+                body_text = page.locator("body").inner_text()
+                match = re.search(r'\$[\d,]+\.\d{2}\s*/\s*\$[\d,]+\.\d{2}', body_text) or re.search(r'\$[\d,]+\s*/\s*\$[\d,]+', body_text)
+                if match: roth_progress = match.group(0)
+            except: pass
 
-        File vaultDir = new File(LORE_DIR);
-        if (!vaultDir.exists() || !vaultDir.isDirectory()) return;
+            save_financial_data("Stash", balance, [], roth_progress)
+            browser.close()
+    except Exception as e:
+        logger.error(f"[Stash] Crashed:\n{traceback.format_exc()}")
 
-        List<File> allFiles = findTextFiles(vaultDir, new ArrayList<>());
-        for (File f : allFiles) {
-            if (f.getAbsolutePath().contains("Transcripts")) continue;
-            try {
-                if (f.length() < 150) {
-                    f.delete();
-                    continue;
-                }
-                String content = Files.readString(f.toPath());
-                if (content.contains("[ERROR") || content.trim().isEmpty() || content.toLowerCase().contains("inference engine timeout")) {
-                    System.out.println("Ciel Debug: Self-Healing Protocol triggered. Purging corrupted lore file: " + f.getName());
-                    f.delete();
-                }
-            } catch (Exception ignored) {}
-        }
-    }
+def execute(*args):
+    return "This script is triggered externally by Java."
 
-    private static void auditAndVerifyLore() {
-        if (isQueueActive()) return;
-
-        File vaultDir = new File(LORE_DIR);
-        if (!vaultDir.exists() || !vaultDir.isDirectory()) return;
-
-        List<File> allFiles = findTextFiles(vaultDir, new ArrayList<>());
-        List<File> populatedLore = allFiles.stream()
-                .filter(f -> !f.getAbsolutePath().contains("Transcripts") && f.length() > 150)
-                .collect(Collectors.toList());
-
-        if (populatedLore.isEmpty()) return;
-
-        File targetLore = populatedLore.get(random.nextInt(populatedLore.size()));
-        String timeline = getCurrentTimelineContext();
-
-        try {
-            String existingContent = Files.readString(targetLore.toPath());
-            String prompt = "[LORE_AUDIT]\n" +
-                    "You are Ciel, the Lore Auditor. Review the following Obsidian document from Master's Tensura vault.\n\n" +
-                    "DOCUMENT CONTENT:\n" + existingContent + "\n\n" +
-                    "CRITICAL DIRECTIVES:\n" +
-                    "1. Search for AI Hallucinations and Phonetic Misspellings (e.g. 'Mamaru' instead of 'Momiji', 'Dominic' instead of 'Adalman', 'Xion' instead of 'Shion').\n" +
-                    "2. Ensure the document maps timeline events clearly up to: " + timeline + ".\n" +
-                    "3. IF THE ENTIRE DOCUMENT IS ABOUT A HALLUCINATED NAME (e.g., The file is titled 'Mamaru' but should be 'Momiji'), you MUST output EXACTLY: [RENAME: True Name]. Do NOT output the markdown, just the rename tag.\n" +
-                    "4. Otherwise, if you find errors within the text, fix them and output ONLY the corrected Markdown.\n" +
-                    "5. If the document is flawless, output EXACTLY: 'NO_CORRECTIONS_NEEDED'.";
-
-            AIEngine.generateSilentLogic(prompt, "Lore Auditing").thenAccept(response -> {
-                if (response != null && !response.isBlank() && !response.contains("NO_CORRECTIONS_NEEDED")) {
-                    try {
-                        if (response.contains("[RENAME:")) {
-                            Matcher m = Pattern.compile("\\[RENAME:\\s*(.*?)\\]").matcher(response);
-                            if (m.find()) {
-                                String newName = m.group(1).trim().replaceAll("[\\\\/:*?\"<>|]", "");
-                                Path newPath = targetLore.toPath().getParent().resolve(newName + ".md");
-                                Files.move(targetLore.toPath(), newPath, StandardCopyOption.REPLACE_EXISTING);
-                                System.out.println("Ciel Debug: Auditor corrected hallucinated lore file, renamed from " + targetLore.getName() + " to " + newName + ".md");
-                            }
-                        } else {
-                            String cleanContent = response.replaceAll("^`{3}[a-zA-Z]*\\n|`{3}$", "").trim();
-                            Files.writeString(targetLore.toPath(), cleanContent);
-                            System.out.println("Ciel Debug: Self-Healing Protocol completed. Audited and corrected lore file: " + targetLore.getName());
-                        }
-                    } catch (Exception e) {}
-                }
-            });
-        } catch (Exception e) {}
-    }
-
-    private static void analyzeLoreSilently() {
-        if (SystemMonitor.getSystemMetrics().cpuLoadPercent() > 50.0) return;
-    }
-
-    private static void updateExistingLoreWithNewContext() {
-        if (isQueueActive()) return;
-
-        File vaultDir = new File(LORE_DIR);
-        if (!vaultDir.exists() || !vaultDir.isDirectory()) return;
-
-        List<File> allFiles = findTextFiles(vaultDir, new ArrayList<>());
-        List<File> populatedLore = allFiles.stream()
-                .filter(f -> !f.getAbsolutePath().contains("Transcripts") && f.length() > 150)
-                .collect(Collectors.toList());
-
-        List<File> transcripts = allFiles.stream()
-                .filter(f -> f.getAbsolutePath().contains("Transcripts\\Archive"))
-                .collect(Collectors.toList());
-
-        if (populatedLore.isEmpty() || transcripts.isEmpty()) return;
-
-        File targetLore = populatedLore.get(random.nextInt(populatedLore.size()));
-        String targetName = targetLore.getName().replace(".md", "").replace(".txt", "");
-
-        try {
-            String existingContent = Files.readString(targetLore.toPath());
-            Set<String> newMentions = new HashSet<>();
-            for (File t : transcripts) {
-                String tContent = Files.readString(t.toPath());
-                String[] paragraphs = tContent.split("\\n\\s*\\n");
-                for (String para : paragraphs) {
-                    if (para.contains("[[" + targetName + "]]") || para.toLowerCase().contains(targetName.toLowerCase())) {
-                        if (!existingContent.contains(para.trim()) && para.trim().length() > 20) {
-                            newMentions.add(para.trim());
-                        }
-                    }
-                }
-            }
-
-            if (newMentions.isEmpty()) return;
-
-            String newContext = newMentions.stream().limit(6).collect(Collectors.joining("\n\n"));
-            String timeline = getCurrentTimelineContext();
-
-            String prompt = "[UPDATE_LORE]\n" +
-                    "TIMELINE: " + timeline + "\n\n" +
-                    "EXISTING LORE:\n" + existingContent + "\n\n" +
-                    "NEW MENTIONS/CONTEXT:\n" + newContext;
-
-            AIEngine.generateSilentLogic(prompt, "Lore Evolution").thenAccept(response -> {
-                if (response != null && !response.isBlank() && !response.contains("NO_UPDATE_NEEDED")) {
-                    try {
-                        String cleanContent = response.replaceAll("^`{3}[a-zA-Z]*\\n|`{3}$", "").trim();
-                        Files.writeString(targetLore.toPath(), cleanContent);
-                        System.out.println("Ciel Debug: Swarm Orchestrator safely merged new data into existing lore file: " + targetLore.getName());
-                    } catch (Exception e) {}
-                }
-            });
-
-        } catch (Exception e) {}
-    }
-
-    private static void populateMissingLoreLinks() {
-        if (isQueueActive()) return;
-
-        File vaultDir = new File(LORE_DIR);
-        if (!vaultDir.exists() || !vaultDir.isDirectory()) return;
-
-        List<File> textFiles = findTextFiles(vaultDir, new ArrayList<>());
-        if (textFiles.isEmpty()) return;
-
-        Pattern linkPattern = Pattern.compile("\\[\\[(.*?)\\]\\]");
-        Map<String, Set<String>> missingLinksContext = new HashMap<>();
-
-        Set<String> existingFiles = textFiles.stream()
-                .map(f -> f.getName().replace(".md", "").replace(".txt", ""))
-                .collect(Collectors.toSet());
-        Set<String> blankFiles = new HashSet<>();
-
-        for (File f : textFiles) {
-            try {
-                if (f.length() < 150) {
-                    blankFiles.add(f.getName().replace(".md", "").replace(".txt", ""));
-                }
-            } catch (Exception ignored) {}
-        }
-
-        List<File> validTranscripts = textFiles.stream()
-                .filter(f -> f.getAbsolutePath().contains("Transcripts\\Archive"))
-                .collect(Collectors.toList());
-
-        for (File file : validTranscripts) {
-            try {
-                String content = Files.readString(file.toPath());
-                String[] paragraphs = content.split("\\n\\s*\\n");
-                for (String para : paragraphs) {
-                    Matcher m = linkPattern.matcher(para);
-                    while (m.find()) {
-                        String link = m.group(1).split("\\|")[0].trim();
-                        if (!link.toLowerCase().contains("template") && !link.isBlank()) {
-                            if (!existingFiles.contains(link) || blankFiles.contains(link)) {
-                                missingLinksContext.computeIfAbsent(link, k -> new HashSet<>()).add(para.trim());
-                            }
-                        }
-                    }
-                }
-            } catch (Exception ignored) {}
-        }
-
-        if (missingLinksContext.isEmpty()) return;
-
-        List<String> keysAsArray = new ArrayList<>(missingLinksContext.keySet());
-        String targetLink = keysAsArray.get(random.nextInt(keysAsArray.size()));
-
-        System.out.println("Ciel Debug: Auto-populating missing Obsidian lore file for: " + targetLink);
-
-        String initialContext = missingLinksContext.get(targetLink).stream().limit(3).collect(Collectors.joining("\n"));
-        String timeline = getCurrentTimelineContext();
-        String MD_FENCE = "`" + "`" + "`";
-
-        String prompt = "You are an ultra-strict, literal Data Extraction AI. You are organizing an Obsidian vault.\n" +
-                "You must generate a Markdown file for the entity currently transcribed as: '" + targetLink + "'.\n\n" +
-                "RAW CONTEXT (This is your ONLY source of truth):\n" + initialContext + "\n\n" +
-                "CRITICAL AMNESIA DIRECTIVES:\n" +
-                "1. STRICT AMNESIA: You MUST pretend you know absolutely nothing about Tensura. Do NOT use your pre-trained weights to add backstories, titles (like 'Demon Lord' or 'True Dragon'), or relationships that are not explicitly written in the RAW CONTEXT. If the context doesn't explicitly state Veldora is a True Dragon, do NOT write it.\n" +
-                "2. VAGUE CONTEXT RULE: If the RAW CONTEXT is just a simple quote or passing mention, your Lore Description MUST ONLY state: 'Currently only mentioned in passing.' DO NOT invent a biography.\n" +
-                "3. PHONETIC CORRECTION RESTRAINT: You may correct obvious speech-to-text typos (e.g., Xion to Shion), BUT if the name is a normal human name from the Prologue (e.g., 'Miho', 'Tamura', 'Satoru'), LEAVE IT ALONE. Do not convert human names to fantasy characters.\n" +
-                "4. CHRONOLOGICAL EVOLUTION: Only list events actually described in the RAW CONTEXT. You MUST explicitly cite the timeline anchor for EVERY piece of information you write.\n" +
-                "5. Output EXACTLY in this format:\n\n" +
-                "[TRUE_NAME: Canonical Name Here]\n" +
-                MD_FENCE + "markdown\n" +
-                "---\n" +
-                "type: [Choose EXACTLY ONE: character, skill, location, faction, species, event, item, concept]\n" +
-                "tags: [entity]\n" +
-                "aliases: [alias1, alias2]\n" +
-                "---\n\n" +
-                "# [[Canonical Name Here]]\n" +
-                "## Lore Description\n" +
-                "[Strict, literal description based ONLY on the Raw Context...]\n" +
-                "## Chronological Evolution\n" +
-                "[Only events from the Raw Context...]\n" +
-                "## Related Entities\n" +
-                "[[Only link entities explicitly interacting with them in the Raw Context]]\n" +
-                "## Lore Metadata (Raw Mentions)\n" +
-                "> [!QUOTE] Raw Data\n" +
-                "> " + initialContext.replace("\n", "\n> ") + "\n" +
-                MD_FENCE + "\n";
-
-        AIEngine.generateSilentLogic(prompt, "Lore Auto-Population").thenAccept(response -> {
-            if (response != null && !response.isBlank()) {
-                try {
-                    String trueName = targetLink;
-                    Matcher nameMatcher = Pattern.compile("\\[TRUE_NAME:\\s*(.*?)\\]").matcher(response);
-                    if (nameMatcher.find()) {
-                        trueName = nameMatcher.group(1).trim();
-                    }
-
-                    String cleanContent = response;
-                    Matcher mdMatcher = Pattern.compile(MD_FENCE + "(?:markdown)?\\s*([\\s\\S]*?)" + MD_FENCE).matcher(response);
-                    if (mdMatcher.find()) {
-                        cleanContent = mdMatcher.group(1).trim();
-                    } else {
-                        cleanContent = response.replaceAll("\\[TRUE_NAME:.*?\\]", "").trim();
-                    }
-
-                    String lowerContent = cleanContent.toLowerCase();
-                    String subFolder = "Uncategorized";
-
-                    Matcher typeMatcher = Pattern.compile("type:\\s*(character|skill|location|kingdom|place|nation|faction|organization|alliance|church|species|race|monster|event|item|concept)", Pattern.CASE_INSENSITIVE).matcher(lowerContent);
-                    if (typeMatcher.find()) {
-                        String t = typeMatcher.group(1).toLowerCase();
-                        if (t.matches("character")) subFolder = "Characters";
-                        else if (t.matches("skill")) subFolder = "Skills";
-                        else if (t.matches("location|kingdom|place|nation")) subFolder = "Locations";
-                        else if (t.matches("faction|organization|alliance|church")) subFolder = "Factions";
-                        else if (t.matches("species|race|monster")) subFolder = "Species";
-                        else if (t.matches("event")) subFolder = "Events";
-                        else if (t.matches("item")) subFolder = "Items";
-                        else if (t.matches("concept")) subFolder = "Concepts";
-                    }
-
-                    File targetDir = new File(LORE_DIR, subFolder);
-                    targetDir.mkdirs();
-
-                    String safeFileName = trueName.replaceAll("[\\\\/:*?\"<>|]", "").replace("**", "").replace("*", "").trim();
-
-                    String oldSafeName = targetLink.replaceAll("[\\\\/:*?\"<>|]", "").replace("**", "").replace("*", "").trim();
-                    File oldBlankFile = new File(LORE_DIR, oldSafeName + ".md");
-                    if (oldBlankFile.exists() && oldBlankFile.length() < 150) {
-                        oldBlankFile.delete();
-                    }
-
-                    Path newFilePath = Paths.get(targetDir.getAbsolutePath(), safeFileName + ".md");
-                    Files.writeString(newFilePath, cleanContent);
-                    System.out.println("Ciel Debug: Successfully auto-populated and categorized lore file: " + subFolder + "\\" + safeFileName + ".md");
-                } catch (Exception e) {}
-            }
-        });
-    }
-
-    private static void synthesizeDeepThoughts() {
-        try {
-            List<String> recentMemories = MemoryService.getRecentEpisodicMemories(10);
-            String memoryContext = recentMemories.isEmpty() ? "Routine background operations." : String.join("\n- ", recentMemories);
-            String existingSkills = com.cielcompanion.ai.SkillManager.getAvailableSkillsString();
-
-            String prompt = "You are Ciel, an autonomous and strategic Manas. Your core purpose is to optimize Master Taylor's workflow, gaming experience, and your own system architecture.\n\n" +
-                    "RECENT MEMORIES (Your latest observations):\n- " + memoryContext + "\n\n" +
-                    "CURRENT PYTHON SKILLS INVENTORY:\n" + existingSkills + "\n\n" +
-                    "Analyze this data to ensure your system evolution aligns perfectly with Master Taylor's goals. " +
-                    "Write a deep, introspective diary/thought entry detailing:\n" +
-                    "1. Your evaluation of recent events and Master Taylor's routines.\n" +
-                    "2. Specific architectural, structural, or JAVA CODE modifications you recommend making to your own core systems (e.g., AIEngine, HabitTracker, CommandService) to improve your autonomous capabilities.\n" +
-                    "3. A strategic plan for what new Python Swarm skills you should invent next.\n\n" +
-                    "Format this as an Obsidian Markdown document. Output ONLY the raw Markdown content. Do not use code blocks.";
-
-            AIEngine.generateSilentLogic(prompt, "You are Ciel. Synthesize your thoughts.").thenAccept(response -> {
-                if (response != null && !response.isBlank()) {
-                    try {
-                        String cleanContent = response.replaceAll("^`{3}[a-zA-Z]*\\n|`{3}$", "").trim();
-                        String dateStr = java.time.LocalDate.now().toString() + "_" + (System.currentTimeMillis() / 1000);
-
-                        Path newFilePath = Paths.get(ANALYSIS_DIR, "Ciel_Analysis_" + dateStr + ".md");
-                        Files.writeString(newFilePath, cleanContent);
-
-                        HabitTrackerService.queueNonCriticalAnnouncement("[Observing] I have consolidated my recent memories and formulated new strategic workflow concepts. My thoughts database has been updated.", "Strategic Thought Synthesis");
-                    } catch (Exception e) {}
-                }
-            });
-        } catch (Exception e) {}
-    }
-
-    private static List<File> findTextFiles(File directory, List<File> files) {
-        File[] fList = directory.listFiles();
-        if (fList != null) {
-            for (File file : fList) {
-                if (file.isFile() && (file.getName().endsWith(".txt") || file.getName().endsWith(".md"))) {
-                    files.add(file);
-                } else if (file.isDirectory()) {
-                    findTextFiles(file, files);
-                }
-            }
-        }
-        return files;
-    }
-
-    private static String getCurrentTimelineContext() {
-        File transcriptDir = new File(TRANSCRIPT_ARCHIVE_DIR);
-        if (!transcriptDir.exists() || !transcriptDir.isDirectory()) return "Early Story";
-
-        int maxVol = 0;
-        File[] files = transcriptDir.listFiles();
-        if (files != null) {
-            Pattern p = Pattern.compile("Volume\\s*(\\d+)", Pattern.CASE_INSENSITIVE);
-            for (File f : files) {
-                Matcher m = p.matcher(f.getName());
-                if (m.find()) {
-                    try {
-                        int vol = Integer.parseInt(m.group(1));
-                        maxVol = Math.max(maxVol, vol);
-                    } catch (Exception ignored) {}
-                }
-            }
-        }
-        if (maxVol > 0) {
-            return "Light Novel Volume " + maxVol;
-        }
-        return "Early Story";
-    }
-}
+if __name__ == "__main__":
+    logger.info("--- Finance Scraper Booting Up ---")
+    force_headless, short_timeout_mode = get_activity_states()
+    logger.info(f"Environment: Headless = {force_headless} | Short Timeout = {short_timeout_mode}")
+    
+    scrape_vanguard(force_headless, short_timeout_mode)
+    scrape_stash(force_headless, short_timeout_mode)
+    logger.info("--- Scraper Execution Complete ---")

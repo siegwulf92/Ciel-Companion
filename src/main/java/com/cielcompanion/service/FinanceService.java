@@ -150,15 +150,25 @@ public class FinanceService {
                 // Read current activity state directly from Java memory without relying on disk I/O
                 boolean isGaming = com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().isInGamingSession();
                 String currentCat = com.cielcompanion.service.HabitTrackerService.getCurrentCategory();
+                if (!isGaming) isGaming = "Gaming".equalsIgnoreCase(currentCat);
                 boolean isMedia = "Media".equalsIgnoreCase(currentCat);
-                boolean isBusy = isGaming || isMedia || "Gaming".equalsIgnoreCase(currentCat);
 
-                System.out.println("Ciel Debug: Executing background headless scraper. Master busy: " + isBusy);
+                System.out.println("Ciel Debug: Executing scraper. Gaming: " + isGaming + ", Media: " + isMedia);
                 
-                // Pass the busy state directly into Python's sys.argv
-                ProcessBuilder pb = new ProcessBuilder("python", "master_finance_scraper.py", String.valueOf(isBusy));
+                // Pass specific states so Python knows whether to use headless mode or short timeouts
+                ProcessBuilder pb = new ProcessBuilder("python", "master_finance_scraper.py", String.valueOf(isGaming), String.valueOf(isMedia));
                 pb.directory(new File("C:\\Ciel Companion\\ciel\\skills"));
-                pb.start().waitFor(3, TimeUnit.MINUTES);
+                
+                // CRITICAL FIX: Capture Python's output to the main log so we can see if it crashes!
+                pb.redirectErrorStream(true);
+                Process p = pb.start();
+                try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        System.out.println("[Scraper] " + line);
+                    }
+                }
+                p.waitFor(3, TimeUnit.MINUTES);
             } catch (Exception e) {
                 System.out.println("Ciel Warning: Playwright scraper failed or timed out.");
             }
