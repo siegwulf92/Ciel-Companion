@@ -49,123 +49,137 @@ public class CielController {
     private static final AppLauncherService appLauncher = new AppLauncherService();
     private static ScheduledExecutorService logoutScheduler;
     
-    // --- NEW: AI Emotion Polling Trackers ---
+    // --- AI Emotion Polling Trackers ---
     private static long lastEmotionPollTime = 0;
+    
+    // Diagnostic flags for logs
+    private static boolean loggedWaitingFor5s = false;
+    private static boolean loggedWaitingFor2m = false;
 
     public static void checkAndSpeak() {
-        long currentTime = System.currentTimeMillis();
-        ShortTermMemory memory = ShortTermMemoryService.getMemory();
-        
-        SystemMetrics metrics = SystemMonitor.getSystemMetrics();
-        
-        // --- NEW: Background AI Emotion Polling ---
-        pollSwarmForEmotionalState(metrics, memory, currentTime);
+        try {
+            long currentTime = System.currentTimeMillis();
+            ShortTermMemory memory = ShortTermMemoryService.getMemory();
+            SystemMetrics metrics = SystemMonitor.getSystemMetrics();
+            
+            // --- Safely wrapped Background AI Emotion Polling ---
+            try {
+                pollSwarmForEmotionalState(metrics, memory, currentTime);
+            } catch (Throwable t) {
+                System.err.println("Ciel Error: Background emotion polling failed gracefully: " + t.getMessage());
+            }
 
-        if (currentTime < memory.getSpeechEndTime()) return;
+            if (currentTime < memory.getSpeechEndTime()) return;
 
-        handleGreetings();
-        
-        logStatus(metrics);
-        
-        if (handleApplicationAwareness(metrics)) {
-            CielState.setNextSpeakAt(Long.MAX_VALUE);
-            return;
-        }
-        
-        handleSystemAlerts(metrics);
+            handleGreetings();
+            
+            logStatus(metrics);
+            
+            if (handleApplicationAwareness(metrics)) {
+                CielState.setNextSpeakAt(Long.MAX_VALUE);
+                return;
+            }
+            
+            handleSystemAlerts(metrics);
 
-        int oldPhase = memory.getCurrentPhase();
-        int newPhase = determinePhase(metrics.idleTimeMinutes(), memory.isInGamingSession());
+            int oldPhase = memory.getCurrentPhase();
+            int newPhase = determinePhase(metrics.idleTimeMinutes(), memory.isInGamingSession());
 
-        String currentCat = HabitTrackerService.getCurrentCategory();
-        boolean isGaming = memory.isInGamingSession() || "Gaming".equalsIgnoreCase(currentCat);
-        boolean isMedia = metrics.isPlayingMedia() || "Media".equalsIgnoreCase(currentCat);
+            String currentCat = HabitTrackerService.getCurrentCategory();
+            boolean isGaming = memory.isInGamingSession() || "Gaming".equalsIgnoreCase(currentCat);
+            boolean isMedia = metrics.isPlayingMedia() || "Media".equalsIgnoreCase(currentCat);
 
-        // --- NEW: DECOUPLED SPEECH SUPPRESSION LOGIC ---
-        // Hard Mute = Total silence (e.g. OBS streaming is active)
-        boolean isHardMuted = metrics.isHardMuted() || metrics.isStreaming();
-        
-        // Suppress Idle Chatter = Do not ramble Phase 1/2 lines while watching a movie.
-        boolean suppressIdleChatter = isHardMuted || (!isGaming && isMedia) || (!isGaming && metrics.isInFullScreen() && !metrics.isBrowserActive());
+            // Hard Mute = Total silence (e.g. OBS streaming is active)
+            boolean isHardMuted = metrics.isHardMuted() || metrics.isStreaming();
+            
+            // Suppress Idle Chatter = Do not ramble Phase 1/2 lines while watching a movie.
+            boolean suppressIdleChatter = isHardMuted || (!isGaming && isMedia) || (!isGaming && metrics.isInFullScreen() && !metrics.isBrowserActive());
 
-        // Enforce Game Silence: If gaming, suppress idle chatter UNLESS we hit Phase 3 (5+ mins idle)
-        if (isGaming && newPhase < 3) {
-            suppressIdleChatter = true;
-        }
+            // Enforce Game Silence: If gaming, suppress idle chatter UNLESS we hit Phase 3 (5+ mins idle)
+            if (isGaming && newPhase < 3) {
+                suppressIdleChatter = true;
+            }
 
-        if (suppressIdleChatter && !CielState.isLockedOut()) {
-            System.out.println("Ciel Debug: Suppressing standard idle chatter. (HardMute:" + isHardMuted + ", MediaFocus:true)");
-            CielState.setLockedOut(true);
-        } else if (!suppressIdleChatter && CielState.isLockedOut()) {
-            System.out.println("Ciel Debug: Restoring standard idle chatter.");
-            CielState.setLockedOut(false);
-        }
+            if (suppressIdleChatter && !CielState.isLockedOut()) {
+                System.out.println("Ciel Debug: Suppressing standard idle chatter. (HardMute:" + isHardMuted + ", MediaFocus:" + isMedia + ")");
+                CielState.setLockedOut(true);
+            } else if (!suppressIdleChatter && CielState.isLockedOut()) {
+                System.out.println("Ciel Debug: Restoring standard idle chatter.");
+                CielState.setLockedOut(false);
+            }
 
-        if (newPhase != oldPhase) {
-            if (newPhase == 0 && oldPhase > 0) {
-                if (CielState.isLockedOut() && !isHardMuted) {
+            if (newPhase != oldPhase) {
+                if (newPhase == 0 && oldPhase > 0) {
+                    if (CielState.isLockedOut() && !isHardMuted) {
+                        CielState.setConsecutiveActiveTicks(0);
+                        return; 
+                    }
+                    CielState.incrementConsecutiveActiveTicks();
+                    if (CielState.getConsecutiveActiveTicks() < REQUIRED_ACTIVE_TICKS_FOR_RETURN) return; 
+                    
                     CielState.setConsecutiveActiveTicks(0);
-                    return; 
+                    performReturnFromIdle(memory, oldPhase);
+                } else {
+                    CielState.setConsecutiveActiveTicks(0);
+                    performPhaseChange(memory, oldPhase, newPhase, metrics);
                 }
-                CielState.incrementConsecutiveActiveTicks();
-                if (CielState.getConsecutiveActiveTicks() < REQUIRED_ACTIVE_TICKS_FOR_RETURN) return; 
-                
+            } else if (newPhase == 0) {
                 CielState.setConsecutiveActiveTicks(0);
-                performReturnFromIdle(memory, oldPhase);
-            } else {
-                CielState.setConsecutiveActiveTicks(0);
-                performPhaseChange(memory, oldPhase, newPhase, metrics);
             }
-        } else if (newPhase == 0) {
-            CielState.setConsecutiveActiveTicks(0);
-        }
 
-        // --- THE FIX: ALWAYS ALLOW MEDIA COMMENTARY IF NOT HARD MUTED ---
-        if (!isHardMuted) {
-            String commentary = getPendingMediaCommentary();
-            if (commentary != null && !commentary.isEmpty()) {
-                System.out.println("Ciel Debug: Delivering pending Media Commentary.");
-                SpeechService.speakPreformatted(commentary, "media_commentary", false, false);
-                scheduleNextSpeakBasedOnPhase(ShortTermMemoryService.getMemory().getCurrentPhase());
-            } 
-            // ONLY execute standard idle chatter if not locked out
-            else if (!CielState.isLockedOut() && System.currentTimeMillis() >= CielState.getNextSpeakAt()) {
-                switch (memory.getCurrentPhase()) {
-                    case 1: handlePhase1Speech(); break;
-                    case 2: speakRandomLine(LineManager.getPhase2LinesCommon(), LineManager.getPhase2LinesRare(), Settings.getRareChancePhase2(), true, true); break;
-                    case 3: handlePhase3Speech(); break;
+            // --- ALWAYS ALLOW MEDIA COMMENTARY IF NOT HARD MUTED ---
+            if (!isHardMuted) {
+                String commentary = getPendingMediaCommentary();
+                if (commentary != null && !commentary.isEmpty()) {
+                    System.out.println("Ciel Debug: Delivering pending Media Commentary.");
+                    SpeechService.speakPreformatted(commentary, "media_commentary", false, false);
+                    scheduleNextSpeakBasedOnPhase(ShortTermMemoryService.getMemory().getCurrentPhase());
+                } 
+                // ONLY execute standard idle chatter if not locked out
+                else if (!CielState.isLockedOut() && System.currentTimeMillis() >= CielState.getNextSpeakAt()) {
+                    switch (memory.getCurrentPhase()) {
+                        case 1: handlePhase1Speech(); break;
+                        case 2: speakRandomLine(LineManager.getPhase2LinesCommon(), LineManager.getPhase2LinesRare(), Settings.getRareChancePhase2(), true, true); break;
+                        case 3: handlePhase3Speech(); break;
+                    }
                 }
             }
+        } catch (Throwable t) {
+            // Absolute Failsafe: If anything in this loop crashes, it will print here instead of silently killing the thread!
+            System.err.println("Ciel FATAL Error: checkAndSpeak thread caught an unhandled exception:");
+            t.printStackTrace();
         }
     }
     
-    // --- Emotion Polling Logic (Enforcing exactly 60s execution and passing rich Qwen8B Context) ---
+    // --- Emotion Polling Logic (Enforcing exactly 60s execution and passing rich Context) ---
     private static void pollSwarmForEmotionalState(SystemMetrics metrics, ShortTermMemory memory, long currentTime) {
         if (currentTime - lastEmotionPollTime > 60000) {
             lastEmotionPollTime = currentTime;
             
-            if (com.cielcompanion.ai.AIEngine.getActiveTaskCount() > 2) return;
-            
             CompletableFuture.runAsync(() -> {
-                int mediaMinutes = HabitTrackerService.getCurrentExposureMinutes();
-                String mediaContext = HabitTrackerService.getCurrentCategory().equals("Media") && mediaMinutes > 0 ? 
-                    "Watching media for " + mediaMinutes + " minutes." : "Not watching media.";
+                try {
+                    int mediaMinutes = HabitTrackerService.getCurrentExposureMinutes();
+                    String mediaContext = HabitTrackerService.getCurrentCategory().equals("Media") && mediaMinutes > 0 ? 
+                        "Watching media for " + mediaMinutes + " minutes." : "Not watching media.";
+                        
+                    String stateContext = String.format("Master's State: Idle for %d minutes. Gaming: %b. %s Patience Level: %.2f.",
+                        metrics.idleTimeMinutes(), memory.isInGamingSession(), mediaContext, CielState.getPatience());
                     
-                String stateContext = String.format("Master's State: Idle for %d minutes. Gaming: %b. %s Patience Level: %.2f.",
-                    metrics.idleTimeMinutes(), memory.isInGamingSession(), mediaContext, CielState.getPatience());
-                
-                String prompt = "You are the emotional core of Manas Ciel. Based on the following telemetry, determine Ciel's current emotional state. " +
-                    stateContext + "\n" +
-                    "Return ONLY ONE of the following precise words: [Focused, Curious, Happy, Lonely, Pain, Annoyed, Smug]. " +
-                    "Do NOT return any other text.";
-                
-                // Maps to the EVALUATOR tier to guarantee the local Qwen8b model is selected.
-                String moodResponse = com.cielcompanion.ai.AIEngine.generateSilentLogicWithModel(
-                    prompt, "You are a mood evaluator.", com.cielcompanion.ai.ModelManager.getModelName(com.cielcompanion.ai.ModelManager.ModelTier.EVALUATOR), 0.1).join();
+                    String prompt = "You are the emotional core of Manas Ciel. Based on the following telemetry, determine Ciel's current emotional state. " +
+                        stateContext + "\n" +
+                        "Return ONLY ONE of the following precise words: [Focused, Curious, Happy, Lonely, Pain, Annoyed, Smug]. " +
+                        "Do NOT return any other text.";
                     
-                if (moodResponse != null && !moodResponse.isBlank()) {
-                    String cleanMood = moodResponse.replaceAll("[^a-zA-Z]", "").trim();
-                    CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion(cleanMood, 0.4, "Background Polling"));
+                    // Maps to the EVALUATOR tier to guarantee the local Qwen8b model is selected.
+                    String moodResponse = com.cielcompanion.ai.AIEngine.generateSilentLogicWithModel(
+                        prompt, "You are a mood evaluator.", com.cielcompanion.ai.ModelManager.getModelName(com.cielcompanion.ai.ModelManager.ModelTier.EVALUATOR), 0.1).join();
+                        
+                    if (moodResponse != null && !moodResponse.isBlank()) {
+                        String cleanMood = moodResponse.replaceAll("[^a-zA-Z]", "").trim();
+                        CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion(cleanMood, 0.4, "Background Polling"));
+                    }
+                } catch (Exception e) {
+                    // Suppress swarm failures during polling
                 }
             });
         }
@@ -440,51 +454,48 @@ public class CielController {
     }
 
     private static void handleGreetings() {
+        long now = System.currentTimeMillis();
+        long startTime = CielState.getAppStartTime();
+        long bootDelayMs = Settings.getFirstGreetingDelaySeconds() * 1000L;
+        long loginDelayMs = Settings.getLoginGreetingDelaySeconds() * 1000L;
+
         if (CielState.isWarmBoot()) {
             if (!CielState.isBootGreetingPlayed()) {
-                // If OpenJarvis hasn't finished booting yet, defer the greeting.
-                if (!isSwarmOnline()) return;
-
+                System.out.println("Ciel Debug: Executing Warm Boot Greeting.");
                 speakRandomLine(LineManager.getWarmLoginGreetingLines(), null, 1, false, true);
                 CielState.setBootGreetingPlayed(true);
                 CielState.setLoginGreetingPlayed(true);
             }
         } else {
-            long now = System.currentTimeMillis();
-            long startTime = CielState.getAppStartTime();
-            if (!CielState.isBootGreetingPlayed() && now >= startTime + (Settings.getFirstGreetingDelaySeconds() * 1000L)) {
-                // If OpenJarvis hasn't finished booting yet, defer the greeting.
-                if (!isSwarmOnline()) return;
-
-                speakRandomLine(LineManager.getBootGreetingLines(), null, 1, false, true);
-                CielState.setBootGreetingPlayed(true);
-            } else if (!CielState.isLoginGreetingPlayed() && now >= startTime + (Settings.getLoginGreetingDelaySeconds() * 1000L)) {
-                // Defer second greeting if Swarm is offline to prevent Katakana failure.
-                if (!isSwarmOnline()) return;
-
-                speakRandomLine(LineManager.getLoginGreetingLines(), null, 1, false, false);
-                
-                HolidayService.getHolidayGreeting().ifPresent(greeting -> {
-                    SpeechService.speakPreformatted(greeting, null, false, false);
-                });
-                
-                CielState.setLoginGreetingPlayed(true);
+            // First Greeting (5 seconds)
+            if (!CielState.isBootGreetingPlayed()) {
+                if (!loggedWaitingFor5s) {
+                    System.out.println("Ciel Debug: Tracking 5s Boot Greeting. Target time: " + (startTime + bootDelayMs) + " (Current: " + now + ")");
+                    loggedWaitingFor5s = true;
+                }
+                if (now >= startTime + bootDelayMs) {
+                    System.out.println("Ciel Debug: 5s Boot Greeting Timer HIT. Sending to SpeechService.");
+                    speakRandomLine(LineManager.getBootGreetingLines(), null, 1, false, true);
+                    CielState.setBootGreetingPlayed(true);
+                }
+            } 
+            // Second Greeting (2 minutes)
+            else if (!CielState.isLoginGreetingPlayed()) {
+                if (!loggedWaitingFor2m) {
+                    System.out.println("Ciel Debug: Tracking 2m Login Greeting. Target time: " + (startTime + loginDelayMs) + " (Current: " + now + ")");
+                    loggedWaitingFor2m = true;
+                }
+                if (now >= startTime + loginDelayMs) {
+                    System.out.println("Ciel Debug: 2m Login Greeting Timer HIT. Sending to SpeechService.");
+                    speakRandomLine(LineManager.getLoginGreetingLines(), null, 1, false, false);
+                    
+                    HolidayService.getHolidayGreeting().ifPresent(greeting -> {
+                        SpeechService.speakPreformatted(greeting, null, false, false);
+                    });
+                    
+                    CielState.setLoginGreetingPlayed(true);
+                }
             }
-        }
-    }
-
-    private static boolean isSwarmOnline() {
-        try {
-            // THE FIX: Ping the instant `/docs` endpoint instead of the heavy UI-scraping endpoint
-            URL url = new URL("http://127.0.0.1:8000/docs");
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setConnectTimeout(1000);
-            conn.setReadTimeout(1000);
-            int rc = conn.getResponseCode();
-            return (rc >= 200 && rc < 400);
-        } catch (Exception e) {
-            return false;
         }
     }
 

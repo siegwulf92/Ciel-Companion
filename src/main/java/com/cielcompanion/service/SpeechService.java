@@ -200,129 +200,143 @@ public class SpeechService {
     public static void speakChunk(String text) { speakPreformatted(text, null, false, false); }
 
     public static void speakPreformatted(String text, String key, boolean isRare, boolean flushQueue) {
-        if (text == null || text.isBlank()) return;
+        try {
+            if (text == null || text.isBlank()) return;
 
-        // Suppress unwanted background chatter while gaming
-        if (ShortTermMemoryService.getMemory().isInGamingSession() && !ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
-            boolean isGameLaunch = "game_launch".equals(key);
-            boolean isPhase3Or4 = ShortTermMemoryService.getMemory().getCurrentPhase() >= 3;
-            
-            // If it's not the initial launch comment, and we aren't heavily idle, suppress it.
-            if (!isGameLaunch && !isPhase3Or4) {
-                System.out.println("Ciel Debug: Suppressing non-critical speech due to active Gaming Mode.");
-                return;
-            }
-        }
+            // CRITICAL FIX: Ensure greetings are ALWAYS spoken, completely ignoring gaming suppression.
+            boolean isGreeting = key != null && (key.startsWith("boot_greeting") || key.startsWith("login_greeting") || key.startsWith("warm_login"));
 
-        if (flushQueue) {
-            stopCurrentPlayback();
-        }
-
-        Matcher matcher = Pattern.compile("\\[([a-zA-Z]+)\\]").matcher(text);
-        String emotionToTrigger = null;
-        while (matcher.find()) {
-            emotionToTrigger = matcher.group(1);
-        }
-        String cleanText = matcher.replaceAll("").trim();
-        cleanText = cleanText.replaceAll("\\*.*?\\*", "").trim();
-
-        if (emotionToTrigger != null && !emotionToTrigger.isBlank()) {
-            final String finalEmotion = emotionToTrigger;
-            CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion(finalEmotion, 0.8, "Dialogue Tag"));
-        }
-
-        System.out.println("[Ciel Dialogue]: " + cleanText);
-
-        if (isRare) {
-            CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Excited", 0.8, "RareDialogue"));
-        }
-
-        String langCode = CielVoiceManager.getActiveLanguageCode();
-
-        String style = "default";
-        String pitch = "+0%";
-        String attitude = "Professional";
-
-        if (CielState.getEmotionManager().isPresent()) {
-            attitude = CielState.getEmotionManager().get().getCurrentAttitude();
-            if (!"Professional".equals(attitude)) {
-                Optional<MoodConfig.AttitudeDefinition> attDef = MoodConfig.getAttitudeDef(attitude);
-                if (attDef.isPresent()) {
-                    style = attDef.get().styleModifier();
-                    pitch = attDef.get().pitchModifier();
+            // Suppress unwanted background chatter while gaming
+            if (!isGreeting && ShortTermMemoryService.getMemory().isInGamingSession() && !ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
+                boolean isGameLaunch = "game_launch".equals(key);
+                boolean isPhase3Or4 = ShortTermMemoryService.getMemory().getCurrentPhase() >= 3;
+                
+                // If it's not the initial launch comment, and we aren't heavily idle, suppress it.
+                if (!isGameLaunch && !isPhase3Or4) {
+                    System.out.println("Ciel Debug: Suppressing non-critical speech (" + key + ") due to active Gaming Mode.");
+                    return;
                 }
-            } else {
-                List<Emotion> activeEmotions = CielState.getEmotionManager().get().getEmotionalState().getActiveEmotions().values().stream()
-                        .sorted(Comparator.comparingDouble(Emotion::intensity).reversed())
-                        .collect(Collectors.toList());
+            }
 
-                if (!activeEmotions.isEmpty()) {
-                    Emotion dominant = activeEmotions.get(0);
-                    Optional<MoodConfig.EmotionDefinition> domDef = MoodConfig.getEmotionDef(dominant.name());
-                    if (domDef.isPresent()) {
-                        pitch = domDef.get().pitch();
-                        style = domDef.get().ssmlStyle();
+            if (flushQueue) {
+                stopCurrentPlayback();
+            }
+
+            Matcher matcher = Pattern.compile("\\[([a-zA-Z]+)\\]").matcher(text);
+            String emotionToTrigger = null;
+            while (matcher.find()) {
+                emotionToTrigger = matcher.group(1);
+            }
+            String cleanText = matcher.replaceAll("").trim();
+            cleanText = cleanText.replaceAll("\\*.*?\\*", "").trim();
+
+            if (emotionToTrigger != null && !emotionToTrigger.isBlank()) {
+                final String finalEmotion = emotionToTrigger;
+                CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion(finalEmotion, 0.8, "Dialogue Tag"));
+            }
+
+            System.out.println("[Ciel Dialogue]: " + cleanText);
+
+            if (isRare) {
+                CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Excited", 0.8, "RareDialogue"));
+            }
+
+            String langCode = CielVoiceManager.getActiveLanguageCode();
+
+            String style = "default";
+            String pitch = "+0%";
+            String attitude = "Professional";
+
+            if (CielState.getEmotionManager().isPresent()) {
+                attitude = CielState.getEmotionManager().get().getCurrentAttitude();
+                if (!"Professional".equals(attitude)) {
+                    Optional<MoodConfig.AttitudeDefinition> attDef = MoodConfig.getAttitudeDef(attitude);
+                    if (attDef.isPresent()) {
+                        style = attDef.get().styleModifier();
+                        pitch = attDef.get().pitchModifier();
+                    }
+                } else {
+                    List<Emotion> activeEmotions = CielState.getEmotionManager().get().getEmotionalState().getActiveEmotions().values().stream()
+                            .sorted(Comparator.comparingDouble(Emotion::intensity).reversed())
+                            .collect(Collectors.toList());
+
+                    if (!activeEmotions.isEmpty()) {
+                        Emotion dominant = activeEmotions.get(0);
+                        Optional<MoodConfig.EmotionDefinition> domDef = MoodConfig.getEmotionDef(dominant.name());
+                        if (domDef.isPresent()) {
+                            pitch = domDef.get().pitch();
+                            style = domDef.get().ssmlStyle();
+                        }
                     }
                 }
+                pitch = applyHumanVariance(pitch);
             }
-            pitch = applyHumanVariance(pitch);
+
+            final String finalStyle = style;
+            final String finalPitch = pitch;
+            final String finalAttitude = attitude;
+            final String finalCleanText = cleanText;
+
+            currentSpeechTask = speechExecutor.submit(() -> {
+                boolean hasEnqueued = false;
+                try {
+                    String textToSpeak = finalCleanText;
+
+                    // --------------------------------------------------------------
+                    //  ★  HARD CACHE BYPASS: PREVENTS KATAKANA NETWORK FREEZING ★
+                    // --------------------------------------------------------------
+                    boolean needsLanguageConversion = false;
+                    boolean isAlreadyCached = AzureSpeechService.isCached(key, finalStyle, langCode);
+
+                    if (!isAlreadyCached) {
+                        if (CielVoiceManager.isLanguageLocked()) {
+                            needsLanguageConversion = true;
+                        } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                            needsLanguageConversion = true;
+                        }
+
+                        if (needsLanguageConversion) {
+                            // Update GUI, but do NOT pause media yet!
+                            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
+                        }
+
+                        if (CielVoiceManager.isLanguageLocked()) {
+                            textToSpeak = TranslationService.toJapanese(textToSpeak);
+                            System.out.println("[Ciel World Voice]: Translated to: " + textToSpeak);
+                        } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                            textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
+                            System.out.println("[Ciel World Voice]: Transliterated to Katakana: " + textToSpeak);
+                        }
+                    } else {
+                        System.out.println("Ciel Debug: Audio is locally cached (" + key + "). Bypassing Swarm translation pipeline.");
+                    }
+                    // --------------------------------------------------------------
+
+                    // CRITICAL FIX: The Katakana translation might have taken 5-10 seconds.
+                    // We only enqueue the speech (and thus pause the media) right now, exactly
+                    // 600ms before she begins physically speaking.
+                    if (!hasEnqueued) {
+                        enqueueSpeech();
+                        hasEnqueued = true;
+                        try { Thread.sleep(600); } catch (Exception ignored) {}
+                    }
+
+                    if (needsLanguageConversion) {
+                        CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
+                    }
+
+                    executeSpeechBlocking(textToSpeak, key, Settings.getTtsRate(),
+                            finalStyle, finalPitch, langCode);
+                } finally {
+                    if (hasEnqueued) {
+                        dequeueSpeech();
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            System.err.println("Ciel FATAL Error: Exception caught during speakPreformatted initialization:");
+            t.printStackTrace();
         }
-
-        final String finalStyle = style;
-        final String finalPitch = pitch;
-        final String finalAttitude = attitude;
-        final String finalCleanText = cleanText;
-
-        currentSpeechTask = speechExecutor.submit(() -> {
-            boolean hasEnqueued = false;
-            try {
-                String textToSpeak = finalCleanText;
-
-                // --------------------------------------------------------------
-                //  ★  TRANSLATION / TRANSLITERATION BLOCK  ★
-                // --------------------------------------------------------------
-                boolean needsLanguageConversion = false;
-                if (CielVoiceManager.isLanguageLocked()) {
-                    needsLanguageConversion = true;
-                } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
-                    needsLanguageConversion = true;
-                }
-
-                if (needsLanguageConversion) {
-                    // Update GUI, but do NOT pause media yet!
-                    CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
-                }
-
-                if (CielVoiceManager.isLanguageLocked()) {
-                    textToSpeak = TranslationService.toJapanese(textToSpeak);
-                    System.out.println("[Ciel World Voice]: Translated to: " + textToSpeak);
-                } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
-                    textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
-                    System.out.println("[Ciel World Voice]: Transliterated to Katakana: " + textToSpeak);
-                }
-                // --------------------------------------------------------------
-
-                // CRITICAL FIX: The Katakana translation might have taken 5-10 seconds.
-                // We only enqueue the speech (and thus pause the media) right now, exactly
-                // 600ms before she begins physically speaking.
-                if (!hasEnqueued) {
-                    enqueueSpeech();
-                    hasEnqueued = true;
-                    try { Thread.sleep(600); } catch (Exception ignored) {}
-                }
-
-                if (needsLanguageConversion) {
-                    CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
-                }
-
-                executeSpeechBlocking(textToSpeak, key, Settings.getTtsRate(),
-                        finalStyle, finalPitch, langCode);
-            } finally {
-                if (hasEnqueued) {
-                    dequeueSpeech();
-                }
-            }
-        });
     }
 
     /* ------------------------------------------------------------------ */
@@ -397,23 +411,35 @@ public class SpeechService {
 
                         String langCode = CielVoiceManager.getActiveLanguageCode();
 
-                        if (CielVoiceManager.isLanguageLocked()) {
-                            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
-                            textToSpeak = TranslationService.toJapanese(textToSpeak);
-                        } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
-                            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
-                            textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
+                        // --- HARD CACHE BYPASS ---
+                        boolean needsLanguageConversion = false;
+                        boolean isAlreadyCached = AzureSpeechService.isCached(line.key(), style, langCode);
+
+                        if (!isAlreadyCached) {
+                            if (CielVoiceManager.isLanguageLocked()) {
+                                needsLanguageConversion = true;
+                            } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                                needsLanguageConversion = true;
+                            }
+
+                            if (needsLanguageConversion) {
+                                CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
+                            }
+
+                            if (CielVoiceManager.isLanguageLocked()) {
+                                textToSpeak = TranslationService.toJapanese(textToSpeak);
+                            } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                                textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
+                            }
                         }
 
-                        // CRITICAL FIX: Only pause media AFTER translation is done and speech is imminent
                         if (!hasEnqueued) {
                             enqueueSpeech();
                             hasEnqueued = true;
                             try { Thread.sleep(600); } catch (Exception ignored) {}
                         }
 
-                        executeSpeechBlocking(textToSpeak, line.key(),
-                                Settings.getTtsRate(), style, pitch, langCode);
+                        executeSpeechBlocking(textToSpeak, line.key(), Settings.getTtsRate(), style, pitch, langCode);
 
                         if (sequenceCancelled || Thread.currentThread().isInterrupted()) {
                             System.out.println("Ciel Debug: Sequential speech loop explicitly broken via flag.");

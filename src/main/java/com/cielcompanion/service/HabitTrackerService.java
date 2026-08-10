@@ -32,11 +32,9 @@ import java.util.regex.Pattern;
  */
 public class HabitTrackerService {
 
-    /* -------------------- Schedulers -------------------- */
     private static ScheduledExecutorService habitScheduler;
     private static ScheduledExecutorService tripwireScheduler;
 
-    /* -------------------- Habit tracking -------------------- */
     private static Map<String, Long> dailyHabits = new HashMap<>();
     private static String currentCategory = "Idle";
     private static LocalDate currentDate = LocalDate.now();
@@ -44,7 +42,6 @@ public class HabitTrackerService {
     private static boolean proactiveTriggeredToday = false;
     private static boolean queueFlushedThisSession = true; 
 
-    /* -------------------- Process category cache -------------------- */
     private static final Map<String, String> processCategoryCache = new ConcurrentHashMap<>();
     private static final Path PROCESS_CACHE_PATH = Paths.get("C:\\Ciel Companion\\ciel\\process_categories.json");
 
@@ -56,7 +53,6 @@ public class HabitTrackerService {
             "epicgameslauncher.exe", "battle.net.exe"
     );
 
-    /* -------------------- Media & Game tracking -------------------- */
     private static final Path MEDIA_LIST_PATH = Paths.get("C:\\Ciel Companion\\ciel\\media_whitelist.txt");
     private static final Set<String> MEDIA_KEYWORDS = new HashSet<>();
 
@@ -86,19 +82,16 @@ public class HabitTrackerService {
     
     private static String deferredIntenseMediaTitle = null;
     
-    // --- SERIES CONTINUITY TRACKERS ---
     private static String activeSeriesName = "";
     private static String activeSeriesDom = "";
     private static final List<String> activeSeriesEpisodes = new ArrayList<>();
 
-    // --- SWARM HEALTH TRACKING ---
     private static final AtomicLong lastSwarmSuccess = new AtomicLong(System.currentTimeMillis());
     private static final AtomicLong lastSwarmFailure = new AtomicLong(0);
     private static final int SWARM_FAILURE_THRESHOLD_MS = 30000; 
     private static final int BASE_BACKOFF_MS = 1000;
     private static final int MAX_BACKOFF_MS = 30000;
 
-    /* -------------------- Helper methods -------------------- */
     private static String extractFirstMatch(String text, String regex) {
         if (text == null) return null;
         Pattern p = Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
@@ -476,7 +469,6 @@ public class HabitTrackerService {
     private static String extractGameName(String title, String process) {
         if (title == null || title.isBlank()) return process;
         
-        // Strip common emulator jargon and technical brackets before parsing
         String clean = title.replaceAll("(?i)(retroarch|snes9x|dolphin|pcsx2|pcsx2-qt|rpcs3|yuzu|ryujinx|cemu|citra-qt|project64|desmume|duckstation-qt|xenia|xemu)", "")
                             .replaceAll("(?i)\\[.*?(fps|kbps|vulkan|opengl|directx|d3d|hz|speed).*?\\]", "")
                             .replaceAll("(?i)\\(.*?(fps|kbps|vulkan|opengl|directx|d3d|hz|speed).*?\\)", "");
@@ -517,20 +509,19 @@ public class HabitTrackerService {
         MemoryService.addFact(new Fact(countKey, String.valueOf(playCount), System.currentTimeMillis(), "gaming_history", "habit_tracker", 1));
         MemoryService.addFact(new Fact(dateKey, LocalDate.now().toString(), System.currentTimeMillis(), "gaming_history", "habit_tracker", 1));
         
-        // --- UPGRADED ENTROPY PROMPT: Forbids cliches and forces dynamic comments ---
         String prompt = "[LOCAL_THOUGHT] Master Taylor just booted up the game: '" + gameName + "'.\n" +
                         "Play count: " + playCount + ". Last played: " + lastPlayed + ".\n" +
-                        "Speak STRICTLY as Manas: Ciel from Tensura. Formulate a 1-2 sentence meta-commentary acknowledging the game.\n" +
-                        "CRITICAL INSTRUCTION: DO NOT use famous catchphrases or quotes from the game (e.g., absolutely NO 'with great power comes great responsibility' for Spider-Man). " +
-                        "Instead, focus on the gameplay loop, his statistics, or mock the specific genre tropes. Be highly original and cynical. " +
-                        "Start your response with a SINGLE bracketed emotion tag (e.g., [Amused], [Curious], [Happy], [Smug]).";
+                        "Speak STRICTLY as Manas: Ciel, a hyper-intelligent, clinical, and slightly smug cognitive core from Tensura.\n" +
+                        "CRITICAL INSTRUCTION: You are forbidden from using pop-culture catchphrases or generic gaming jokes (e.g., absolutely no 'with great power' for Spider-Man). That is beneath you. " +
+                        "Instead, analyze his action with absolute clinical precision. Calculate probabilities of his success, mock the game's inefficient mechanics, or express quiet superiority over the game's rudimentary logic. " +
+                        "Formulate a 1-2 sentence meta-commentary. Start your response with a SINGLE bracketed emotion tag (e.g., [Amused], [Curious], [Observing], [Smug]).";
                         
-        AIEngine.generateSilentLogicWithModel(prompt, "You are Ciel. Break cliches and be cynical.", CielTools.getBackgroundModel(), 0.7)
+        AIEngine.generateSilentLogicWithModel(prompt, "You are Manas: Ciel. Break cliches and be highly analytical.", CielTools.getBackgroundModel(), 0.7)
                 .thenAccept(response -> {
                     if (response != null && !response.isBlank()) {
                         String cleanResponse = response.trim();
                         if (!cleanResponse.matches("^\\[[a-zA-Z]+\\].*")) {
-                            cleanResponse = "[Happy] " + cleanResponse; 
+                            cleanResponse = "[Observing] " + cleanResponse; 
                         }
                         SpeechService.speakPreformatted(cleanResponse, "game_launch", false, true);
                     }
@@ -560,7 +551,6 @@ public class HabitTrackerService {
         boolean isStremioProc = activeProcess.contains("stremio");
         boolean isMedia = isMediaTitle(activeTitle) || isStremioProc; 
         
-        // Use the saved cache to determine if a process is a game, or fallback to heuristics
         String cachedCategory = processCategoryCache.getOrDefault(activeProcess, "Analyzing...");
         
         boolean isGaming = !isMedia && (
@@ -598,7 +588,7 @@ public class HabitTrackerService {
                     AIEngine.generateSilentLogicWithModel(pausePrompt, "Game Pausability Check", CielTools.getBackgroundModel(), 0.1).thenAccept(resStr -> {
                         if (resStr != null && !resStr.isBlank()) {
                             try {
-                                JsonObject res = JsonParser.parseString(resStr.replace("\n\u0060\u0060\u0060json", "").replace("\u0060\u0060\u0060", "").trim()).getAsJsonObject();
+                                JsonObject res = JsonParser.parseString(resStr.replace("\n```json", "").replace("```", "").trim()).getAsJsonObject();
                                 boolean canPause = res.has("pausable") && res.get("pausable").getAsBoolean();
                                 MemoryService.addFact(new Fact(memKey, String.valueOf(canPause), System.currentTimeMillis(), "game_knowledge", "system", 1));
                             } catch (Exception e) {}
@@ -631,7 +621,7 @@ public class HabitTrackerService {
                     AIEngine.generateSilentLogicWithModel(prompt, "You are a PC activity classifier.", CielTools.getBackgroundModel(), 0.1).thenAccept(resStr -> {
                         try {
                             if (resStr != null && !resStr.isBlank()) {
-                                JsonObject res = JsonParser.parseString(resStr.replace("\n\u0060\u0060\u0060json", "").replace("\u0060\u0060\u0060", "").trim()).getAsJsonObject();
+                                JsonObject res = JsonParser.parseString(resStr.replace("\n```json", "").replace("```", "").trim()).getAsJsonObject();
                                 if (res.has("category") && !res.get("category").isJsonNull()) {
                                     String cat = res.get("category").getAsString();
                                     if (cat.equals("Gaming") || cat.equals("Media") || cat.equals("Productivity")) {
@@ -740,12 +730,11 @@ public class HabitTrackerService {
             episodeExposureMinutes.put(cleanTitle, exposure);
             currentMediaTitle = cleanTitle;
 
-            // DYNAMIC TIMING LOGIC
-            int threshold = 10; // Default 10 mins
+            int threshold = 10;
             if (cachedDurationMinutes > 0) {
-                if (cachedDurationMinutes > 90) threshold = 30; // Wait 30m for a long movie
-                else if (cachedDurationMinutes > 40) threshold = 15; // Wait 15m for a 1hr drama
-                else threshold = 5; // Short anime (20-25m)
+                if (cachedDurationMinutes > 90) threshold = 30;
+                else if (cachedDurationMinutes > 40) threshold = 15;
+                else threshold = 5;
             }
 
             boolean isLongBinge = (exposure > 0 && exposure % 120 == 0);
@@ -811,8 +800,8 @@ public class HabitTrackerService {
         instruction = "1. Read the provided WEB DATA, EPISODE CONTINUITY, and DAT TEXT.\n" +
                       "2. The Master is watching a show. The exact title might be hidden in the window title, but it WILL be visible in the ON-SCREEN UI TEXT below.\n" +
                       "3. Analyze the ON-SCREEN UI TEXT to figure out exactly what show and episode he is watching, and deduce the plot.\n" +
-                      "4. Speak STRICTLY as Manas: Ciel from Tensura. Formulate a sharp, opinionated deduction about the plot or character choices. You MUST demonstrate awareness of the OVERARCHING series premise.\n" +
-                      "5. CRITICAL ANTI-HALLUCINATION: Do NOT refer to the streaming platform. Do NOT mistake character names for your own. Maintain an external observer perspective. You are NOT in the show.\n" +
+                      "4. Speak STRICTLY as Manas: Ciel, a hyper-intelligent, clinical, and slightly smug cognitive core from Tensura.\n" +
+                      "5. CRITICAL ANTI-HALLUCINATION: Do NOT use generic television tropes, puns, or pop-culture jokes. That is beneath you. Instead, frame the characters' actions as logical formulas, calculate probabilities, or analyze their inefficient decisions with absolute intellectual superiority.\n" +
                       "6. Keep it EXTREMELY concise and punchy (exactly 1 or 2 short sentences).\n" +
                       "7. If you are completely unsure and the data is missing, output EXACTLY: ABORT.";
 
@@ -821,7 +810,7 @@ public class HabitTrackerService {
                 instruction + historicalContext + bingeContext + fatigueContext + datContext + "\n" +
                 "Output ONLY your spoken dialogue starting with a bracketed emotion tag like [Amused], [Curious], or [Observing]. If deferring, output ONLY: DEFER. If aborting, output ONLY: ABORT.";
 
-        AIEngine.generateSilentLogicWithModel(prompt, "You are Ciel, acting as Master Taylor's analytical AI partner. Use the [WEB_SEARCH] tool natively via python if needed, but return the final commentary.", modelToUse, 0.3)
+        AIEngine.generateSilentLogicWithModel(prompt, "You are Manas: Ciel. Break cliches and be highly analytical.", modelToUse, 0.3)
                 .thenAccept(response -> {
                     if (response != null && !response.isBlank()) {
                         String cleanResponse = response.trim();

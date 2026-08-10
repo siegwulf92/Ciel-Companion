@@ -26,6 +26,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -54,6 +55,15 @@ public class CielCompanion {
 
         FileLogger.initialize();
         System.out.println("Ciel Companion starting... (Clean Lock Acquired)");
+        
+        // CRITICAL FIX: Force the SQLite driver to load on the main thread instantly.
+        // This prevents the background thread from throwing "No suitable driver found" race conditions.
+        try {
+            Class.forName("org.sqlite.JDBC");
+            System.out.println("Ciel Debug: SQLite Driver pre-loaded on main thread.");
+        } catch (ClassNotFoundException e) {
+            System.err.println("Ciel FATAL Error: SQLite Driver not found in classpath.");
+        }
 
         try {
             boolean isWarmBoot = Files.exists(SHUTDOWN_FLAG_PATH);
@@ -73,49 +83,70 @@ public class CielCompanion {
             SwingUtilities.invokeLater(cielGui::initialize);
             CielState.setCielGui(cielGui);
             
-            MemoryService.initialize();
-            VaultService.initialize();
-            AppProfilerService.initialize();
-            PhoneticsService.initialize();
-            
-            IntentService intentService = new IntentService();
-            AppLauncherService appLauncherService = new AppLauncherService();
-            ConversationService conversationService = new ConversationService(intentService);
-            RoutineService routineService = new RoutineService(appLauncherService);
-            WebService webService = new WebService();
-            AppFinderService appFinderService = new AppFinderService();
-            AppScannerService appScannerService = new AppScannerService(appLauncherService);
-            SoundService soundService = new SoundService();
-            
-            LoreService loreService = new LoreService();
-            RulebookService rulebookService = new RulebookService();
-            MasteryService masteryService = new MasteryService();
-            DndCampaignService dndCampaignService = new DndCampaignService();
-            CombatTrackerService combatTrackerService = new CombatTrackerService();
-            SpellCheckService spellCheckService = new SpellCheckService(); 
-            
-            CommandService commandService = new CommandService(
-                intentService, appLauncherService, conversationService, routineService, 
-                webService, appFinderService, appScannerService, emotionManager, 
-                soundService, loreService, rulebookService, 
-                masteryService, dndCampaignService,
-                combatTrackerService, spellCheckService 
-            );
-
-            voiceListener = new VoiceListener(commandService);
-            commandService.setVoiceListener(voiceListener);
-            
-            SpeechService.initialize(voiceListener); 
-            SkillCrafterService.initialize();
+            // =================================================================
+            // VITAL PRIORITY INITIALIZATION:
+            // Boot the Speech, Tracker, and Loop systems FIRST so she can speak
+            // and pause media instantly while the rest of the app loads.
+            // =================================================================
+            SpeechService.initialize(null); // Will inject VoiceListener later
             HabitTrackerService.initialize();
-            com.cielcompanion.ai.LoreAnalyzerService.initialize();
-            com.cielcompanion.ai.SkillEvolutionEngine.initialize();
-            com.cielcompanion.memory.stwm.ShortTermMemoryService.initialize();
-
+            GameMonitorService.initialize();
             startMainLoop(emotionManager);
-            System.out.println("Ciel Companion initialized successfully.");
+            
+            System.out.println("Ciel Debug: Priority Speech & Tracking systems initialized. Proceeding with heavy loads.");
+            
+            // =================================================================
+            // ASYNCHRONOUS HEAVY INITIALIZATION:
+            // The DB, Vault, and D&D systems take up to 20 seconds. Load them asynchronously.
+            // =================================================================
+            CompletableFuture.runAsync(() -> {
+                try {
+                    MemoryService.initialize();
+                    VaultService.initialize();
+                    AppProfilerService.initialize();
+                    PhoneticsService.initialize();
+                    
+                    IntentService intentService = new IntentService();
+                    AppLauncherService appLauncherService = new AppLauncherService();
+                    ConversationService conversationService = new ConversationService(intentService);
+                    RoutineService routineService = new RoutineService(appLauncherService);
+                    WebService webService = new WebService();
+                    AppFinderService appFinderService = new AppFinderService();
+                    AppScannerService appScannerService = new AppScannerService(appLauncherService);
+                    SoundService soundService = new SoundService();
+                    
+                    LoreService loreService = new LoreService();
+                    RulebookService rulebookService = new RulebookService();
+                    MasteryService masteryService = new MasteryService();
+                    DndCampaignService dndCampaignService = new DndCampaignService();
+                    CombatTrackerService combatTrackerService = new CombatTrackerService();
+                    SpellCheckService spellCheckService = new SpellCheckService(); 
+                    
+                    CommandService commandService = new CommandService(
+                        intentService, appLauncherService, conversationService, routineService, 
+                        webService, appFinderService, appScannerService, emotionManager, 
+                        soundService, loreService, rulebookService, 
+                        masteryService, dndCampaignService,
+                        combatTrackerService, spellCheckService 
+                    );
 
-            startBackgroundInitialization(intentService, appLauncherService, routineService, conversationService, webService, appFinderService, appScannerService, soundService, loreService, rulebookService, commandService);
+                    voiceListener = new VoiceListener(commandService);
+                    commandService.setVoiceListener(voiceListener);
+                    
+                    SpeechService.initialize(voiceListener); // Re-initialize to attach the listener
+                    SkillCrafterService.initialize();
+                    com.cielcompanion.ai.LoreAnalyzerService.initialize();
+                    com.cielcompanion.ai.SkillEvolutionEngine.initialize();
+                    com.cielcompanion.memory.stwm.ShortTermMemoryService.initialize();
+
+                    System.out.println("Ciel Companion initialized successfully.");
+
+                    startBackgroundInitialization(intentService, appLauncherService, routineService, conversationService, webService, appFinderService, appScannerService, soundService, loreService, rulebookService, commandService);
+                } catch (Exception e) {
+                    System.err.println("Ciel Error during heavy async boot.");
+                    e.printStackTrace();
+                }
+            });
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -194,12 +225,13 @@ public class CielCompanion {
 
         new Thread(() -> {
             try {
-                waitForInferenceEngines();
-                com.cielcompanion.ai.AIEngine.warmUpModels();
-                
-                ensureJarvisServerRunning();
+                // Instantly unblock the Main Thread so Greetings can play
+                CompletableFuture.runAsync(() -> {
+                    waitForInferenceEngines();
+                    com.cielcompanion.ai.AIEngine.warmUpModels();
+                    ensureJarvisServerRunning();
+                });
 
-                GameMonitorService.initialize();
                 FinanceService.initialize();
 
                 LocationService.initialize();
@@ -215,16 +247,11 @@ public class CielCompanion {
                 startTriggerListener(5555, COMMAND_TRIGGER_PASSPHRASE, () -> {
                     System.out.println("Ciel Debug: VoiceAttack Command Trigger received. Granting Privileged Mode.");
                     
-                    // CRITICAL FIX: Flush the audio buffers and rebuild the microphone line 
-                    // instantly to guarantee Vosk hasn't been paged out by a heavy game
                     if (voiceListener != null) {
                         System.out.println("Ciel Debug: Forcing Watchdog Mic Reinitialization for VoiceAttack Trigger...");
                         voiceListener.forceMicReinitialization();
                     }
                     
-                    // Grants an initial generous 60-second window to survive the AI 
-                    // generating text and speaking it. SpeechService will manually reset this to EXACTLY
-                    // 15 seconds the millisecond her TTS playback stops.
                     com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, 60);
                     
                     String pendingTask = com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().getPendingSystemTask();

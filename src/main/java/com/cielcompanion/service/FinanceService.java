@@ -129,6 +129,10 @@ public class FinanceService {
                     executePlaywrightAndSwarm();
                 } else if (lastFetchMs == 0L) {
                     executePlaywrightAndSwarm();
+                } else if (Duration.between(lastFetch, now).toHours() >= 8) {
+                    // WEEKEND / OFFLINE BYPASS: Allows testing and dividend syncing every 8 hours even when markets are closed.
+                    System.out.println("Ciel Debug: Off-hours 8-hour sync threshold reached. Executing routine portfolio scan...");
+                    executePlaywrightAndSwarm();
                 }
             }
         } catch (Exception e) {
@@ -143,9 +147,16 @@ public class FinanceService {
         
         CompletableFuture.runAsync(() -> {
             try {
-                // Call Python to scrape Vanguard first so we have fresh local data before the Swarm thinks
-                System.out.println("Ciel Debug: Executing background headless scraper for accurate portfolio values...");
-                ProcessBuilder pb = new ProcessBuilder("python", "master_finance_scraper.py");
+                // Read current activity state directly from Java memory without relying on disk I/O
+                boolean isGaming = com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().isInGamingSession();
+                String currentCat = com.cielcompanion.service.HabitTrackerService.getCurrentCategory();
+                boolean isMedia = "Media".equalsIgnoreCase(currentCat);
+                boolean isBusy = isGaming || isMedia || "Gaming".equalsIgnoreCase(currentCat);
+
+                System.out.println("Ciel Debug: Executing background headless scraper. Master busy: " + isBusy);
+                
+                // Pass the busy state directly into Python's sys.argv
+                ProcessBuilder pb = new ProcessBuilder("python", "master_finance_scraper.py", String.valueOf(isBusy));
                 pb.directory(new File("C:\\Ciel Companion\\ciel\\skills"));
                 pb.start().waitFor(3, TimeUnit.MINUTES);
             } catch (Exception e) {

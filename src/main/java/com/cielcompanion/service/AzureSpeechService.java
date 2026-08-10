@@ -65,6 +65,27 @@ public class AzureSpeechService {
         return isInitialized;
     }
     
+    // --- DYNAMIC BYPASS FOR CACHING ---
+    public static boolean isDynamicKey(String key) {
+        return key == null || key.isBlank() || key.equals("game_launch") || key.equals("media_commentary") || key.startsWith("dynamic");
+    }
+
+    public static boolean isCached(String key, String style, String langCode) {
+        if (isDynamicKey(key)) return false; // Never cache dynamic AI outputs
+        
+        String safeStyle = (style == null || style.isBlank() || style.equalsIgnoreCase("default")) ? "default" : style;
+        String safeLang = (langCode == null || langCode.isBlank()) ? "ja-JP" : langCode;
+        
+        boolean isDndContent = safeLang.equalsIgnoreCase("en-US");
+        String targetCacheDir = isDndContent ? DND_CACHE_DIR_PATH : CACHE_DIR_PATH;
+
+        String suffix = safeLang.equalsIgnoreCase("ja-JP") ? "" : "_" + safeLang;
+        String safeFilename = key.replaceAll("[^a-zA-Z0-9._-]", "_") + "_" + safeStyle + suffix + ".wav";
+        File cachedFile = new File(targetCacheDir, safeFilename);
+
+        return cachedFile.exists();
+    }
+    
     public static void stopAllAudio() {
         isIntentionalCancellation = true;
         if (activeClip != null && activeClip.isRunning()) {
@@ -100,7 +121,7 @@ public class AzureSpeechService {
         boolean isDndContent = safeLang.equalsIgnoreCase("en-US");
         String targetCacheDir = isDndContent ? DND_CACHE_DIR_PATH : CACHE_DIR_PATH;
 
-        if (key != null && !key.isBlank()) {
+        if (!isDynamicKey(key)) {
             String suffix = safeLang.equalsIgnoreCase("ja-JP") ? "" : "_" + safeLang;
             String safeFilename = key.replaceAll("[^a-zA-Z0-9._-]", "_") + "_" + safeStyle + suffix + ".wav";
             File cachedFile = new File(targetCacheDir, safeFilename);

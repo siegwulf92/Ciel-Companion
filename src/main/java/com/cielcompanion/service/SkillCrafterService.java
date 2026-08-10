@@ -79,7 +79,13 @@ public class SkillCrafterService {
 
                     System.out.println("Ciel Debug: Synthesis Attempt " + attempt + " of " + maxAttempts);
 
-                    String promptForPython = "[CREATE_SKILL] Task: " + taskDescription + "\nIntended Script Name: " + intendedName;
+                    String promptForPython = "[CREATE_SKILL] Task: " + taskDescription + "\nIntended Script Name: " + intendedName +
+                        "\n\nCRITICAL ARCHITECTURE RULES:\n" +
+                        "1. The script MUST contain a function named 'execute(*args)'. This is the entry point Java will call.\n" +
+                        "2. DO NOT USE ARGPARSE. DO NOT IMPORT ARGPARSE. DO NOT READ SYS.ARGV. Any attempt to use command-line arguments will instantly crash the server. You must extract all variables dynamically from the '*args' list passed to the execute function.\n" +
+                        "3. NO GLOBAL LOOPS: Do not place 'while True' loops outside of functions. It will block the import process and hang the server.\n" +
+                        "4. Output your code in a standard markdown block (e.g. ```python ... ```).";
+                    
                     if (!previousFailures.isEmpty()) {
                         promptForPython += "\n\nWARNING: Previous attempts failed. Please read the failure log and adjust your approach. If you timed out, write a simpler/shorter script. If you failed safety, remove destructive commands. If you missed code blocks, ensure you use markdown fences.\nFailure Log:\n" + previousFailures;
                     }
@@ -138,6 +144,12 @@ public class SkillCrafterService {
                     lang = "markdown";
                 } else if (swarmOutput.toLowerCase().contains("```bat") || swarmOutput.toLowerCase().contains("```cmd")) {
                     lang = "bat";
+                }
+                
+                // --- CRITICAL SANDBOX PURGE FOR PYTHON ---
+                if (lang.equals("python")) {
+                    code = purgeArgparse(code);
+                    code = purgeGlobalLoops(code);
                 }
                 
                 if (code.isBlank() || code.contains("Unsafe code detected")) {
@@ -219,5 +231,22 @@ public class SkillCrafterService {
             e.printStackTrace();
             return false;
         }
+    }
+    
+    // --- SANITIZATION METHODS ---
+    
+    private static String purgeArgparse(String code) {
+        // RUTHLESS PURGE: Delete ANY line that contains the word "argparse" or "sys.argv" regardless of syntax.
+        // This ensures absolutely no clever imports or aliases survive the filter.
+        String cleaned = code.replaceAll("(?m)^.*\\bargparse\\b.*\\n?", "");
+        cleaned = cleaned.replaceAll("(?m)^.*\\bparse_args\\b.*\\n?", "");
+        cleaned = cleaned.replaceAll("(?m)^.*\\bsys\\.argv\\b.*\\n?", "");
+        return cleaned;
+    }
+    
+    private static String purgeGlobalLoops(String code) {
+        // If the AI puts `while True:` flush against the left margin (global scope), it will hang OpenJarvis on import.
+        // We will comment it out. Inside functions (indented) is fine.
+        return code.replaceAll("(?m)^while\\s+True\\s*:", "# BLOCKED GLOBAL INFINITE LOOP: while True:");
     }
 }
