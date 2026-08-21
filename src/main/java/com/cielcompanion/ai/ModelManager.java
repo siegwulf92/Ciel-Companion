@@ -8,7 +8,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 /**
- * Acts as the Orchestrator for multiple local LLMs.
+ * Acts as the Orchestrator for multiple local and cloud LLMs.
  * Routes all requests through the OpenJarvis master node.
  */
 public class ModelManager {
@@ -16,12 +16,11 @@ public class ModelManager {
     public enum ModelTier {
         PERSONALITY, // Fast chat (GPU)
         EVALUATOR,   // Background observer (CPU)
-        LOGIC,       // Deep D&D reasoning (Primary: DeepSeek Cloud)
+        LOGIC,       // Deep D&D reasoning
         LOCAL_LOGIC_FALLBACK, // Deep reasoning (Fallback)
         TRANSLATOR   // Phonetic translation (GPU)
     }
 
-    // The universal endpoint for the OpenJarvis Swarm
     private static final String JARVIS_URL = "http://localhost:8000/v1/chat/completions";
 
     public static String getModelName(ModelTier tier) {
@@ -30,7 +29,7 @@ public class ModelManager {
             case EVALUATOR -> Settings.getLlmEvaluatorModel();
             case LOGIC -> Settings.getLlmLogicModel();
             case LOCAL_LOGIC_FALLBACK -> Settings.getLlmLocalLogicFallbackModel();
-            case TRANSLATOR -> Settings.getLlmPersonalityModel(); // Reuse fast model for translation
+            case TRANSLATOR -> Settings.getLlmPersonalityModel();
         };
     }
 
@@ -42,30 +41,27 @@ public class ModelManager {
         payload.addProperty("model", modelName);
         payload.addProperty("stream", stream);
         
-        // MAP THE TIER TO A SPECIFIC TASK INTENT FOR OPENJARVIS TO ROUTE CORRECTLY
+        // Critical: task_intent tells OpenJarvis which probabilistic chain to evaluate.
         String taskIntent = switch (tier) {
             case PERSONALITY -> "Conversational/Contextual Reasoning";
-            case EVALUATOR -> "Background Evaluation";
+            case EVALUATOR -> "Background Emotion Polling";
             case LOGIC, LOCAL_LOGIC_FALLBACK -> "Deep Logic Reasoning";
             case TRANSLATOR -> "Katakana Transliteration";
         };
         payload.addProperty("task_intent", taskIntent);
         
-        // Adjust creativity based on task
         if (tier == ModelTier.LOGIC || tier == ModelTier.LOCAL_LOGIC_FALLBACK) {
-            payload.addProperty("temperature", 0.3); // High logic, low hallucination
+            payload.addProperty("temperature", 0.3);
         } else if (tier == ModelTier.TRANSLATOR) {
-            payload.addProperty("temperature", 0.1); // Strict translation
+            payload.addProperty("temperature", 0.1);
         } else {
-            payload.addProperty("temperature", 0.7); // Personality
+            payload.addProperty("temperature", 0.7);
         }
 
-        // SMART VRAM ALLOCATION
         JsonObject options = new JsonObject();
         if (tier == ModelTier.EVALUATOR) {
             options.addProperty("num_gpu", 0);
             
-            // Force JSON output for the evaluator
             JsonObject responseFormat = new JsonObject();
             responseFormat.addProperty("type", "json_object");
             payload.add("response_format", responseFormat);
@@ -74,7 +70,6 @@ public class ModelManager {
             if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
                 options.addProperty("num_gpu", 99); 
             } else if (gameCmd != null) {
-                System.out.println("Ciel Debug: Game detected -> " + gameCmd + ". Offloading AI to System RAM.");
                 options.addProperty("num_gpu", 0);  
             } else {
                 options.addProperty("num_gpu", 99); 
@@ -157,16 +152,16 @@ public class ModelManager {
                 cmd.contains("steamwebhelper") ||
                 cmd.contains("steam.exe") ||
                 cmd.contains("steamclient") ||
-                cmd.contains("steamservice") ||       
+                cmd.contains("steamservice") ||        
                 cmd.contains("steamerrorreporter") || 
-                cmd.contains("steamworks shared") ||  
+                cmd.contains("steamworks shared") ||   
                 cmd.contains("overlay") || 
                 cmd.contains("eadesktop") ||
                 cmd.contains("eabackgroundservice") ||
                 cmd.contains("battle.net") ||
-                cmd.contains("agent.exe") ||          
+                cmd.contains("agent.exe") ||         
                 cmd.contains("gog galaxy") ||
-                cmd.contains("galaxyclient") ||       
+                cmd.contains("galaxyclient") ||        
                 cmd.contains("crashreporter") ||
                 cmd.contains("cefsubprocess") ||
                 cmd.contains("vcredist") ||

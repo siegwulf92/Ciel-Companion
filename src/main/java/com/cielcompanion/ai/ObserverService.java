@@ -7,6 +7,7 @@ import com.cielcompanion.service.SpeechService;
 import com.cielcompanion.service.SystemMonitor;
 import com.cielcompanion.service.SystemMonitor.SystemMetrics;
 import com.cielcompanion.service.SystemMonitor.ProcessInfo;
+import com.cielcompanion.mood.Emotion;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -17,6 +18,7 @@ import java.nio.file.StandardOpenOption;
 import java.time.LocalDate;
 import java.util.LinkedList;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -35,6 +37,12 @@ public class ObserverService {
 
     // Fatigue threshold set to 2 hours
     private static final long FATIGUE_THRESHOLD_MS = 2 * 60 * 60 * 1000L;
+    
+    // Processes to ignore for System Guardian memory alerts
+    private static final Set<String> IGNORED_GUARDIAN_PROCESSES = Set.of(
+        "llama-server.exe", "ollama.exe", "ollama_llama_server.exe", 
+        "python.exe", "lmstudio-server.exe", "java.exe", "javaw.exe"
+    );
 
     // Quick truncator to stop massive JSON prompts from bloating the AI Context
     private static String truncateLog(String text) {
@@ -89,20 +97,25 @@ public class ObserverService {
         if ((metrics.memoryUsagePercent() > 95 || metrics.cpuLoadPercent() > 95) 
             && (System.currentTimeMillis() - lastSystemWarningTime > 5 * 60 * 1000)) { 
             
-            lastSystemWarningTime = System.currentTimeMillis();
             Optional<ProcessInfo> topProc = metrics.memoryUsagePercent() > 95 ? SystemMonitor.getTopProcessByMemory() : SystemMonitor.getTopProcessByCpu();
             
             if (topProc.isPresent()) {
-                String warningData = "SYSTEM ALERT: PC is under heavy load. CPU: " + metrics.cpuLoadPercent() + "%, RAM: " + metrics.memoryUsagePercent() + "%. The culprit process is " + topProc.get().name() + ".";
-                String context = ContextBuilder.buildObserverContext();
+                String procName = topProc.get().name().toLowerCase();
                 
-                AIEngine.evaluateBackground(warningData, context).thenAccept(result -> {
-                    if (result != null && result.has("speech")) {
-                        System.out.println("Ciel Debug: Proactive System Guardian triggered!");
-                        extractAndSpeak(result.get("speech").getAsString());
-                    }
-                });
-                return; 
+                // CRITICAL FIX: Do NOT trigger memory alerts if the culprit is an AI model runner
+                if (!IGNORED_GUARDIAN_PROCESSES.contains(procName)) {
+                    lastSystemWarningTime = System.currentTimeMillis();
+                    String warningData = "SYSTEM ALERT: PC is under heavy load. CPU: " + metrics.cpuLoadPercent() + "%, RAM: " + metrics.memoryUsagePercent() + "%. The culprit process is " + topProc.get().name() + ".";
+                    String context = ContextBuilder.buildObserverContext();
+                    
+                    AIEngine.evaluateBackground(warningData, context).thenAccept(result -> {
+                        if (result != null && result.has("speech")) {
+                            System.out.println("Ciel Debug: Proactive System Guardian triggered!");
+                            extractAndSpeak(result.get("speech").getAsString());
+                        }
+                    });
+                    return; 
+                }
             }
         }
 
@@ -158,7 +171,6 @@ public class ObserverService {
     private static void extractAndSpeak(String text) {
         String cleanText = text.trim();
         
-        // CRITICAL FIX: The regex now catches spaces, hyphens, and multiple words so tags like [Proudly Analytical] are properly stripped!
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\[(.*?)\\]").matcher(cleanText);
         
         String emotion = null;

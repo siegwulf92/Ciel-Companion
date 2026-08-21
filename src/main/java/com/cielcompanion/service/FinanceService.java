@@ -110,8 +110,9 @@ public class FinanceService {
 
             boolean marketOpen = isMarketOpen(now);
             
-            // If the Swarm failed recently, back off for 1 hour before trying again to prevent spam
-            if (System.currentTimeMillis() - lastAttemptMs < TimeUnit.HOURS.toMillis(1)) {
+            // CRITICAL FIX: Reduced 1-hour backoff to 5 minutes for testing/debugging.
+            long timeSinceLastAttempt = System.currentTimeMillis() - lastAttemptMs;
+            if (timeSinceLastAttempt < TimeUnit.MINUTES.toMillis(5)) {
                 return;
             }
 
@@ -147,17 +148,32 @@ public class FinanceService {
         
         CompletableFuture.runAsync(() -> {
             try {
+                // CRITICAL FIX: Ensure the file exists, and check for alternative names.
+                File scriptDir = new File("C:\\Ciel Companion\\ciel\\skills");
+                File scriptFile = new File(scriptDir, "master_finance_scraper.py");
+                
+                if (!scriptFile.exists()) {
+                    File altFile = new File(scriptDir, "playwright_finance_scraper.py");
+                    if (altFile.exists()) {
+                        scriptFile = altFile;
+                    } else {
+                        System.err.println("Ciel Error: Cannot find the Playwright scraper script! Expected 'master_finance_scraper.py' in " + scriptDir.getAbsolutePath());
+                        return; // Stop execution before AI analysis
+                    }
+                }
+
                 // Read current activity state directly from Java memory without relying on disk I/O
                 boolean isGaming = com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().isInGamingSession();
                 String currentCat = com.cielcompanion.service.HabitTrackerService.getCurrentCategory();
                 if (!isGaming) isGaming = "Gaming".equalsIgnoreCase(currentCat);
                 boolean isMedia = "Media".equalsIgnoreCase(currentCat);
 
-                System.out.println("Ciel Debug: Executing scraper. Gaming: " + isGaming + ", Media: " + isMedia);
+                System.out.println("Ciel Debug: Executing scraper script: " + scriptFile.getName() + " | Gaming: " + isGaming + ", Media: " + isMedia);
                 
-                // Pass specific states so Python knows whether to use headless mode or short timeouts
-                ProcessBuilder pb = new ProcessBuilder("python", "master_finance_scraper.py", String.valueOf(isGaming), String.valueOf(isMedia));
-                pb.directory(new File("C:\\Ciel Companion\\ciel\\skills"));
+                String busyArg = (isGaming || isMedia) ? "busy" : "idle";
+                
+                ProcessBuilder pb = new ProcessBuilder("python", scriptFile.getName(), busyArg);
+                pb.directory(scriptDir);
                 
                 // CRITICAL FIX: Capture Python's output to the main log so we can see if it crashes!
                 pb.redirectErrorStream(true);
@@ -165,12 +181,18 @@ public class FinanceService {
                 try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()))) {
                     String line;
                     while ((line = reader.readLine()) != null) {
-                        System.out.println("[Scraper] " + line);
+                        System.out.println("[Playwright] " + line);
                     }
                 }
-                p.waitFor(3, TimeUnit.MINUTES);
+                
+                boolean finished = p.waitFor(3, TimeUnit.MINUTES);
+                if (!finished) {
+                    System.err.println("Ciel Error: Playwright scraper timed out after 3 minutes! Forcing termination.");
+                    p.destroyForcibly();
+                }
             } catch (Exception e) {
-                System.out.println("Ciel Warning: Playwright scraper failed or timed out.");
+                System.err.println("Ciel Error: Playwright scraper execution failed entirely.");
+                e.printStackTrace(); // Actually print the crash reason!
             }
             
             // Proceed to the AI analysis of the newly generated files

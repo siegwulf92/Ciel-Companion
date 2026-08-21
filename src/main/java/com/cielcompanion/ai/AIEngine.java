@@ -10,7 +10,11 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.URL;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -47,23 +51,22 @@ public class AIEngine {
 
     private static long lastInteractionTime = System.currentTimeMillis();
     private static ScheduledExecutorService memoryScheduler;
+    private static boolean isGamingModeActive = false;
 
     static {
         memoryScheduler = Executors.newSingleThreadScheduledExecutor();
         memoryScheduler.scheduleWithFixedDelay(AIEngine::checkIdleMemoryDigestion, 60, 60, TimeUnit.SECONDS);
     }
 
-    public static void keepLocalModelsAlive() {
-        if (com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().isInGamingSession()) return;
-        
+    public static void setGamingMode(boolean isGaming) {
+        if (isGamingModeActive == isGaming) return;
+        isGamingModeActive = isGaming;
+        System.out.println("Ciel Debug: Notifying Swarm Router of Gaming Mode state: " + isGaming);
         CompletableFuture.runAsync(() -> {
             try {
-                String model = ModelManager.getModelName(ModelManager.ModelTier.TRANSLATOR).replace("ollama/", "");
-                String url = "http://localhost:11434/api/generate";
+                String url = "http://localhost:8000/set_gaming_mode";
                 JsonObject payload = new JsonObject();
-                payload.addProperty("model", model);
-                payload.addProperty("keep_alive", -1); 
-                
+                payload.addProperty("is_gaming", isGaming);
                 HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
@@ -71,10 +74,50 @@ public class AIEngine {
                     .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                     .build();
                 httpClient.send(request, HttpResponse.BodyHandlers.discarding());
-            } catch (Exception e) {
-                // Silently drop heartbeat failures
-            }
+            } catch (Exception e) {}
         });
+    }
+    
+    // NEW: Fire-and-forget pre-computation trigger
+    public static void requestMediaPrecompute(JsonObject payload) {
+        CompletableFuture.runAsync(() -> {
+            try {
+                String url = "http://localhost:8000/precompute_media_commentary";
+                HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofSeconds(3))
+                    .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
+                    .build();
+                httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+            } catch (Exception e) {}
+        });
+    }
+
+    // NEW: Retrieve the raw JSON string perfectly without double-parsing
+    public static String getPrecomputedMediaCommentary(String targetId) {
+        try {
+            String encodedId = java.net.URLEncoder.encode(targetId, "UTF-8");
+            URL url = new URL("http://127.0.0.1:8000/get_pending_media_commentary?target_id=" + encodedId);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(500); 
+            conn.setReadTimeout(500);
+            int rc = conn.getResponseCode();
+            if (rc == 200) {
+                BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                String jsonStr = in.lines().collect(java.util.stream.Collectors.joining());
+                in.close();
+            
+                JsonObject json = JsonParser.parseString(jsonStr).getAsJsonObject();
+                // FastAPI returns {"commentary": {"target_id": "...", "commentary": "...", "katakana": "..."}}
+                if (json.has("commentary") && !json.get("commentary").isJsonNull()) {
+                    // Extract the inner JSON and pass the raw string back to HabitTracker
+                    return json.get("commentary").getAsJsonObject().toString(); 
+                }
+            }
+        } catch (Exception e) {}
+        return "";
     }
 
     public static int getActiveTaskCount() {
@@ -124,7 +167,6 @@ public class AIEngine {
 
     public static String transliterateToKatakanaSync(String englishText) {
         try {
-            // Lowered timeout to 10 seconds. We shouldn't hang the GUI forever if Ollama drops.
             return transliterateAsync(englishText).get(120, TimeUnit.SECONDS); 
         } catch (Exception e) {
             return englishText; 
@@ -134,14 +176,11 @@ public class AIEngine {
     private static String attemptTransliteration(String englishText) {
         activeSwarmTasks.incrementAndGet();
         try {
-            // DIRECT ROUTING: Hit the native FastAPI /katakana endpoint in openjarvis.py
-            // Bypasses the ChatCompletion queue entirely to prevent deadlocks
             String url = "http://localhost:8000/katakana";
             
             JsonObject payload = new JsonObject();
             payload.addProperty("text", englishText);
             
-            // Auto-Retry Loop if OpenJarvis is busy starting up or network blips
             for (int attempt = 1; attempt <= 3; attempt++) {
                 try {
                     HttpRequest request = HttpRequest.newBuilder()
@@ -165,7 +204,6 @@ public class AIEngine {
                     if (attempt == 3) {
                         System.err.println("Ciel Katakana Network Error: " + e.getMessage());
                     } else {
-                        // Silent wait before retry
                         try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
                     }
                 }
@@ -179,28 +217,29 @@ public class AIEngine {
     public static CompletableFuture<String> generateSilentLogic(String userMessage, String systemContext) {
         double temp = systemContext.toLowerCase().contains("worker") ||
                       systemContext.toLowerCase().contains("lore") ? 0.3 : 0.1;
-        return generateSilentLogicWithModel(userMessage, systemContext, null, temp);
+        return generateSilentLogicWithModel(userMessage, systemContext, null, temp, "Deep Logic Reasoning");
     }
 
     public static CompletableFuture<String> generateSilentLogicWithModel(
             String userMessage,
             String systemContext,
             String forcedModel,
-            double temperature) {
+            double temperature,
+            String taskIntent) {
 
         activeSwarmTasks.incrementAndGet();
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOGIC);
 
         JsonObject payload = (forcedModel == null)
                 ? ModelManager.buildPayload(ModelManager.ModelTier.LOGIC, systemContext, userMessage, false)
-                : buildForcedPayload(systemContext, userMessage, forcedModel, temperature);
+                : buildForcedPayload(systemContext, userMessage, forcedModel, temperature, taskIntent);
 
         ensureLiteLlmProvider(payload);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofMinutes(2)) // CRITICAL FIX: Dropped from 24 Hours to 2 Minutes to prevent queue lockup
+                .timeout(Duration.ofMinutes(2)) 
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -216,11 +255,14 @@ public class AIEngine {
     }
 
     private static JsonObject buildForcedPayload(String systemContext, String userMessage,
-                                                 String forcedModel, double temperature) {
+                                                 String forcedModel, double temperature, String taskIntent) {
         JsonObject payload = new JsonObject();
         payload.addProperty("model", forcedModel != null ? forcedModel : "ollama-cloud/deepseek-v3.1:671b");
         payload.addProperty("stream", false);
         payload.addProperty("temperature", temperature);
+        if (taskIntent != null && !taskIntent.isBlank()) {
+            payload.addProperty("task_intent", taskIntent);
+        }
 
         JsonArray messages = new JsonArray();
 
@@ -302,9 +344,7 @@ public class AIEngine {
         
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.PERSONALITY);
         
-        // Force stream=false to get the final audited block at once
         JsonObject payload = buildPayloadWithHistory(ModelManager.ModelTier.PERSONALITY, systemContext, false);
-        // Ensure "model" is set to "local" so openjarvis routes to the race
         payload.addProperty("model", "local");
         
         HttpRequest request = HttpRequest.newBuilder()
@@ -324,7 +364,6 @@ public class AIEngine {
                     String rawContent = ModelManager.extractMessageContent(response.body());
                     if (rawContent != null) {
                         String cleanContent = THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim();
-                        // Speak it in one chunk since the stream is disabled for the audit
                         processAndSpeakChunk(cleanContent);
                         
                         addHistory("assistant", cleanContent);

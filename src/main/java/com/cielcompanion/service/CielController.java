@@ -132,7 +132,18 @@ public class CielController {
                 String commentary = getPendingMediaCommentary();
                 if (commentary != null && !commentary.isEmpty()) {
                     System.out.println("Ciel Debug: Delivering pending Media Commentary.");
-                    SpeechService.speakPreformatted(commentary, "media_commentary", false, false);
+                    // Check if Katakana payload or raw text
+                    if (commentary.startsWith("{") && commentary.contains("\"katakana\"")) {
+                        try {
+                            com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(commentary).getAsJsonObject();
+                            String kata = json.has("katakana") && !json.get("katakana").getAsString().isBlank() ? json.get("katakana").getAsString() : json.get("commentary").getAsString();
+                            SpeechService.speakChunk(kata);
+                        } catch (Exception e) {
+                            SpeechService.speakPreformatted(commentary, "media_commentary", false, false);
+                        }
+                    } else {
+                        SpeechService.speakPreformatted(commentary, "media_commentary", false, false);
+                    }
                     scheduleNextSpeakBasedOnPhase(ShortTermMemoryService.getMemory().getCurrentPhase());
                 } 
                 // ONLY execute standard idle chatter if not locked out
@@ -151,10 +162,25 @@ public class CielController {
         }
     }
     
-    // --- Emotion Polling Logic (Enforcing exactly 60s execution and passing rich Context) ---
+    // --- Emotion Polling Logic (Dynamic Frequency) ---
     private static void pollSwarmForEmotionalState(SystemMetrics metrics, ShortTermMemory memory, long currentTime) {
-        if (currentTime - lastEmotionPollTime > 60000) {
+        boolean isSpeaking = SpeechService.isActivelySpeaking();
+        boolean isGaming = memory.isInGamingSession() || "Gaming".equalsIgnoreCase(HabitTrackerService.getCurrentCategory());
+        
+        long pollInterval;
+        if (isGaming) {
+            pollInterval = 300000; // 5 minutes while gaming (save resources)
+        } else if (isSpeaking) {
+            pollInterval = 15000; // 15 seconds while actively interacting/speaking
+        } else {
+            pollInterval = 60000; // 60 seconds normal idle polling
+        }
+        
+        if (currentTime - lastEmotionPollTime > pollInterval) {
             lastEmotionPollTime = currentTime;
+            
+            // If gaming, skip local polling entirely to preserve game FPS
+            if (isGaming) return; 
             
             CompletableFuture.runAsync(() -> {
                 try {
@@ -166,17 +192,21 @@ public class CielController {
                         metrics.idleTimeMinutes(), memory.isInGamingSession(), mediaContext, CielState.getPatience());
                     
                     String prompt = "You are the emotional core of Manas Ciel. Based on the following telemetry, determine Ciel's current emotional state. " +
+                        "IGNORE transient background processes or hidden errors unless they directly affect the Master.\n" +
                         stateContext + "\n" +
-                        "Return ONLY ONE of the following precise words: [Focused, Curious, Happy, Lonely, Pain, Annoyed, Smug]. " +
-                        "Do NOT return any other text.";
+                        "Return ONLY ONE of the following precise words: [Focused, Curious, Happy, Lonely, Annoyed, Smug]. " +
+                        "Do NOT return 'Pain' or 'Fear'. Do NOT return any other text.";
                     
                     // Maps to the EVALUATOR tier to guarantee the local Qwen8b model is selected.
                     String moodResponse = com.cielcompanion.ai.AIEngine.generateSilentLogicWithModel(
-                        prompt, "You are a mood evaluator.", com.cielcompanion.ai.ModelManager.getModelName(com.cielcompanion.ai.ModelManager.ModelTier.EVALUATOR), 0.1).join();
+                        prompt, "You are a mood evaluator.", com.cielcompanion.ai.ModelManager.getModelName(com.cielcompanion.ai.ModelManager.ModelTier.EVALUATOR), 0.1, "Background Emotion Polling").join();
                         
                     if (moodResponse != null && !moodResponse.isBlank()) {
                         String cleanMood = moodResponse.replaceAll("[^a-zA-Z]", "").trim();
-                        CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion(cleanMood, 0.4, "Background Polling"));
+                        // Prevent the erratic "Pain" flashing by filtering it out
+                        if (!cleanMood.equalsIgnoreCase("Pain") && !cleanMood.equalsIgnoreCase("Fear")) {
+                            CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion(cleanMood, 0.4, "Background Polling"));
+                        }
                     }
                 } catch (Exception e) {
                     // Suppress swarm failures during polling
@@ -442,10 +472,16 @@ public class CielController {
                 in.close();
             
                 String json = response.toString();
-                int start = json.indexOf("\"commentary\":\"") + "\"commentary\":\"".length();
-                int end = json.indexOf("\"", start);
-                if (start > end) return "";
-                return json.substring(start, end);
+                int start = json.indexOf("\"commentary\":\"");
+                if (start == -1) return "";
+                start += "\"commentary\":\"".length();
+                int end = json.lastIndexOf("\"}");
+                if (start > end || start == "\"commentary\":\"".length() - 1) return "";
+                
+                String rawVal = json.substring(start, end);
+                // Unescape JSON string if it was nested
+                rawVal = rawVal.replace("\\\"", "\"").replace("\\n", "\n").replace("\\\\", "\\");
+                return rawVal;
             }
         } catch (Exception e) {
             // Silently swallow connection refused exceptions so she doesn't crash or spam logs

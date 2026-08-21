@@ -56,8 +56,6 @@ public class CielCompanion {
         FileLogger.initialize();
         System.out.println("Ciel Companion starting... (Clean Lock Acquired)");
         
-        // CRITICAL FIX: Force the SQLite driver to load on the main thread instantly.
-        // This prevents the background thread from throwing "No suitable driver found" race conditions.
         try {
             Class.forName("org.sqlite.JDBC");
             System.out.println("Ciel Debug: SQLite Driver pre-loaded on main thread.");
@@ -83,22 +81,13 @@ public class CielCompanion {
             SwingUtilities.invokeLater(cielGui::initialize);
             CielState.setCielGui(cielGui);
             
-            // =================================================================
-            // VITAL PRIORITY INITIALIZATION:
-            // Boot the Speech, Tracker, and Loop systems FIRST so she can speak
-            // and pause media instantly while the rest of the app loads.
-            // =================================================================
-            SpeechService.initialize(null); // Will inject VoiceListener later
+            SpeechService.initialize(null); 
             HabitTrackerService.initialize();
             GameMonitorService.initialize();
             startMainLoop(emotionManager);
             
             System.out.println("Ciel Debug: Priority Speech & Tracking systems initialized. Proceeding with heavy loads.");
             
-            // =================================================================
-            // ASYNCHRONOUS HEAVY INITIALIZATION:
-            // The DB, Vault, and D&D systems take up to 20 seconds. Load them asynchronously.
-            // =================================================================
             CompletableFuture.runAsync(() -> {
                 try {
                     MemoryService.initialize();
@@ -133,7 +122,7 @@ public class CielCompanion {
                     voiceListener = new VoiceListener(commandService);
                     commandService.setVoiceListener(voiceListener);
                     
-                    SpeechService.initialize(voiceListener); // Re-initialize to attach the listener
+                    SpeechService.initialize(voiceListener); 
                     SkillCrafterService.initialize();
                     com.cielcompanion.ai.LoreAnalyzerService.initialize();
                     com.cielcompanion.ai.SkillEvolutionEngine.initialize();
@@ -213,8 +202,7 @@ public class CielCompanion {
         };
         scheduler = Executors.newSingleThreadScheduledExecutor();
         scheduler.scheduleWithFixedDelay(mainTask, 0, Settings.getCheckIntervalMs(), TimeUnit.MILLISECONDS);
-        
-        scheduler.scheduleWithFixedDelay(com.cielcompanion.ai.AIEngine::keepLocalModelsAlive, 1, 4, TimeUnit.MINUTES);
+        // REMOVED: keepLocalModelsAlive() scheduler which was causing the Maven Error!
     }
 
     private static void startBackgroundInitialization(
@@ -225,7 +213,6 @@ public class CielCompanion {
 
         new Thread(() -> {
             try {
-                // Instantly unblock the Main Thread so Greetings can play
                 CompletableFuture.runAsync(() -> {
                     waitForInferenceEngines();
                     com.cielcompanion.ai.AIEngine.warmUpModels();
@@ -233,7 +220,6 @@ public class CielCompanion {
                 });
 
                 FinanceService.initialize();
-
                 LocationService.initialize();
                 AstronomyService.initializeApiState();
                 WeatherService.initialize();
@@ -246,16 +232,12 @@ public class CielCompanion {
                 
                 startTriggerListener(5555, COMMAND_TRIGGER_PASSPHRASE, () -> {
                     System.out.println("Ciel Debug: VoiceAttack Command Trigger received. Granting Privileged Mode.");
-                    
                     if (voiceListener != null) {
                         System.out.println("Ciel Debug: Forcing Watchdog Mic Reinitialization for VoiceAttack Trigger...");
                         voiceListener.forceMicReinitialization();
                     }
-                    
                     com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, 60);
-                    
                     String pendingTask = com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().getPendingSystemTask();
-                    
                     if (pendingTask != null) {
                         System.out.println("Ciel Debug: Executing pending system task: " + pendingTask);
                         SpeechService.speakPreformatted("Authorization confirmed. Processing queued system directive.");

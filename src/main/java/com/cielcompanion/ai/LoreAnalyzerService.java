@@ -1,259 +1,173 @@
-import os
-import sys
-import time
-import json
-import logging
-import traceback
-import ctypes
-import re
+package com.cielcompanion.ai;
 
-LOG_DIR = r"C:\Ciel Companion\logs"
-os.makedirs(LOG_DIR, exist_ok=True)
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
-logger = logging.getLogger("finance_scraper")
-logger.setLevel(logging.INFO)
-if not logger.handlers:
-    handler = logging.FileHandler(os.path.join(LOG_DIR, 'finance_scraper.log'))
-    handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    logger.addHandler(handler)
+public class LoreAnalyzerService {
+    private static ScheduledExecutorService loreScheduler;
 
-try:
-    from playwright.sync_api import sync_playwright
-except ImportError as e:
-    logger.critical(f"Playwright missing: {e}")
-    sys.exit(1)
+    private static final String CIEL_ROOT = "C:\\Ciel Companion\\ciel";
+    private static final String LORE_DIR = CIEL_ROOT + "\\lore";
+    private static final String RAW_DIR = LORE_DIR + "\\Raw_Transcripts";
+    private static final String CLEAN_DIR = LORE_DIR + "\\Cleaned_Transcripts";
+    private static final String ARCHIVE_DIR = LORE_DIR + "\\Archived_Raw";
 
-JAVA_BACKEND_URL = "http://localhost:8081/api/2fa-bridge"
-FINANCE_PATH = r"C:\Ciel Companion\ciel\finance"
+    private static final Object PIPELINE_LOCK = new Object();
+    private static boolean pipelineInUse = false;
 
-def get_activity_states():
-    """Reads the gaming and media flags passed from Java to determine browser visibility."""
-    is_gaming = False
-    is_media = False
-    if len(sys.argv) > 1:
-        is_gaming = str(sys.argv[1]).strip().lower() == "true"
-    if len(sys.argv) > 2:
-        is_media = str(sys.argv[2]).strip().lower() == "true"
-        
-    force_headless = is_gaming # Only hide browser entirely if gaming to protect fullscreen
-    short_timeout_mode = is_gaming or is_media # Abort quickly if Master is busy
-    
-    return force_headless, short_timeout_mode
+    public static void initialize() {
+        loreScheduler = Executors.newSingleThreadScheduledExecutor();
 
-def load_credentials():
-    creds = {}
-    paths = [
-        r"C:\Ciel Companion\src\main\resources\ciel_secrets.properties",
-        r"C:\Ciel Companion\ciel_secrets.properties"
-    ]
-    for path in paths:
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith("#") and "=" in line:
-                            k, v = line.split("=", 1)
-                            creds[k.strip()] = v.strip().strip('"').strip("'")
-            except: pass
-            break
-    return creds
+        new File(RAW_DIR).mkdirs();
+        new File(CLEAN_DIR).mkdirs();
+        new File(ARCHIVE_DIR).mkdirs();
 
-def save_financial_data(account_name, balance, positions, roth_progress="Unknown"):
-    os.makedirs(FINANCE_PATH, exist_ok=True)
-    file_path = os.path.join(FINANCE_PATH, f"{account_name}_data.json")
-    data = {
-        "account": account_name,
-        "total_balance": balance,
-        "roth_progress": roth_progress,
-        "positions": positions,
-        "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
+        // Run the transcript cleaner every 5 minutes
+        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::processRawTranscripts, 1, 5, TimeUnit.MINUTES);
+
+        System.out.println("Ciel Debug: Simplified Lore Analyzer (Transcript Cleaner) initialized.");
     }
-    with open(file_path, "w") as f:
-        json.dump(data, f, indent=4)
-    logger.info(f"[{account_name}] Data saved. Roth: {roth_progress}")
 
-def wait_for_manual_intervention(page, site_name, balance_selectors, timeout=120, short_timeout_mode=False):
-    if short_timeout_mode:
-        logger.warning(f"[{site_name}] Scraper stuck. Master is occupied. Aborting silently.")
-        return False
-        
-    logger.warning(f"[{site_name}] Navigation stuck. Handing over to Master Taylor...")
-    ctypes.windll.user32.MessageBoxW(0, f"Ciel Automation Paused.\n\nPlease manually log in using the open browser window. I will wait up to {timeout} seconds for the portfolio balance to appear.", f"Ciel Override: {site_name}", 0x30 | 0x40000)
-    
-    start_wait = time.time()
-    for i in range(timeout):
-        for sel in balance_selectors:
-            try:
-                if page.locator(sel).first.is_visible():
-                    elapsed = time.time() - start_wait
-                    logger.warning(f"[{site_name}] password change detected, update secrets file.")
-                    logger.info(f"[{site_name}] Master Taylor intervened successfully. Took {elapsed:.2f}s.")
-                    return True
-            except: pass
-        time.sleep(1)
-        
-    logger.error(f"[{site_name}] Manual intervention timed out.")
-    return False
+    private static void processRawTranscripts() {
+        File rawDir = new File(RAW_DIR);
+        if (!rawDir.exists() || !rawDir.isDirectory()) return;
 
-def scrape_vanguard(force_headless, short_timeout_mode):
-    creds = load_credentials()
-    user = creds.get("VANGUARD_USER")
-    password = creds.get("VANGUARD_PASS")
-    if not user or not password: return
+        List<File> mdFiles = findTextFiles(rawDir, new ArrayList<>());
+        if (mdFiles.isEmpty()) return;
 
-    balance_selectors = [".total-balance", ".portfolio-balance", "[data-testid='total-balance']", "h2:has-text('$')"]
-    timeout_ms = 15000 if short_timeout_mode else 45000
+        File target = mdFiles.get(0); // Pick the first available file in the queue
+        System.out.println("Ciel Debug: Starting transcript cleaning pipeline on " + target.getName());
 
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=force_headless, slow_mo=50, args=["--disable-blink-features=AutomationControlled"])
-            page = browser.new_context(viewport={'width': 1920, 'height': 1080}).new_page()
-            
-            logger.info("[Vanguard] Navigating...")
-            page.goto("https://investor.vanguard.com/login", timeout=timeout_ms)
-            
-            try:
-                user_sel = "input[name='USER-ID'], input[type='text'], input[id='user-id']"
-                pass_sel = "input[name='PASSWORD-ID'], input[type='password'], input[id='password-id']"
-                
-                page.locator(user_sel).first.fill(user, timeout=15000)
-                
-                if not page.locator(pass_sel).first.is_visible():
-                    page.locator("button[type='submit'], button:has-text('Next'), button:has-text('Continue')").first.click()
-                    page.wait_for_selector(pass_sel, timeout=10000)
-                
-                page.locator(pass_sel).first.fill(password, timeout=15000)
-                page.locator("button[type='submit'], button:has-text('Log In')").first.click()
-            except Exception as e:
-                logger.warning(f"[Vanguard] Auto-fill failed: {e}")
-                
-            time.sleep(5)
-            
-            try:
-                if page.locator("input[name='SECURITY-CODE'], input[id='code']").is_visible(timeout=5000) or "security code" in page.content().lower():
-                    if short_timeout_mode:
-                        logger.warning("[Vanguard] 2FA detected. Master busy. Aborting.")
-                        browser.close(); return
+        synchronized (PIPELINE_LOCK) {
+            if (pipelineInUse) return;
+            pipelineInUse = true;
+        }
+
+        try {
+            String rawText = Files.readString(target.toPath());
+            if (rawText.isBlank()) {
+                target.delete(); // Safe to delete completely empty files
+                return;
+            }
+
+            // 1. Native Regex Timestamp Removal (0 API Calls)
+            String tsRemoved = rawText.replaceAll("\\[\\d{1,2}:\\d{2}(?::\\d{2})?\\]\\s*", "");
+
+            // 2. Split into massive 15,000 char chunks to utilize 1M+ context cloud models
+            List<String> chunks = splitIntoChunks(tsRemoved, 15000);
+            List<String> cleanedChunks = new ArrayList<>();
+
+            for (int i = 0; i < chunks.size(); i++) {
+                String chunk = chunks.get(i);
+                System.out.println("Ciel Debug: Processing chunk " + (i+1) + "/" + chunks.size() + " of " + target.getName());
+
+                // ---------------------------------------------------------
+                // PASS 1: CLEANING (Temp 0.3)
+                // ---------------------------------------------------------
+                String cleanPrompt = "[raw_transcript_spellcheck]\n" +
+                        "You are an expert editor reviewing a raw, speech-to-text transcript of the light novel 'That Time I Got Reincarnated as a Slime' (Tensura).\n" +
+                        "RAW CHUNK:\n" + chunk;
                         
-                    import requests
-                    logger.info("[Vanguard] 2FA detected. Pinging Java UI...")
-                    res = requests.post(JAVA_BACKEND_URL, json={"site": "Vanguard"}, timeout=120)
-                    code = res.json().get("code")
-                    if code:
-                        page.locator("input[name='SECURITY-CODE'], input[id='code']").first.fill(code)
-                        page.locator("button[type='submit']").first.click()
-            except: pass
-                    
-            balance_visible = False
-            for sel in balance_selectors:
-                try:
-                    if page.locator(sel).first.is_visible(timeout=5000): balance_visible = True; break
-                except: pass
+                String cleanSystem = "CRITICAL RULES:\n" +
+                        "1. Fix phonetically misspelled Tensura names and terms (e.g., Xion -> Shion, Rimuru, Veldora, Tempest, Jura).\n" +
+                        "2. Fix standard punctuation and grammatical errors caused by speech-to-text software.\n" +
+                        "3. DO NOT change the narrative prose, rewrite the story, or summarize. Keep the exact flow and wording of the book.\n" +
+                        "4. If unsure about a word, leave it as is.\n" +
+                        "5. Output ONLY the cleaned story prose. No markdown fences, no conversational text.";
 
-            if not balance_visible:
-                if not wait_for_manual_intervention(page, "Vanguard", balance_selectors, timeout=120, short_timeout_mode=short_timeout_mode):
-                    browser.close(); return
-                    
-            try:
-                balance = "Unknown"
-                for sel in balance_selectors:
-                    if page.locator(sel).first.is_visible():
-                        balance = page.locator(sel).first.inner_text(); break
-                save_financial_data("Vanguard", balance, [])
-            except: pass
-            browser.close()
-    except Exception as e:
-        logger.error(f"[Vanguard] Crashed:\n{traceback.format_exc()}")
+                // Pass blank model to let openjarvis.py dynamic router pick the best High-Context Cloud model
+                String cleanedText = AIEngine.generateSilentLogicWithModel(cleanPrompt, cleanSystem, null, 0.3, "Lore Processing").join();
 
-def scrape_stash(force_headless, short_timeout_mode):
-    creds = load_credentials()
-    user = creds.get("STASH_USER")
-    password = creds.get("STASH_PASS")
-    if not user or not password: return
+                if (isBadResponse(cleanedText)) {
+                    throw new Exception("Swarm Editor failed or timed out on chunk " + (i+1));
+                }
 
-    balance_selectors = [".portfolio-value", "[data-testid='portfolio-value']", "h2:has-text('$')", "div:has-text('Total Portfolio')"]
-    timeout_ms = 15000 if short_timeout_mode else 45000
-
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=force_headless, slow_mo=50, args=["--disable-blink-features=AutomationControlled"])
-            page = browser.new_context(viewport={'width': 1920, 'height': 1080}).new_page()
-            
-            logger.info("[Stash] Navigating...")
-            page.goto("https://app.stash.com/login", timeout=timeout_ms)
-            
-            try:
-                user_sel = "input[type='email'], input[name='email']"
-                pass_sel = "input[type='password'], input[name='password']"
-                
-                page.locator(user_sel).first.fill(user, timeout=15000)
-                
-                if not page.locator(pass_sel).first.is_visible():
-                    page.locator("button[type='submit'], button:has-text('Continue')").first.click()
-                    page.wait_for_selector(pass_sel, timeout=10000)
-                
-                page.locator(pass_sel).first.fill(password, timeout=15000)
-                page.locator("button[type='submit'], button:has-text('Log In')").first.click()
-            except Exception as e:
-                logger.warning(f"[Stash] Auto-fill failed: {e}")
-                
-            time.sleep(5)
-            
-            try:
-                if page.locator("input[name='otp'], input[name='code']").is_visible(timeout=5000) or "verification code" in page.content().lower():
-                    if short_timeout_mode:
-                        logger.warning("[Stash] 2FA detected. Master busy. Aborting.")
-                        browser.close(); return
+                // ---------------------------------------------------------
+                // PASS 2: AUDIT (Temp 0.1)
+                // ---------------------------------------------------------
+                String auditPrompt = "[raw_transcript_audit]\n" +
+                        "You are a strict QA Auditor. Compare the ORIGINAL raw transcript to the CLEANED version of 'That Time I Got Reincarnated as a Slime'.\n" +
+                        "ORIGINAL:\n" + chunk + "\n\n" +
+                        "CLEANED:\n" + cleanedText;
                         
-                    import requests
-                    logger.info("[Stash] 2FA detected. Pinging Java UI...")
-                    res = requests.post(JAVA_BACKEND_URL, json={"site": "Stash"}, timeout=120)
-                    code = res.json().get("code")
-                    if code:
-                        page.locator("input[name='otp'], input[name='code']").first.fill(code)
-                        page.locator("button[type='submit']").first.click()
-            except: pass
-                    
-            balance_visible = False
-            for sel in balance_selectors:
-                try:
-                    if page.locator(sel).first.is_visible(timeout=5000): balance_visible = True; break
-                except: pass
+                String auditSystem = "CRITICAL RULES:\n" +
+                        "1. Ensure no prose, details, or events were deleted or rewritten in the CLEANED text. It must be identical to ORIGINAL aside from typo/name fixes.\n" +
+                        "2. If the CLEANED text contains AI hallucinations, bullet points, or changed details, FIX IT by restoring the ORIGINAL prose (keeping only corrected names).\n" +
+                        "3. If the CLEANED text is accurate to the ORIGINAL prose, output the CLEANED text exactly as is.\n" +
+                        "4. Output ONLY the verified story prose. No markdown fences, no conversational text.";
 
-            if not balance_visible:
-                if not wait_for_manual_intervention(page, "Stash", balance_selectors, timeout=120, short_timeout_mode=short_timeout_mode):
-                    browser.close(); return
-                    
-            balance = "Unknown"
-            try:
-                for sel in balance_selectors:
-                    if page.locator(sel).first.is_visible():
-                        balance = page.locator(sel).first.inner_text(); break
-            except: pass
+                String auditedText = AIEngine.generateSilentLogicWithModel(auditPrompt, auditSystem, null, 0.1, "Lore Processing").join();
 
-            roth_progress = "Unknown"
-            try:
-                page.goto("https://app.stash.com/retirement", timeout=15000)
-                time.sleep(3)
-                body_text = page.locator("body").inner_text()
-                match = re.search(r'\$[\d,]+\.\d{2}\s*/\s*\$[\d,]+\.\d{2}', body_text) or re.search(r'\$[\d,]+\s*/\s*\$[\d,]+', body_text)
-                if match: roth_progress = match.group(0)
-            except: pass
+                if (isBadResponse(auditedText)) {
+                    throw new Exception("Swarm Auditor failed or timed out on chunk " + (i+1));
+                }
 
-            save_financial_data("Stash", balance, [], roth_progress)
-            browser.close()
-    except Exception as e:
-        logger.error(f"[Stash] Crashed:\n{traceback.format_exc()}")
+                // Clean up any stray markdown blocks the AI might have tried to insert
+                String finalChunk = auditedText.replaceAll("^`{3}[a-zA-Z]*\\n|`{3}$", "").trim();
+                cleanedChunks.add(finalChunk);
+            }
 
-def execute(*args):
-    return "This script is triggered externally by Java."
+            // 3. Assemble and Save
+            String finalOutput = String.join("\n\n", cleanedChunks);
+            if (finalOutput.isBlank()) throw new Exception("Final concatenated output was blank.");
 
-if __name__ == "__main__":
-    logger.info("--- Finance Scraper Booting Up ---")
-    force_headless, short_timeout_mode = get_activity_states()
-    logger.info(f"Environment: Headless = {force_headless} | Short Timeout = {short_timeout_mode}")
-    
-    scrape_vanguard(force_headless, short_timeout_mode)
-    scrape_stash(force_headless, short_timeout_mode)
-    logger.info("--- Scraper Execution Complete ---")
+            File outFile = new File(CLEAN_DIR, target.getName());
+            Files.writeString(outFile.toPath(), finalOutput);
+
+            System.out.println("Ciel Debug: Transcript cleaning successful for " + target.getName() + ". Saved to Cleaned_Transcripts.");
+
+            // Archive the raw file safely instead of deleting it
+            Files.move(target.toPath(), new File(ARCHIVE_DIR, target.getName()).toPath(), StandardCopyOption.REPLACE_EXISTING);
+
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Transcript pipeline failed for " + target.getName() + ": " + e.getMessage());
+        } finally {
+            synchronized (PIPELINE_LOCK) {
+                pipelineInUse = false;
+            }
+        }
+    }
+
+    private static boolean isBadResponse(String response) {
+        if (response == null || response.isBlank()) return true;
+        String lower = response.toLowerCase();
+        return lower.contains("timeout") || lower.contains("[error") || lower.contains("[system_error]");
+    }
+
+    private static List<String> splitIntoChunks(String text, int maxLen) {
+        List<String> chunks = new ArrayList<>();
+        int start = 0;
+        while (start < text.length()) {
+            int end = Math.min(start + maxLen, text.length());
+            if (end < text.length()) {
+                int lastSpace = Math.max(text.lastIndexOf(' ', end), text.lastIndexOf('\n', end));
+                if (lastSpace > start) end = lastSpace;
+            }
+            chunks.add(text.substring(start, end).trim());
+            start = end;
+            while (start < text.length() && (text.charAt(start) == ' ' || text.charAt(start) == '\n' || text.charAt(start) == '\r'))
+                start++;
+        }
+        return chunks;
+    }
+
+    private static List<File> findTextFiles(File directory, List<File> files) {
+        File[] fList = directory.listFiles();
+        if (fList != null) {
+            for (File file : fList) {
+                if (file.isFile() && (file.getName().endsWith(".txt") || file.getName().endsWith(".md"))) {
+                    files.add(file);
+                } else if (file.isDirectory()) {
+                    findTextFiles(file, files);
+                }
+            }
+        }
+        return files;
+    }
+}
