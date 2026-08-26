@@ -46,7 +46,7 @@ import java.util.stream.Collectors;
 public class SpeechService {
 
     /* ------------------------------------------------------------------ */
-    /*  Thread-pools & state tracking                                      */
+    /*  Thread-pools & state tracking                                     */
     /* ------------------------------------------------------------------ */
     private static final ExecutorService speechExecutor = Executors.newSingleThreadExecutor();
     private static volatile Future<?> sequentialSpeechTask = null;

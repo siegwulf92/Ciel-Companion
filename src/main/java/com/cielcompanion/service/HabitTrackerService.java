@@ -21,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -65,7 +66,6 @@ public class HabitTrackerService {
     private static String cachedDomText = "";
     private static String lastTripwireTitle = "";
     private static String lastTripwirePlatform = "";
-    private static String lastLoggedDom = "";
     private static int consecutiveDomFailures = 0;
     
     private static String cachedStreamLink = null;
@@ -74,11 +74,12 @@ public class HabitTrackerService {
     private static int cachedCurrentTimeSec = -1;
 
     private static long stremioNextDeepScrapeTime = 0;
+    
+    private static long lastExceptionLogTime = 0;
+    private static String lastExceptionMessage = "";
 
     private static final LinkedList<String> recentMediaHistory = new LinkedList<>();
     private static int currentBingeCount = 0;
-    
-    private static String deferredIntenseMediaTitle = null;
     
     private static String activeSeriesName = "";
     private static String activeSeriesDom = "";
@@ -87,13 +88,7 @@ public class HabitTrackerService {
     private static String currentEpisodeHash = "";
     private static boolean hasAcquiredEpisodeMetadata = false;
 
-    private static final Map<String, Long> precomputeRequestTimes = new ConcurrentHashMap<>();
-
-    private static final AtomicLong lastSwarmSuccess = new AtomicLong(System.currentTimeMillis());
-    private static final AtomicLong lastSwarmFailure = new AtomicLong(0);
-    private static final int SWARM_FAILURE_THRESHOLD_MS = 30000; 
-    private static final int BASE_BACKOFF_MS = 1000;
-    private static final int MAX_BACKOFF_MS = 30000;
+    private static final AtomicBoolean isTripwireActive = new AtomicBoolean(false);
 
     private static String extractFirstMatch(String text, String regex) {
         if (text == null) return null;
@@ -214,143 +209,181 @@ public class HabitTrackerService {
     }
 
     private static void tripwireCheck() {
-        SystemMetrics metrics = SystemMonitor.getSystemMetrics();
-        final String activeTitle = metrics.activeWindowTitle();
-        final String activeProcess = metrics.activeProcessName().toLowerCase();
-        
-        if (activeTitle == null || activeTitle.isBlank() || activeTitle.equals("Program Manager")) {
-            return;
-        }
-        
-        final boolean isStremioProc = activeProcess.contains("stremio");
-        final boolean isStremio = isStremioProc || activeTitle.toLowerCase().contains("stremio");
-        final boolean isMedia = isMediaTitle(activeTitle) || isStremioProc;
-        
-        boolean titleChanged = !activeTitle.equals(lastTripwireTitle);
-        
-        if (isMedia) {
-            if (titleChanged) {
-                consecutiveDomFailures = 0;
-                hasAcquiredEpisodeMetadata = false;
-                cachedDomText = "";
-                cachedActiveUrl = "";
-                cachedStreamLink = null;
-                cachedMagnetLink = null;
-                cachedDurationMinutes = -1;
-                cachedCurrentTimeSec = -1;
+        if (!isTripwireActive.compareAndSet(false, true)) return;
+
+        try {
+            SystemMetrics metrics = SystemMonitor.getSystemMetrics();
+            final String activeTitle = metrics.activeWindowTitle();
+            final String activeProcess = metrics.activeProcessName().toLowerCase();
+            
+            if (activeTitle == null || activeTitle.isBlank() || activeTitle.equals("Program Manager")) {
+                isTripwireActive.set(false);
+                return;
             }
             
-            final boolean isShowPlatform = isMedia;
-            String rawTitlePrefix = activeTitle.split("-")[0].split("\\|")[0].trim();
-            String newSeriesNameTemp = rawTitlePrefix;
+            final boolean isStremioProc = activeProcess.contains("stremio");
+            final boolean isStremio = isStremioProc || activeTitle.toLowerCase().contains("stremio");
+            final boolean isMedia = isMediaTitle(activeTitle) || isStremioProc;
             
-            if (isStremio && activeTitle.contains("-")) {
-                String[] titleParts = activeTitle.split("-");
-                if (titleParts.length > 1) {
-                    newSeriesNameTemp = titleParts[1].trim();
+            boolean titleChanged = !activeTitle.equals(lastTripwireTitle);
+            long now = System.currentTimeMillis();
+            
+            if (isMedia) {
+                if (titleChanged) {
+                    consecutiveDomFailures = 0;
+                    hasAcquiredEpisodeMetadata = false;
+                    cachedDomText = "";
+                    cachedActiveUrl = "";
+                    cachedStreamLink = null;
+                    cachedMagnetLink = null;
+                    cachedDurationMinutes = -1;
+                    cachedCurrentTimeSec = -1;
                 }
-            }
-            newSeriesNameTemp = newSeriesNameTemp.replaceAll("(?i)\\s+(episode|ep|vol|chapter|ch)\\s*\\d+.*", "").trim();
-            if (newSeriesNameTemp.isEmpty()) newSeriesNameTemp = rawTitlePrefix;
-            final String newSeriesName = newSeriesNameTemp;
-            
-            boolean tempIsSameScene = false;
-            if (isShowPlatform && !activeSeriesName.isEmpty() && !newSeriesName.isEmpty()) {
-                String lowerOld = activeSeriesName.toLowerCase();
-                String lowerNew = newSeriesName.toLowerCase();
-
-                if ((lowerOld.contains(lowerNew) && lowerNew.length() >= 5) ||
-                    (lowerNew.contains(lowerOld) && lowerOld.length() >= 5) ||
-                    lowerOld.equals(lowerNew)) {
-                    tempIsSameScene = true;
+                
+                final boolean isShowPlatform = isMedia;
+                String rawTitlePrefix = activeTitle.split("-")[0].split("\\|")[0].trim();
+                String newSeriesNameTemp = rawTitlePrefix;
+                
+                if (isStremio && activeTitle.contains("-")) {
+                    String[] titleParts = activeTitle.split("-");
+                    if (titleParts.length > 1) {
+                        newSeriesNameTemp = titleParts[1].trim();
+                    }
                 }
-            }
-            final boolean isSameScene = tempIsSameScene;
+                newSeriesNameTemp = newSeriesNameTemp.replaceAll("(?i)\\s+(episode|ep|vol|chapter|ch)\\s*\\d+.*", "").trim();
+                if (newSeriesNameTemp.isEmpty()) newSeriesNameTemp = rawTitlePrefix;
+                final String newSeriesName = newSeriesNameTemp;
+                
+                boolean tempIsSameScene = false;
+                if (isShowPlatform && !activeSeriesName.isEmpty() && !newSeriesName.isEmpty()) {
+                    String lowerOld = activeSeriesName.toLowerCase();
+                    String lowerNew = newSeriesName.toLowerCase();
 
-            if (isShowPlatform && !isSameScene) {
-                activeSeriesName = newSeriesName;
-                activeSeriesDom = "";
-                activeSeriesEpisodes.clear();
-            } else if (!isShowPlatform) {
-                activeSeriesName = "";
-                activeSeriesDom = "";
-                activeSeriesEpisodes.clear();
-            }
+                    if ((lowerOld.contains(lowerNew) && lowerNew.length() >= 5) ||
+                        (lowerNew.contains(lowerOld) && lowerOld.length() >= 5) ||
+                        lowerOld.equals(lowerNew)) {
+                        tempIsSameScene = true;
+                    }
+                }
+                final boolean isSameScene = tempIsSameScene;
 
-            final String currentPlatform = extractPlatform(activeTitle, activeProcess);
+                if (isShowPlatform && !isSameScene) {
+                    activeSeriesName = newSeriesName;
+                    activeSeriesDom = "";
+                    activeSeriesEpisodes.clear();
+                } else if (!isShowPlatform) {
+                    activeSeriesName = "";
+                    activeSeriesDom = "";
+                    activeSeriesEpisodes.clear();
+                }
 
-            if (!currentPlatform.equals(lastTripwirePlatform) || !isSameScene) {
-                cachedDomText = "";
-                cachedActiveUrl = "";
-                cachedStreamLink = null;
-                cachedMagnetLink = null;
-            }
-            
-            lastTripwireTitle = activeTitle;
-            lastTripwirePlatform = currentPlatform;
-            final boolean doDeepScrape = !hasAcquiredEpisodeMetadata;
-            
-            CompletableFuture.runAsync(() -> {
-                try {
-                    JsonObject mediaData = getActiveMediaData(activeTitle, currentPlatform, doDeepScrape);
-                    if (mediaData != null) {
-                        
-                        if (mediaData.has("url") && !mediaData.get("url").isJsonNull()) {
-                            cachedActiveUrl = mediaData.get("url").getAsString();
-                        }
-                        
-                        if (mediaData.has("current_time_sec") && !mediaData.get("current_time_sec").isJsonNull()) {
-                            cachedCurrentTimeSec = mediaData.get("current_time_sec").getAsInt();
-                        }
-                        
-                        if (mediaData.has("dom") && !mediaData.get("dom").isJsonNull()) {
-                            String newDom = mediaData.get("dom").getAsString();
+                final String currentPlatform = extractPlatform(activeTitle, activeProcess);
+
+                if (!currentPlatform.equals(lastTripwirePlatform) || !isSameScene) {
+                    cachedDomText = "";
+                    cachedActiveUrl = "";
+                    cachedStreamLink = null;
+                    cachedMagnetLink = null;
+                }
+                
+                lastTripwireTitle = activeTitle;
+                lastTripwirePlatform = currentPlatform;
+                final boolean doDeepScrape = !hasAcquiredEpisodeMetadata && (now >= stremioNextDeepScrapeTime);
+                
+                CompletableFuture.runAsync(() -> {
+                    try {
+                        JsonObject mediaData = getActiveMediaData(activeTitle, currentPlatform, doDeepScrape);
+                        if (mediaData != null) {
                             
-                            if (!"NO_CHANGE".equals(newDom) && newDom.length() > 50) {
-                                cachedDomText = newDom;
-                                
-                                String oldStream = cachedStreamLink;
-                                cachedStreamLink = extractFirstMatch(newDom, "STREAM_LINK:\\s*([^\\s]+)");
-                                cachedMagnetLink = extractFirstMatch(newDom, "MAGNET_LINK:\\s*([^\\s]+)");
-                                
-                                // Auto-Advance Detection: If the stream/magnet link changes natively without the window title changing
-                                if (oldStream != null && cachedStreamLink != null && !oldStream.equals(cachedStreamLink)) {
+                            if (mediaData.has("url") && !mediaData.get("url").isJsonNull()) {
+                                cachedActiveUrl = mediaData.get("url").getAsString();
+                            }
+                            
+                            if (mediaData.has("current_time_sec") && !mediaData.get("current_time_sec").isJsonNull()) {
+                                int newTime = mediaData.get("current_time_sec").getAsInt();
+                                if (cachedCurrentTimeSec > 60 && newTime < cachedCurrentTimeSec - 60) {
                                     hasAcquiredEpisodeMetadata = false; 
+                                    stremioNextDeepScrapeTime = now; 
                                 }
+                                cachedCurrentTimeSec = newTime;
+                            }
+                            
+                            if (mediaData.has("dom") && !mediaData.get("dom").isJsonNull()) {
+                                String newDom = mediaData.get("dom").getAsString();
                                 
-                                if (doDeepScrape) {
-                                    String durMatch = extractFirstMatch(newDom, "DURATION_MINUTES:\\s*(\\d+)");
-                                    if (durMatch != null) {
-                                        try { cachedDurationMinutes = Integer.parseInt(durMatch); } catch (Exception e) {}
+                                if (!"NO_CHANGE".equals(newDom) && newDom.length() > 50) {
+                                    if (doDeepScrape) {
+                                        cachedDomText = newDom;
+                                    } else {
+                                        String[] newDomLines = newDom.split("\n");
+                                        StringBuilder merged = new StringBuilder();
+                                        for (String line : newDomLines) {
+                                            merged.append(line).append("\n");
+                                        }
+                                        if (!newDom.contains("SERIES:")) {
+                                            String series = extractFirstMatch(cachedDomText, "SERIES:\\s*(.+)");
+                                            if (series != null) merged.append("SERIES: ").append(series).append("\n");
+                                        }
+                                        if (!newDom.contains("EPISODE:")) {
+                                            String ep = extractFirstMatch(cachedDomText, "EPISODE:\\s*(.+)");
+                                            if (ep != null) merged.append("EPISODE: ").append(ep).append("\n");
+                                        }
+                                        cachedDomText = merged.toString();
                                     }
                                     
-                                    String extractedSeries = extractFirstMatch(newDom, "SERIES:\\s*(.+)");
-                                    String extractedEp = extractFirstMatch(newDom, "EPISODE:\\s*(.+)");
+                                    String oldStream = cachedStreamLink;
+                                    cachedStreamLink = extractFirstMatch(newDom, "STREAM_LINK:\\s*([^\\s]+)");
+                                    cachedMagnetLink = extractFirstMatch(newDom, "MAGNET_LINK:\\s*([^\\s]+)");
                                     
-                                    if (extractedSeries != null && extractedEp != null && !extractedSeries.contains("Unknown")) {
-                                        hasAcquiredEpisodeMetadata = true;
-                                        String hash = extractedSeries.trim() + "_" + extractedEp.trim();
+                                    if (oldStream != null && cachedStreamLink != null && !oldStream.equals(cachedStreamLink)) {
+                                        hasAcquiredEpisodeMetadata = false; 
+                                    }
+                                    
+                                    if (doDeepScrape) {
+                                        String durMatch = extractFirstMatch(newDom, "DURATION_MINUTES:\\s*(\\d+)");
+                                        if (durMatch != null) {
+                                            try { cachedDurationMinutes = Integer.parseInt(durMatch); } catch (Exception e) {}
+                                        }
                                         
-                                        if (!hash.equals(currentEpisodeHash)) {
-                                            currentEpisodeHash = hash;
-                                            System.out.println("[HabitTracker] Detected New Episode: " + currentEpisodeHash);
-                                            if (cachedCurrentTimeSec > 0) {
-                                                String cleanTitle = extractedSeries.trim() + " - " + extractedEp.trim();
-                                                episodeExposureMinutes.put(cleanTitle, cachedCurrentTimeSec / 60);
-                                                System.out.println("[HabitTracker] Syncing internal timer to extracted DOM timecode: " + (cachedCurrentTimeSec / 60) + " mins.");
+                                        String extractedSeries = extractFirstMatch(newDom, "SERIES:\\s*(.+)");
+                                        String extractedEp = extractFirstMatch(newDom, "EPISODE:\\s*(.+)");
+                                        
+                                        if (extractedSeries != null && extractedEp != null && !extractedSeries.contains("Unknown")) {
+                                            hasAcquiredEpisodeMetadata = true;
+                                            String hash = extractedSeries.trim() + "_" + extractedEp.trim();
+                                            
+                                            if (!hash.equals(currentEpisodeHash)) {
+                                                currentEpisodeHash = hash;
+                                                System.out.println("[HabitTracker] Detected New Episode: " + currentEpisodeHash);
+                                                if (cachedCurrentTimeSec > 0) {
+                                                    String cleanTitle = extractedSeries.trim() + " - " + extractedEp.trim();
+                                                    episodeExposureMinutes.put(cleanTitle, cachedCurrentTimeSec / 60);
+                                                }
                                             }
+                                            stremioNextDeepScrapeTime = now + (15 * 60 * 1000L);
+                                        } else {
+                                            stremioNextDeepScrapeTime = now + (60 * 1000L);
                                         }
                                     }
                                 }
                             }
+                        } else {
+                            consecutiveDomFailures++;
                         }
-                    } else {
-                        consecutiveDomFailures++;
+                    } catch (Exception e) {
+                        // ignore
+                    } finally {
+                        isTripwireActive.set(false);
                     }
-                } catch (Exception e) {}
-            });
-        } else if (!isMedia && !lastTripwireTitle.isEmpty()) {
-            lastTripwireTitle = ""; 
+                });
+            } else if (!isMedia && !lastTripwireTitle.isEmpty()) {
+                lastTripwireTitle = ""; 
+                isTripwireActive.set(false);
+            } else {
+                isTripwireActive.set(false);
+            }
+        } catch (Exception e) {
+            isTripwireActive.set(false);
         }
     }
 
@@ -376,23 +409,6 @@ public class HabitTrackerService {
     
     private static JsonObject getActiveMediaData(String activeTitle, String platform, boolean deepScrape) {
         long now = System.currentTimeMillis();
-        long timeSinceLastSuccess = now - lastSwarmSuccess.get();
-        long timeSinceLastFailure = now - lastSwarmFailure.get();
-        
-        if (timeSinceLastFailure < SWARM_FAILURE_THRESHOLD_MS && 
-            timeSinceLastSuccess < timeSinceLastFailure) {
-            return getLocalFallbackMediaData(activeTitle, platform);
-        }
-        
-        long backoff = 0;
-        if (timeSinceLastFailure < SWARM_FAILURE_THRESHOLD_MS) {
-            int failures = Math.min(5, (int)((SWARM_FAILURE_THRESHOLD_MS - timeSinceLastFailure) / BASE_BACKOFF_MS));
-            backoff = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * (1L << failures));
-            
-            if (timeSinceLastSuccess < backoff) {
-                return getLocalFallbackMediaData(activeTitle, platform);
-            }
-        }
         
         try {
             String cleanTitleForPython = activeTitle.replaceAll("^\\(\\d+\\)\\s*", "").trim();
@@ -401,18 +417,28 @@ public class HabitTrackerService {
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(3000);
-            conn.setReadTimeout(15000); 
+            
+            if (deepScrape) {
+                conn.setReadTimeout(120000); 
+            } else {
+                conn.setReadTimeout(3000);   
+            }
             
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
-                lastSwarmSuccess.set(now);
                 return JsonParser.parseReader(new InputStreamReader(conn.getInputStream(), "UTF-8")).getAsJsonObject();
             } else {
-                lastSwarmFailure.set(now);
                 return getLocalFallbackMediaData(activeTitle, platform);
             }
         } catch (Exception e) {
-            lastSwarmFailure.set(now);
+            String exceptionMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            
+            if (!exceptionMsg.equals(lastExceptionMessage) || (now - lastExceptionLogTime) > 300000) {
+                System.out.println("[HabitTracker] Scraper API Exception: " + exceptionMsg + " (Suppressing further errors for 5 mins)");
+                lastExceptionMessage = exceptionMsg;
+                lastExceptionLogTime = now;
+            }
+            
             return getLocalFallbackMediaData(activeTitle, platform);
         }
     }
@@ -455,16 +481,6 @@ public class HabitTrackerService {
         SpeechService.speakPreformatted(text, null, false, true); 
     }
 
-    private static String cleanMediaTitle(String rawTitle) {
-        if (rawTitle == null) return "";
-        String cleaned = rawTitle.replaceAll("(?i)\\s*-\\s*(watch on crunchyroll|crunchyroll|youtube|twitch|netflix|hulu|prime video|disney\\+|max|peacock|paramount\\+|apple tv|viz|hidive|google chrome|mozilla firefox|microsoft edge|brave|opera).*", "")
-                               .replaceAll("(?i)^Watch\\s+", "")
-                               .replaceAll("^\\(\\d+\\)\\s*", "")
-                               .replaceAll("(?i)stremio\\s*-\\s*", "")
-                               .trim();
-        return cleaned;
-    }
-    
     private static String extractGameName(String title, String process) {
         if (title == null || title.isBlank()) return process;
         
@@ -536,7 +552,6 @@ public class HabitTrackerService {
             recentMediaHistory.clear();
             mediaThresholds.clear();
             currentBingeCount = 0;
-            deferredIntenseMediaTitle = null;
             currentDate = LocalDate.now();
             proactiveTriggeredToday = false; 
             activeSeriesName = "";
@@ -589,8 +604,7 @@ public class HabitTrackerService {
                     AIEngine.generateSilentLogicWithModel(pausePrompt, "Game Pausability Check", CielTools.getBackgroundModel(), 0.1, "Activity Classification").thenAccept(resStr -> {
                         if (resStr != null && !resStr.isBlank()) {
                             try {
-                                String cleanJson = resStr.replace("`" + "`" + "`json", "").replace("`" + "`" + "`", "").trim();
-                                JsonObject res = JsonParser.parseString(cleanJson).getAsJsonObject();
+                                JsonObject res = JsonParser.parseString(resStr.replace("`" + "`" + "`json", "").replace("`" + "`" + "`", "").trim()).getAsJsonObject();
                                 boolean canPause = res.has("pausable") && res.get("pausable").getAsBoolean();
                                 MemoryService.addFact(new Fact(memKey, String.valueOf(canPause), System.currentTimeMillis(), "game_knowledge", "system", 1));
                             } catch (Exception e) {}
@@ -618,13 +632,13 @@ public class HabitTrackerService {
                 }
 
                 if (!currentEpisodeHash.isEmpty() && !loggedMediaToday.contains(currentEpisodeHash) && hasAcquiredEpisodeMetadata) {
-                    int thresholdMin = (cachedDurationMinutes >= 40) ? 15 : 5;
+                    int thresholdMin = (cachedDurationMinutes >= 38 || cachedDurationMinutes <= 0) ? 15 : 5;
                     int thresholdSec = thresholdMin * 60;
                     
                     boolean hasSufficientExposure = (exposure >= thresholdMin) || (cachedCurrentTimeSec >= thresholdSec);
                     
                     if (hasSufficientExposure) {
-                        triggerJavaMediaCommentary(currentMediaTitle, activeTitle, cachedActiveUrl, cachedDomText, currentEpisodeHash);
+                        triggerSequentialMediaCommentary(currentMediaTitle, activeTitle, cachedActiveUrl, cachedDomText, currentEpisodeHash);
                     }
                 }
                 updateSeriesIfHigher(series, ep);
@@ -652,8 +666,7 @@ public class HabitTrackerService {
                     AIEngine.generateSilentLogicWithModel(prompt, "You are a PC activity classifier.", CielTools.getBackgroundModel(), 0.1, "Background Evaluation").thenAccept(resStr -> {
                         try {
                             if (resStr != null && !resStr.isBlank()) {
-                                String cleanJson = resStr.replace("`" + "`" + "`json", "").replace("`" + "`" + "`", "").trim();
-                                JsonObject res = JsonParser.parseString(cleanJson).getAsJsonObject();
+                                JsonObject res = JsonParser.parseString(resStr.replace("`" + "`" + "`json", "").replace("`" + "`" + "`", "").trim()).getAsJsonObject();
                                 if (res.has("category") && !res.get("category").isJsonNull()) {
                                     String cat = res.get("category").getAsString();
                                     if (cat.equals("Gaming") || cat.equals("Media") || cat.equals("Productivity")) {
@@ -728,7 +741,7 @@ public class HabitTrackerService {
         });
     }
     
-    private static void triggerJavaMediaCommentary(String cleanTitle, String fullWindowTitle, String activeUrl, String datText, String hashToLog) {
+    private static void triggerSequentialMediaCommentary(String cleanTitle, String fullWindowTitle, String activeUrl, String datText, String hashToLog) {
         System.out.println("[HabitTracker] Threshold met for " + cleanTitle + ". Requesting synchronous commentary from Swarm...");
         loggedMediaToday.add(hashToLog); 
         
@@ -747,9 +760,13 @@ public class HabitTrackerService {
             if (response == null || response.isBlank() || response.contains("ABORT") || response.contains("DATA_DEFICIT")) {
                 System.out.println("[HabitTracker] DATA_DEFICIT: Missing plot info for '" + cleanTitle + "'. Aborting dialogue to save API/TTS.");
             } else {
-                System.out.println("[HabitTracker] Commentary generated. Sending to Katakana transliterator: " + response);
-                String katakana = AIEngine.transliterateToKatakanaSync(response);
-                SpeechService.speakPreformatted(katakana, "media_commentary", false, false);
+                System.out.println("[HabitTracker] Commentary generated. Passing English to SpeechService to trigger visual Thinking State.");
+                recentMediaHistory.add(cleanTitle);
+                currentBingeCount++;
+                if (recentMediaHistory.size() > 5) recentMediaHistory.removeFirst();
+                
+                // Triggers GUI THINKING -> Converts to Katakana -> Speaks
+                SpeechService.speakPreformatted(response, "media_commentary", false, false);
             }
         });
     }

@@ -40,7 +40,7 @@ public class AIEngine {
     private static final ExecutorService translationExecutor = Executors.newSingleThreadExecutor();
 
     private static final Pattern EMOTION_TAG_PATTERN = Pattern.compile("\\[([a-zA-Z]+)\\]");
-    private static final Pattern THINK_TAG_PATTERN = Pattern.compile("(?s)}\\s*");
+    private static final Pattern THINK_TAG_PATTERN = Pattern.compile("(?s)<think>.*?</think>\\s*");
     private static final Pattern ALPHA_NUM_PATTERN = Pattern.compile("[a-zA-Z0-9]");
     private static final Pattern ALPHA_PATTERN = Pattern.compile("[a-zA-Z]");
 
@@ -76,48 +76,6 @@ public class AIEngine {
                 httpClient.send(request, HttpResponse.BodyHandlers.discarding());
             } catch (Exception e) {}
         });
-    }
-    
-    // NEW: Fire-and-forget pre-computation trigger
-    public static void requestMediaPrecompute(JsonObject payload) {
-        CompletableFuture.runAsync(() -> {
-            try {
-                String url = "http://localhost:8000/precompute_media_commentary";
-                HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("Content-Type", "application/json")
-                    .timeout(Duration.ofSeconds(3))
-                    .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
-                    .build();
-                httpClient.send(request, HttpResponse.BodyHandlers.discarding());
-            } catch (Exception e) {}
-        });
-    }
-
-    // NEW: Retrieve the raw JSON string perfectly without double-parsing
-    public static String getPrecomputedMediaCommentary(String targetId) {
-        try {
-            String encodedId = java.net.URLEncoder.encode(targetId, "UTF-8");
-            URL url = new URL("http://127.0.0.1:8000/get_pending_media_commentary?target_id=" + encodedId);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setConnectTimeout(500); 
-            conn.setReadTimeout(500);
-            int rc = conn.getResponseCode();
-            if (rc == 200) {
-                BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-                String jsonStr = in.lines().collect(java.util.stream.Collectors.joining());
-                in.close();
-            
-                JsonObject json = JsonParser.parseString(jsonStr).getAsJsonObject();
-                // FastAPI returns {"commentary": {"target_id": "...", "commentary": "...", "katakana": "..."}}
-                if (json.has("commentary") && !json.get("commentary").isJsonNull()) {
-                    // Extract the inner JSON and pass the raw string back to HabitTracker
-                    return json.get("commentary").getAsJsonObject().toString(); 
-                }
-            }
-        } catch (Exception e) {}
-        return "";
     }
 
     public static int getActiveTaskCount() {
@@ -167,7 +125,7 @@ public class AIEngine {
 
     public static String transliterateToKatakanaSync(String englishText) {
         try {
-            return transliterateAsync(englishText).get(120, TimeUnit.SECONDS); 
+            return transliterateAsync(englishText).get(150, TimeUnit.SECONDS); 
         } catch (Exception e) {
             return englishText; 
         }
@@ -186,7 +144,7 @@ public class AIEngine {
                     HttpRequest request = HttpRequest.newBuilder()
                             .uri(URI.create(url))
                             .header("Content-Type", "application/json")
-                            .timeout(Duration.ofSeconds(120)) 
+                            .timeout(Duration.ofMinutes(15)) 
                             .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                             .build();
 
@@ -239,7 +197,7 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofMinutes(2)) 
+                .timeout(Duration.ofMinutes(30)) 
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
