@@ -144,7 +144,7 @@ public class AIEngine {
                     HttpRequest request = HttpRequest.newBuilder()
                             .uri(URI.create(url))
                             .header("Content-Type", "application/json")
-                            .timeout(Duration.ofMinutes(15)) 
+                            .timeout(Duration.ofSeconds(150))
                             .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                             .build();
 
@@ -197,7 +197,7 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofMinutes(30)) 
+                .timeout(Duration.ofMinutes(45)) 
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -248,7 +248,7 @@ public class AIEngine {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
-                    .timeout(Duration.ofHours(1))
+                    .timeout(Duration.ofSeconds(15)) 
                     .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                     .build();
 
@@ -258,7 +258,7 @@ public class AIEngine {
                 return rawContent != null ? THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim() : null;
             }
         } catch (Exception e) {
-            System.err.println("Ciel Error: Synchronous diary generation failed or timed out.");
+            System.err.println("Ciel Error: Synchronous diary generation skipped. Swarm is busy, proceeding with shutdown.");
         } finally {
             activeSwarmTasks.decrementAndGet();
         }

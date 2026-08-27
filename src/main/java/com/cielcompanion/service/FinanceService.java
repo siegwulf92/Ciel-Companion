@@ -96,27 +96,38 @@ public class FinanceService {
 
             String recoPrompt = "[FINANCE_RECOMMENDATIONS] Generate stock recommendations.";
 
-            boolean swarmSuccess = false;
             try {
-                // Ensure Java doesn't timeout before the Swarm does
+                // STEP 1: Process Portfolio FIRST so local CSVs are updated with new prices/splits
                 String portfolioResult = AIEngine.generateSilentLogic("[FINANCE_PORTFOLIO_UPDATE]", portfolioPrompt).join();
-                String marketResult = AIEngine.generateSilentLogic("[FINANCE_MARKET_SCAN]", marketPrompt).join();
-                String recoResult = AIEngine.generateSilentLogic("[FINANCE_RECOMMENDATIONS]", recoPrompt).join();
-
-                if (portfolioResult != null && marketResult != null) {
-                    latestPortfolioSummary = portfolioResult;
-                    latestMarketScan = marketResult;
-                    writeFiles(recoResult);
-                    swarmSuccess = true;
+                if (portfolioResult == null || portfolioResult.isBlank()) {
+                    System.err.println("Ciel Error: Portfolio update timed out or failed. Aborting sequence to prevent using stale data.");
+                    return;
                 }
-            } catch (Exception e) {
-                System.err.println("Ciel Error: Swarm Financial analysis failed or timed out.");
-            }
+                latestPortfolioSummary = portfolioResult;
 
-            if (swarmSuccess) {
+                // STEP 2: Process Market Scan
+                String marketResult = AIEngine.generateSilentLogic("[FINANCE_MARKET_SCAN]", marketPrompt).join();
+                if (marketResult == null || marketResult.isBlank()) {
+                    System.err.println("Ciel Error: Market scan timed out or failed. Aborting sequence.");
+                    return;
+                }
+                latestMarketScan = marketResult;
+
+                // STEP 3: Generate Recommendations based on the newly updated CSVs and Market Scan
+                String recoResult = AIEngine.generateSilentLogic("[FINANCE_RECOMMENDATIONS]", recoPrompt).join();
+                if (recoResult == null || recoResult.isBlank()) {
+                    System.err.println("Ciel Error: Recommendations engine timed out or failed. Aborting sequence.");
+                    return;
+                }
+
+                // STEP 4: Save everything
+                writeFiles(recoResult);
                 localSyncTimeMs = System.currentTimeMillis();
                 saveTimestamp(SYNC_FILE, localSyncTimeMs);
                 System.out.println("Ciel Debug: Background finance analysis complete. Success flag updated.");
+
+            } catch (Exception e) {
+                System.err.println("Ciel Error: Swarm Financial analysis encountered an exception: " + e.getMessage());
             }
         });
     }

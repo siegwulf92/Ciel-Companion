@@ -223,7 +223,14 @@ public class HabitTrackerService {
             
             final boolean isStremioProc = activeProcess.contains("stremio");
             final boolean isStremio = isStremioProc || activeTitle.toLowerCase().contains("stremio");
+            
             final boolean isMedia = isMediaTitle(activeTitle) || isStremioProc;
+            
+            // ANTI-LOCK: If Ciel is actively generating a thought/speaking about the show, DO NOT fire another scrape request
+            if (com.cielcompanion.service.SpeechService.isActivelySpeaking() || CielState.isLockedOut()) {
+                isTripwireActive.set(false);
+                return;
+            }
             
             boolean titleChanged = !activeTitle.equals(lastTripwireTitle);
             long now = System.currentTimeMillis();
@@ -315,6 +322,7 @@ public class HabitTrackerService {
                                     if (doDeepScrape) {
                                         cachedDomText = newDom;
                                     } else {
+                                        // Update shallow details but preserve series/episode lines from the previous deep scrape
                                         String[] newDomLines = newDom.split("\n");
                                         StringBuilder merged = new StringBuilder();
                                         for (String line : newDomLines) {
@@ -419,7 +427,7 @@ public class HabitTrackerService {
             conn.setConnectTimeout(3000);
             
             if (deepScrape) {
-                conn.setReadTimeout(120000); 
+                conn.setReadTimeout(300000); // 5 Minutes to allow Swarm Consensus to finish without dropping
             } else {
                 conn.setReadTimeout(3000);   
             }
