@@ -19,7 +19,7 @@
         <!-- Hardcoded Stable BOMs to prevent Azure SDK Collapse -->
         <netty.version>4.2.17.Final</netty.version>
         <reactor.version>2025.0.6</reactor.version>
-        <jackson.version>2.22.0</jackson.version>
+        <jackson.version>2.22.1</jackson.version>
         <jsoup.version>1.23.1</jsoup.version>
     </properties>
 
