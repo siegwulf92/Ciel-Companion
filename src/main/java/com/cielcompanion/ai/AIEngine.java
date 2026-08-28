@@ -125,6 +125,7 @@ public class AIEngine {
 
     public static String transliterateToKatakanaSync(String englishText) {
         try {
+            // Allows Python to retry internally up to 150s max before Java hard-fails to English.
             return transliterateAsync(englishText).get(150, TimeUnit.SECONDS); 
         } catch (Exception e) {
             return englishText; 
@@ -144,7 +145,7 @@ public class AIEngine {
                     HttpRequest request = HttpRequest.newBuilder()
                             .uri(URI.create(url))
                             .header("Content-Type", "application/json")
-                            .timeout(Duration.ofSeconds(150))
+                            .timeout(Duration.ofSeconds(150)) // Reduced to 150 seconds per attempt
                             .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                             .build();
 
@@ -197,7 +198,7 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofMinutes(45)) 
+                .timeout(Duration.ofMinutes(45)) // Global wait limit set to 45 minutes for massive offline tasks
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -248,6 +249,7 @@ public class AIEngine {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
+                    // CRITICAL FIX: Extremely fast 15-second timeout for UI interaction tracking so it doesn't freeze the system shutdown
                     .timeout(Duration.ofSeconds(15)) 
                     .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                     .build();
@@ -258,7 +260,7 @@ public class AIEngine {
                 return rawContent != null ? THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim() : null;
             }
         } catch (Exception e) {
-            System.err.println("Ciel Error: Synchronous diary generation skipped. Swarm is busy, proceeding with shutdown.");
+            System.err.println("Ciel Error: Swarm is busy, skipping synchronous diary generation.");
         } finally {
             activeSwarmTasks.decrementAndGet();
         }

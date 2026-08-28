@@ -224,10 +224,11 @@ public class HabitTrackerService {
             final boolean isStremioProc = activeProcess.contains("stremio");
             final boolean isStremio = isStremioProc || activeTitle.toLowerCase().contains("stremio");
             
-            final boolean isMedia = isMediaTitle(activeTitle) || isStremioProc;
+            // FIX: Enforce that Stremio MUST be the active foreground process to be considered Media.
+            final boolean isMedia = (isMediaTitle(activeTitle) && !activeProcess.contains("chrome") && !activeProcess.contains("edge") && !activeProcess.contains("firefox")) || isStremioProc;
             
-            // ANTI-LOCK: If Ciel is actively generating a thought/speaking about the show, DO NOT fire another scrape request
-            if (com.cielcompanion.service.SpeechService.isActivelySpeaking() || CielState.isLockedOut()) {
+            // IF SpeechService is actively outputting, suppress new media DOM walks to prevent API loop collisions
+            if (com.cielcompanion.service.SpeechService.isActivelySpeaking()) {
                 isTripwireActive.set(false);
                 return;
             }
@@ -426,8 +427,9 @@ public class HabitTrackerService {
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(3000);
             
+            // CRITICAL FIX: Limit Java HTTP read timeout so it never locks up the executor thread pool!
             if (deepScrape) {
-                conn.setReadTimeout(300000); // 5 Minutes to allow Swarm Consensus to finish without dropping
+                conn.setReadTimeout(10000); 
             } else {
                 conn.setReadTimeout(3000);   
             }

@@ -97,37 +97,26 @@ public class FinanceService {
             String recoPrompt = "[FINANCE_RECOMMENDATIONS] Generate stock recommendations.";
 
             try {
-                // STEP 1: Process Portfolio FIRST so local CSVs are updated with new prices/splits
-                String portfolioResult = AIEngine.generateSilentLogic("[FINANCE_PORTFOLIO_UPDATE]", portfolioPrompt).join();
-                if (portfolioResult == null || portfolioResult.isBlank()) {
-                    System.err.println("Ciel Error: Portfolio update timed out or failed. Aborting sequence to prevent using stale data.");
-                    return;
-                }
+                // SEQUENTIAL EXECUTION: Ensures data integrity and prevents CSV file locks
+                String portfolioResult = AIEngine.generateSilentLogic("[FINANCE_PORTFOLIO_UPDATE]", portfolioPrompt).get(15, TimeUnit.MINUTES);
+                if (portfolioResult == null) throw new RuntimeException("Portfolio Update timed out or failed.");
                 latestPortfolioSummary = portfolioResult;
 
-                // STEP 2: Process Market Scan
-                String marketResult = AIEngine.generateSilentLogic("[FINANCE_MARKET_SCAN]", marketPrompt).join();
-                if (marketResult == null || marketResult.isBlank()) {
-                    System.err.println("Ciel Error: Market scan timed out or failed. Aborting sequence.");
-                    return;
-                }
+                String marketResult = AIEngine.generateSilentLogic("[FINANCE_MARKET_SCAN]", marketPrompt).get(15, TimeUnit.MINUTES);
+                if (marketResult == null) throw new RuntimeException("Market Scan timed out or failed.");
                 latestMarketScan = marketResult;
 
-                // STEP 3: Generate Recommendations based on the newly updated CSVs and Market Scan
-                String recoResult = AIEngine.generateSilentLogic("[FINANCE_RECOMMENDATIONS]", recoPrompt).join();
-                if (recoResult == null || recoResult.isBlank()) {
-                    System.err.println("Ciel Error: Recommendations engine timed out or failed. Aborting sequence.");
-                    return;
-                }
-
-                // STEP 4: Save everything
+                String recoResult = AIEngine.generateSilentLogic("[FINANCE_RECOMMENDATIONS]", recoPrompt).get(15, TimeUnit.MINUTES);
+                if (recoResult == null) throw new RuntimeException("Recommendations processing timed out or failed.");
+                
                 writeFiles(recoResult);
+                
                 localSyncTimeMs = System.currentTimeMillis();
                 saveTimestamp(SYNC_FILE, localSyncTimeMs);
                 System.out.println("Ciel Debug: Background finance analysis complete. Success flag updated.");
-
+                
             } catch (Exception e) {
-                System.err.println("Ciel Error: Swarm Financial analysis encountered an exception: " + e.getMessage());
+                System.err.println("Ciel Error: Swarm Financial analysis failed sequentially: " + e.getMessage());
             }
         });
     }

@@ -13,6 +13,7 @@ import java.nio.file.Paths;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class SkillCrafterService {
@@ -90,7 +91,13 @@ public class SkillCrafterService {
                         promptForPython += "\n\nWARNING: Previous attempts failed. Please read the failure log and adjust your approach. If you timed out, write a simpler/shorter script. If you failed safety, remove destructive commands. If you missed code blocks, ensure you use markdown fences.\nFailure Log:\n" + previousFailures;
                     }
 
-                    String swarmResponse = AIEngine.generateDiaryEntrySync(promptForPython, "You are the Ciel Interface. Pass the Swarm's output to the user.");
+                    // CRITICAL FIX: Use generateSilentLogic with a 15-minute timeout. Do NOT use generateDiaryEntrySync.
+                    String swarmResponse = null;
+                    try {
+                        swarmResponse = AIEngine.generateSilentLogic(promptForPython, "You are the Ciel Interface. Pass the Swarm's output to the user.").get(15, TimeUnit.MINUTES);
+                    } catch (Exception e) {
+                        System.err.println("Ciel Error: Skill synthesis future timed out or interrupted.");
+                    }
                     
                     if (swarmResponse == null) {
                         previousFailures += "- Attempt " + attempt + " TIMED OUT (Exceeded 15 minutes). You took too long. Please write a simpler, more concise script and avoid over-engineering.\n";
@@ -129,14 +136,12 @@ public class SkillCrafterService {
                 finalName = nameMatcher.group(1).trim();
             }
 
-            // CRITICAL FIX: The regex now catches ANY markdown code block, even if the LLM forgets the language tag
             Pattern pattern = Pattern.compile("```(?:bat|batch|python|py|cmd|powershell|ps1|markdown|md|java)?\\s*(.*?)\\s*```", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
             Matcher matcher = pattern.matcher(swarmOutput);
             
             if (matcher.find()) {
                 String code = matcher.group(1).trim();
                 
-                // Fallback logic to detect language if the LLM forgot the tag
                 String lang = "powershell";
                 if (swarmOutput.toLowerCase().contains("```python") || swarmOutput.toLowerCase().contains("```py") || code.contains("def execute")) {
                     lang = "python";
@@ -146,7 +151,6 @@ public class SkillCrafterService {
                     lang = "bat";
                 }
                 
-                // --- CRITICAL SANDBOX PURGE FOR PYTHON ---
                 if (lang.equals("python")) {
                     code = purgeArgparse(code);
                     code = purgeGlobalLoops(code);
@@ -236,8 +240,6 @@ public class SkillCrafterService {
     // --- SANITIZATION METHODS ---
     
     private static String purgeArgparse(String code) {
-        // RUTHLESS PURGE: Delete ANY line that contains the word "argparse" or "sys.argv" regardless of syntax.
-        // This ensures absolutely no clever imports or aliases survive the filter.
         String cleaned = code.replaceAll("(?m)^.*\\bargparse\\b.*\\n?", "");
         cleaned = cleaned.replaceAll("(?m)^.*\\bparse_args\\b.*\\n?", "");
         cleaned = cleaned.replaceAll("(?m)^.*\\bsys\\.argv\\b.*\\n?", "");
@@ -245,8 +247,6 @@ public class SkillCrafterService {
     }
     
     private static String purgeGlobalLoops(String code) {
-        // If the AI puts `while True:` flush against the left margin (global scope), it will hang OpenJarvis on import.
-        // We will comment it out. Inside functions (indented) is fine.
         return code.replaceAll("(?m)^while\\s+True\\s*:", "# BLOCKED GLOBAL INFINITE LOOP: while True:");
     }
 }
