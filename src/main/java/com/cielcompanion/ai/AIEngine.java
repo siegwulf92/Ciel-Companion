@@ -206,7 +206,11 @@ public class AIEngine {
                 .thenApply(response -> {
                     if (response.statusCode() == 200) {
                         String rawContent = ModelManager.extractMessageContent(response.body());
-                        return rawContent != null ? THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim() : null;
+                        if (rawContent != null) {
+                            String cleanContent = THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim();
+                            // FIX: If the regex deletes the entire response (because the LLM wrapped the whole thing in <think>), return raw
+                            return cleanContent.isEmpty() ? rawContent.trim() : cleanContent;
+                        }
                     }
                     return null;
                 })

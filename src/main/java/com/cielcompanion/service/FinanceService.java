@@ -83,6 +83,9 @@ public class FinanceService {
         CompletableFuture.runAsync(() -> {
             System.out.println("Ciel Debug: Commanding Swarm to execute silent background market and portfolio analysis from local CSVs...");
             
+            String marketPrompt = "Perform a macro-economic scan of the S&P 500 and VIX. " +
+                    "Correlate VIX fear levels with growth opportunities for a 33-year-old investor. Provide a 'Market Threat Level' (Low, Elevated, High, Critical).";
+
             String portfolioPrompt = "You are Ciel, Master Taylor's elite financial advisor. Master Taylor's DOB is 12/30/1992 (currently 33 years old), and his ultimate goal is aggressive growth and early retirement. " +
                     "Analyze the provided portfolio spreadsheet and local account CSVs. " +
                     "CRITICAL CONTEXT: The accounts labeled 'taxable' and 'smart' (which hold assets like MINT, TFLO, bonds, or dividend ETFs) function as his liquid Emergency Fund and cash reserves. " +
@@ -91,21 +94,20 @@ public class FinanceService {
                     "RULE 3 - ROTH IRA ALGORITHMS: Focus your 'Buy the Dip' and massive growth allocations STRICTLY on his tax-advantaged 'Roth' account. " +
                     "CRITICAL: You MUST include a 'TL;DR' section at the very end summarizing everything in simple, plain English.";
 
-            String marketPrompt = "Perform a macro-economic scan of the S&P 500 and VIX. " +
-                    "Correlate VIX fear levels with growth opportunities for a 33-year-old investor. Provide a 'Market Threat Level' (Low, Elevated, High, Critical).";
-
             String recoPrompt = "[FINANCE_RECOMMENDATIONS] Generate stock recommendations.";
 
             try {
-                // SEQUENTIAL EXECUTION: Ensures data integrity and prevents CSV file locks
-                String portfolioResult = AIEngine.generateSilentLogic("[FINANCE_PORTFOLIO_UPDATE]", portfolioPrompt).get(15, TimeUnit.MINUTES);
-                if (portfolioResult == null) throw new RuntimeException("Portfolio Update timed out or failed.");
-                latestPortfolioSummary = portfolioResult;
-
+                System.out.println("Ciel Debug: Step 1/3 - Executing Market Scan...");
                 String marketResult = AIEngine.generateSilentLogic("[FINANCE_MARKET_SCAN]", marketPrompt).get(15, TimeUnit.MINUTES);
                 if (marketResult == null) throw new RuntimeException("Market Scan timed out or failed.");
                 latestMarketScan = marketResult;
 
+                System.out.println("Ciel Debug: Step 2/3 - Executing Portfolio Update...");
+                String portfolioResult = AIEngine.generateSilentLogic("[FINANCE_PORTFOLIO_UPDATE]", portfolioPrompt).get(15, TimeUnit.MINUTES);
+                if (portfolioResult == null) throw new RuntimeException("Portfolio Update timed out or failed.");
+                latestPortfolioSummary = portfolioResult;
+
+                System.out.println("Ciel Debug: Step 3/3 - Executing Strategic Recommendations...");
                 String recoResult = AIEngine.generateSilentLogic("[FINANCE_RECOMMENDATIONS]", recoPrompt).get(15, TimeUnit.MINUTES);
                 if (recoResult == null) throw new RuntimeException("Recommendations processing timed out or failed.");
                 
