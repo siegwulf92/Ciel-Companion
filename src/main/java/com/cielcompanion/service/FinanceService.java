@@ -148,25 +148,23 @@ public class FinanceService {
         return close;
     }
 
-    private static void writeFiles(String recoCsv) {
+    private static void writeFiles(String recoResult) {
         try {
             String dateStr = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+            
+            // Re-assembly of the exact structure requested by the user
             String content = "# Ciel's Financial Briefing (" + dateStr + ")\n\n" +
-                             "## Portfolio Analysis\n" + latestPortfolioSummary + "\n\n" +
-                             "## Macro Market Scan\n" + latestMarketScan + "\n";
+                             "## Portfolio Analysis\n" + 
+                             latestPortfolioSummary + "\n\n" +
+                             "## Macro Market Scan\n" + 
+                             latestMarketScan + "\n\n" +
+                             "## Strategic Recommendations\n" + 
+                             ((recoResult != null && !recoResult.isBlank()) ? recoResult : "[AI Error: Strategic AI Recommendations timed out. Manual review required.]");
             
             Path briefingPath = Paths.get("C:\\Ciel Companion\\ciel\\finance", "Latest_Financial_Briefing.md");
             Files.createDirectories(briefingPath.getParent());
             Files.writeString(briefingPath, content);
 
-            if (recoCsv != null && recoCsv.contains(",")) {
-                String cleanCsv = recoCsv.replace("`" + "`" + "`csv", "").replace("`" + "`" + "`", "").trim();
-                
-                if (!cleanCsv.contains("Date")) {
-                    cleanCsv = "Date,Account,Ticker,Action,Shares,Target_Price,Reason_and_Confidence\n" + cleanCsv;
-                }
-                Files.writeString(Paths.get("C:\\Ciel Companion\\ciel\\finance", "recommendations.csv"), cleanCsv);
-            }
         } catch (Exception e) {
             System.err.println("Ciel Error: Failed to write briefing files to disk.");
         }

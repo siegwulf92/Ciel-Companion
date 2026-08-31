@@ -567,6 +567,10 @@ public class HabitTrackerService {
             activeSeriesName = "";
             activeSeriesDom = "";
             activeSeriesEpisodes.clear();
+            
+            // Fix observer state clearing
+            CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Observing", 0.5, "Day Reset"));
+            HabitTrackerService.hasAcquiredEpisodeMetadata = false;
         }
 
         SystemMetrics metrics = SystemMonitor.getSystemMetrics();
@@ -738,6 +742,10 @@ public class HabitTrackerService {
     
     private static void triggerFatigueWarning(int exposureMinutes) {
         System.out.println("[HabitTracker] Fatigue threshold met: " + exposureMinutes + " mins. Requesting dynamic warning.");
+        
+        // Notify ObserverService so it doesn't double-fire
+        com.cielcompanion.ai.ObserverService.setHasWarnedForFatigue(true);
+        
         String prompt = "[LOCAL_THOUGHT] Master Taylor has been watching media continuously for " + exposureMinutes + 
                         " minutes. Generate a concise 1-sentence fatigue warning. " +
                         "If the time is high, be snarky or strict. If it's moderate, be caring. " +

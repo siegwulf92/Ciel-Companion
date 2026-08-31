@@ -90,6 +90,10 @@ public class ObserverService {
         }
     }
 
+    public static void setHasWarnedForFatigue(boolean value) {
+        hasWarnedForFatigue = value;
+    }
+
     private static synchronized void evaluateBuffer() {
         SystemMetrics metrics = SystemMonitor.getSystemMetrics();
         

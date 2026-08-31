@@ -217,32 +217,6 @@ public class AIEngine {
                 .whenComplete((res, ex) -> activeSwarmTasks.decrementAndGet());
     }
 
-    private static JsonObject buildForcedPayload(String systemContext, String userMessage,
-                                                 String forcedModel, double temperature, String taskIntent) {
-        JsonObject payload = new JsonObject();
-        payload.addProperty("model", forcedModel != null ? forcedModel : "ollama-cloud/deepseek-v3.1:671b");
-        payload.addProperty("stream", false);
-        payload.addProperty("temperature", temperature);
-        if (taskIntent != null && !taskIntent.isBlank()) {
-            payload.addProperty("task_intent", taskIntent);
-        }
-
-        JsonArray messages = new JsonArray();
-
-        JsonObject sysMsg = new JsonObject();
-        sysMsg.addProperty("role", "system");
-        sysMsg.addProperty("content", systemContext);
-        messages.add(sysMsg);
-
-        JsonObject usrMsg = new JsonObject();
-        usrMsg.addProperty("role", "user");
-        usrMsg.addProperty("content", userMessage);
-        messages.add(usrMsg);
-
-        payload.add("messages", messages);
-        return payload;
-    }
-
     public static String generateDiaryEntrySync(String userMessage, String systemContext) {
         activeSwarmTasks.incrementAndGet();
         try {
@@ -550,6 +524,31 @@ public class AIEngine {
                 messages.add(historicMsg);
             }
         }
+
+        payload.add("messages", messages);
+        return payload;
+    }
+
+    private static JsonObject buildForcedPayload(String systemContext, String userMessage, String forcedModel, double temperature, String taskIntent) {
+        JsonObject payload = new JsonObject();
+        payload.addProperty("model", forcedModel);
+        payload.addProperty("stream", false);
+        payload.addProperty("temperature", temperature);
+        if (taskIntent != null) {
+            payload.addProperty("task_intent", taskIntent);
+        }
+
+        JsonArray messages = new JsonArray();
+        
+        JsonObject sysMsg = new JsonObject();
+        sysMsg.addProperty("role", "system");
+        sysMsg.addProperty("content", systemContext);
+        messages.add(sysMsg);
+
+        JsonObject usrMsg = new JsonObject();
+        usrMsg.addProperty("role", "user");
+        usrMsg.addProperty("content", userMessage);
+        messages.add(usrMsg);
 
         payload.add("messages", messages);
         return payload;
