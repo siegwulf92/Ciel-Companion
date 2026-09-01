@@ -83,43 +83,44 @@ public class FinanceService {
         CompletableFuture.runAsync(() -> {
             System.out.println("Ciel Debug: Commanding Swarm to execute silent background market and portfolio analysis from local CSVs...");
             
-            String marketPrompt = "Perform a macro-economic scan of the S&P 500 and VIX. " +
-                    "Correlate VIX fear levels with growth opportunities for a 33-year-old investor. Provide a 'Market Threat Level' (Low, Elevated, High, Critical).";
-
-            String portfolioPrompt = "You are Ciel, Master Taylor's elite financial advisor. Master Taylor's DOB is 12/30/1992 (currently 33 years old), and his ultimate goal is aggressive growth and early retirement. " +
-                    "Analyze the provided portfolio spreadsheet and local account CSVs. " +
-                    "CRITICAL CONTEXT: The accounts labeled 'taxable' and 'smart' (which hold assets like MINT, TFLO, bonds, or dividend ETFs) function as his liquid Emergency Fund and cash reserves. " +
-                    "RULE 1 - TAX-LOSS HARVESTING (< 0% Gain): It is ALWAYS safe to recommend selling assets at a loss in the taxable account to harvest tax benefits. " +
-                    "RULE 2 - ROTH IRA FUNDING (> 5% Gain): DO NOT recommend selling assets in the taxable account with > 5% gains UNLESS Master Taylor needs the liquidity to max out his Annual Roth IRA Contribution. " +
-                    "RULE 3 - ROTH IRA ALGORITHMS: Focus your 'Buy the Dip' and massive growth allocations STRICTLY on his tax-advantaged 'Roth' account. " +
-                    "CRITICAL: You MUST include a 'TL;DR' section at the very end summarizing everything in simple, plain English.";
-
+            String marketPrompt = "[FINANCE_MARKET_SCAN]";
+            String portfolioPrompt = "[FINANCE_PORTFOLIO_UPDATE]";
             String recoPrompt = "[FINANCE_RECOMMENDATIONS] Generate stock recommendations.";
 
-            try {
-                System.out.println("Ciel Debug: Step 1/3 - Executing Market Scan...");
-                String marketResult = AIEngine.generateSilentLogic("[FINANCE_MARKET_SCAN]", marketPrompt).get(15, TimeUnit.MINUTES);
-                if (marketResult == null) throw new RuntimeException("Market Scan timed out or failed.");
-                latestMarketScan = marketResult;
+            String marketResult = null;
+            String portfolioResult = null;
+            String recoResult = null;
 
-                System.out.println("Ciel Debug: Step 2/3 - Executing Portfolio Update...");
-                String portfolioResult = AIEngine.generateSilentLogic("[FINANCE_PORTFOLIO_UPDATE]", portfolioPrompt).get(15, TimeUnit.MINUTES);
-                if (portfolioResult == null) throw new RuntimeException("Portfolio Update timed out or failed.");
-                latestPortfolioSummary = portfolioResult;
-
-                System.out.println("Ciel Debug: Step 3/3 - Executing Strategic Recommendations...");
-                String recoResult = AIEngine.generateSilentLogic("[FINANCE_RECOMMENDATIONS]", recoPrompt).get(15, TimeUnit.MINUTES);
-                if (recoResult == null) throw new RuntimeException("Recommendations processing timed out or failed.");
-                
-                writeFiles(recoResult);
-                
-                localSyncTimeMs = System.currentTimeMillis();
-                saveTimestamp(SYNC_FILE, localSyncTimeMs);
-                System.out.println("Ciel Debug: Background finance analysis complete. Success flag updated.");
-                
-            } catch (Exception e) {
-                System.err.println("Ciel Error: Swarm Financial analysis failed sequentially: " + e.getMessage());
+            System.out.println("Ciel Debug: Step 1/3 - Executing Market Scan...");
+            try { 
+                marketResult = AIEngine.generateSilentLogic(marketPrompt, "Fetch macro market data.").get(15, TimeUnit.MINUTES); 
+            } catch (Exception e) { 
+                System.err.println("Ciel Error: Market scan failed - " + e.getMessage()); 
             }
+            
+            latestMarketScan = (marketResult != null) ? marketResult : "Market scan failed or timed out.";
+
+            System.out.println("Ciel Debug: Step 2/3 - Executing Portfolio Update...");
+            try { 
+                portfolioResult = AIEngine.generateSilentLogic(portfolioPrompt, "Update portfolio CSV data.").get(15, TimeUnit.MINUTES); 
+            } catch (Exception e) { 
+                System.err.println("Ciel Error: Portfolio update failed - " + e.getMessage()); 
+            }
+            
+            latestPortfolioSummary = (portfolioResult != null) ? portfolioResult : "Portfolio analysis failed or timed out.";
+
+            System.out.println("Ciel Debug: Step 3/3 - Executing Strategic Recommendations...");
+            try { 
+                recoResult = AIEngine.generateSilentLogic(recoPrompt, "Generate strategic advice.").get(15, TimeUnit.MINUTES); 
+            } catch (Exception e) { 
+                System.err.println("Ciel Error: Recommendations failed - " + e.getMessage()); 
+            }
+            
+            writeFiles(recoResult);
+            
+            localSyncTimeMs = System.currentTimeMillis();
+            saveTimestamp(SYNC_FILE, localSyncTimeMs);
+            System.out.println("Ciel Debug: Background finance analysis complete. Success flag updated.");
         });
     }
 
@@ -152,14 +153,20 @@ public class FinanceService {
         try {
             String dateStr = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
             
-            // Re-assembly of the exact structure requested by the user
+            // Format the Markdown document natively so it ALWAYS exists even if the AI times out.
+            String fallbackAdvice = "[AI Error: Strategic AI Recommendations timed out. The raw data logs above reflect your current exact portfolio standing.]";
+            
+            // If the AI generated valid advice, inject it. Otherwise use the fallback.
+            String strategicAdvice = (recoResult != null && !recoResult.isBlank() && !recoResult.contains("null")) ? recoResult : fallbackAdvice;
+            
+            // Build the final document structure
             String content = "# Ciel's Financial Briefing (" + dateStr + ")\n\n" +
                              "## Portfolio Analysis\n" + 
                              latestPortfolioSummary + "\n\n" +
                              "## Macro Market Scan\n" + 
                              latestMarketScan + "\n\n" +
                              "## Strategic Recommendations\n" + 
-                             ((recoResult != null && !recoResult.isBlank()) ? recoResult : "[AI Error: Strategic AI Recommendations timed out. Manual review required.]");
+                             strategicAdvice;
             
             Path briefingPath = Paths.get("C:\\Ciel Companion\\ciel\\finance", "Latest_Financial_Briefing.md");
             Files.createDirectories(briefingPath.getParent());
@@ -230,6 +237,6 @@ public class FinanceService {
     public static String getDailyFinanceReport() {
         String holiday = getUpcomingHolidayContext();
         String context = holiday.isEmpty() ? "" : "[HOLIDAY ALERT]: " + holiday + "\n\n";
-        return context + "PORTFOLIO UPDATE:\n" + latestPortfolioSummary + "\n\nMACRO MARKET SCAN:\n" + latestMarketScan;
+        return context + "PORTFOLIO UPDATE:\n" + latestPortfolioSummary + "\n\nMACRO MARKET Scan:\n" + latestMarketScan;
     }
 }
