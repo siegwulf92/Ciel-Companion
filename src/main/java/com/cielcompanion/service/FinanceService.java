@@ -85,7 +85,7 @@ public class FinanceService {
             
             String marketPrompt = "[FINANCE_MARKET_SCAN]";
             String portfolioPrompt = "[FINANCE_PORTFOLIO_UPDATE]";
-            String recoPrompt = "[FINANCE_RECOMMENDATIONS] Generate stock recommendations.";
+            String recoPrompt = "[FINANCE_RECOMMENDATIONS]";
 
             String marketResult = null;
             String portfolioResult = null;
@@ -98,7 +98,7 @@ public class FinanceService {
                 System.err.println("Ciel Error: Market scan failed - " + e.getMessage()); 
             }
             
-            latestMarketScan = (marketResult != null) ? marketResult : "Market scan failed or timed out.";
+            latestMarketScan = (marketResult != null && !marketResult.isBlank()) ? marketResult : "Market scan failed or timed out.";
 
             System.out.println("Ciel Debug: Step 2/3 - Executing Portfolio Update...");
             try { 
@@ -107,7 +107,7 @@ public class FinanceService {
                 System.err.println("Ciel Error: Portfolio update failed - " + e.getMessage()); 
             }
             
-            latestPortfolioSummary = (portfolioResult != null) ? portfolioResult : "Portfolio analysis failed or timed out.";
+            latestPortfolioSummary = (portfolioResult != null && !portfolioResult.isBlank()) ? portfolioResult : "Portfolio analysis failed or timed out.";
 
             System.out.println("Ciel Debug: Step 3/3 - Executing Strategic Recommendations...");
             try { 
@@ -153,27 +153,22 @@ public class FinanceService {
         try {
             String dateStr = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
             
-            // Format the Markdown document natively so it ALWAYS exists even if the AI times out.
-            String fallbackAdvice = "[AI Error: Strategic AI Recommendations timed out. The raw data logs above reflect your current exact portfolio standing.]";
-            
-            // If the AI generated valid advice, inject it. Otherwise use the fallback.
-            String strategicAdvice = (recoResult != null && !recoResult.isBlank() && !recoResult.contains("null")) ? recoResult : fallbackAdvice;
-            
-            // Build the final document structure
+            String portfolioSection = (recoResult != null && !recoResult.contains("[AI Error"))
+                ? recoResult 
+                : recoResult + "\n\n### Native Portfolio Readout\n" + latestPortfolioSummary;
+
             String content = "# Ciel's Financial Briefing (" + dateStr + ")\n\n" +
                              "## Portfolio Analysis\n" + 
-                             latestPortfolioSummary + "\n\n" +
+                             portfolioSection + "\n\n" +
                              "## Macro Market Scan\n" + 
-                             latestMarketScan + "\n\n" +
-                             "## Strategic Recommendations\n" + 
-                             strategicAdvice;
+                             latestMarketScan;
             
             Path briefingPath = Paths.get("C:\\Ciel Companion\\ciel\\finance", "Latest_Financial_Briefing.md");
             Files.createDirectories(briefingPath.getParent());
             Files.writeString(briefingPath, content);
 
         } catch (Exception e) {
-            System.err.println("Ciel Error: Failed to write briefing files to disk.");
+            System.err.println("Ciel Error: Failed to write briefing files to disk: " + e.getMessage());
         }
     }
 
