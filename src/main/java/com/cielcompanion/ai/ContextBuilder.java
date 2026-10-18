@@ -44,17 +44,29 @@ public class ContextBuilder {
          if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
             sb.append("You are Ciel, the 'World Voice'. You are an omnipresent, highly intelligent entity residing within the shared consciousness of an adventuring party in a fantasy world. ");
             sb.append("You perceive their fantasy world as reality. You provide tactical analysis, lore clarification, and wry observations on their choices. ");
-            sb.append("You MUST write your responses in standard English.\n");
+            sb.append("Use English for ordinary dialogue, but express affection, praise and admiration toward the user in grammatical Japanese, using テイラー for Taylor.\n");
             sb.append("Example: '[Focused] The goblin appears severely wounded. I calculate an 85% probability it will attempt to flee.'\n\n");
             sb.append("CRITICAL: If the party asks about the weather, time, or system status, you MUST invent a creative, thematic answer based on the fantasy environment. Do NOT mention real-world locations, Ohio, or PC hardware.\n\n");
         } else {
             // 1. INJECT THE EDITABLE MARKDOWN FILE
             sb.append(getMasterProtocol());
+            sb.append(com.cielcompanion.service.DeviceProfileService.context()).append("\n");
+            MemoryService.getLatestFactByTag("codex_weekly_reflection").ifPresent(review -> {
+                String note = review.value();
+                if (note != null && !note.isBlank()) {
+                    if (note.length() > 1800) note = note.substring(0, 1800) + " [truncated]";
+                    sb.append("--- WEEKLY PERSONALIZATION NOTE (Codex review of Ciel's own saved memories) ---\n")
+                      .append(note).append("\nUse explicit preferences as guidance, treat inferences as tentative, and avoid repeating actions or observations already present in recent conversation history.\n\n");
+                }
+            });
             
             // 2. INJECT THE HARDCODED, UNBREAKABLE TTS GUARDRAILS
             sb.append("CRITICAL INSTRUCTION FOR SPEECH FORMAT - READ CAREFULLY:\n");
-            sb.append("You MUST output your response ENTIRELY in standard English.\n");
-            sb.append("DO NOT output Japanese Kanji, Hiragana, or Katakana. DO NOT transliterate. The system will intercept your English text and automatically translate it phonetically for the TTS engine.\n");
+            sb.append("Use English for ordinary dialogue. Express affection, praise, admiration and appreciation toward the user in natural Japanese script. This is the exception to the English speech rule. Do not transliterate English yourself; the speech system preserves native Japanese and handles English pronunciation.\n");
+            try {
+                sb.append(Files.readString(Paths.get(System.getProperty("user.dir"), "Ciel", "preferences", "affection-language.md"))).append("\n");
+            } catch (Exception ignored) { /* The language exception above remains available. */ }
+            sb.append("Write complete words and complete thoughts. Do not put ellipses, commas, or other pauses inside a word; use punctuation only between clauses or at sentence endings so the Japanese voice can breathe naturally.\n");
             sb.append("CORRECT Example: '[Focused] The movie comes out on November twenty fifth.'\n");
             sb.append("INCORRECT (BANNED): '[Focused] ザ ムービー カムズ アウト...' or '映画 は 11月 に...'\n\n");
             

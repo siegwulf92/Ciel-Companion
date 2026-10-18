@@ -121,7 +121,7 @@ public class WeatherService {
                             "\nMaster's EXACT City: " + myCity + "\nCurrent Weather: " + data.current.condition.text +
                             "\nINSTRUCTION: Ignore minor/regional alerts. If an alert specifically threatens " + myCity + " (e.g., Tornado, Flash Flood, Severe Thunderstorm), give a short, urgent [Concerned] warning. If there is no immediate physical threat to his city, output EXACTLY the word: ABORT. Do NOT give a general weather update under any circumstances. ONLY output the warning or ABORT.";
 
-            AIEngine.generateSilentLogic("[WEATHER_EVALUATION]", prompt).thenAccept(response -> {
+            AIEngine.generateSilentLogic("[WEATHER_EVALUATION]", prompt, "Weather Alert Evaluation").thenAccept(response -> {
                 if (response != null && !response.isBlank()) {
                     String cleanResponse = response.trim();
                     // Hard Failsafe: Ensures she stays completely silent if the AI hallucinates a polite weather update anyway

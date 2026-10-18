@@ -1,5 +1,7 @@
 package com.cielcompanion.ai;
 
+import com.cielcompanion.util.ProjectPaths;
+
 import com.cielcompanion.memory.Fact;
 import com.cielcompanion.memory.MemoryService;
 import com.google.gson.JsonObject;
@@ -10,7 +12,6 @@ import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -23,8 +24,9 @@ public class SkillEvolutionEngine {
 
     public static void initialize() {
         evolutionScheduler = Executors.newSingleThreadScheduledExecutor();
-        evolutionScheduler.scheduleWithFixedDelay(SkillEvolutionEngine::runEvolutionCycle, 15, 60, TimeUnit.MINUTES);
-        System.out.println("Ciel Debug: Skill Evolution Engine online. Autonomous merging and innovation active.");
+        evolutionScheduler.scheduleWithFixedDelay(SkillEvolutionEngine::attemptEvolution, 2, 1440, TimeUnit.MINUTES);
+        evolutionScheduler.scheduleWithFixedDelay(SkillEvolutionEngine::attemptInnovation, 60, 10080, TimeUnit.MINUTES);
+        System.out.println("[Raphael — Skill Evolution Scheduler] Online; Beelzebub duplicate inventory runs daily; innovation review runs weekly.");
     }
 
     private static void runEvolutionCycle() {
@@ -33,37 +35,42 @@ public class SkillEvolutionEngine {
     }
 
     public static void forceImmediateEvolution() {
-        System.out.println("Ciel Debug: New skill assimilated. Triggering immediate Beelzebub Protocol evaluation...");
-        CompletableFuture.runAsync(SkillEvolutionEngine::attemptEvolution);
+        System.out.println("[Beelzebub — Skill Consolidation] New skill detected; duplicate review queued for the daily inventory and Codex pass.");
     }
 
     private static void attemptEvolution() {
         // PREVENT CONCURRENCY: Do not sweep while the Swarm is writing code.
         if (com.cielcompanion.service.SkillCrafterService.isActivelySynthesizing()) {
-            System.out.println("Ciel Debug: Evolution sweep deferred. Skill synthesis is currently locking the directory.");
+            System.out.println("[Beelzebub — Skill Consolidation] Deferred: skill synthesis is currently writing to the skills directory.");
             return;
         }
 
-        System.out.println("Ciel Debug: Initiating Global Skill Evolution Analysis (Phase 1: Beelzebub Protocol - Redundancy Merge)...");
+        System.out.println("[Beelzebub — Skill Consolidation] Starting Phase 1: scan for redundant skills and safe merge opportunities.");
 
-        AIEngine.generateSilentLogic("Evolve and merge global skills", "Trigger Python Beelzebub Sweep").thenAccept(response -> {
-            System.out.println("Ciel Debug: Python Beelzebub Sweep executed successfully.");
-            SkillManager.loadSkills(); 
-        }).exceptionally(ex -> {
-            System.err.println("Ciel Error: Swarm connection failed during Phase 1 Evolution.");
-            return null;
-        });
+        try {
+            Process process = new ProcessBuilder(System.getProperty("ciel.python", ProjectPaths.root().resolve(".venv/Scripts/python.exe").toString()), ProjectPaths.ciel().resolve("skills")
+                    .resolve("ciel_skill_consolidation.py").toString(), "--scan")
+                    .directory(ProjectPaths.root().toFile()).redirectErrorStream(true).start();
+            if (!process.waitFor(60, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                throw new IllegalStateException("Daily deterministic scan exceeded 60 seconds");
+            }
+            System.out.println(new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim());
+            if (process.exitValue() != 0) throw new IllegalStateException("Daily scan exited " + process.exitValue());
+        } catch (Exception ex) {
+            System.err.println("[Beelzebub — Skill Consolidation] Daily scan incomplete: " + ex.getMessage());
+        }
     }
 
     private static void attemptInnovation() {
-        System.out.println("Ciel Debug: Initiating Proactive Skill Innovation (Phase 2: Creativity)...");
+        System.out.println("[Raphael — Skill Innovation] Starting Phase 2: propose a new capability from recent needs.");
         
         List<String> memories = MemoryService.getRecentEpisodicMemories(10);
         String memoryContext = memories.isEmpty() ? "No recent memories recorded." : String.join("\n- ", memories);
 
         String latestThought = "No recent strategic thoughts available.";
         try {
-            File thoughtsDir = new File("C:\\Ciel Companion\\ciel\\diary\\strategic_analysis");
+            File thoughtsDir = ProjectPaths.ciel().resolve("diary").resolve("strategic_analysis").toFile();
             if (thoughtsDir.exists() && thoughtsDir.isDirectory()) {
                 File[] files = thoughtsDir.listFiles((dir, name) -> name.endsWith(".md"));
                 if (files != null && files.length > 0) {
@@ -103,7 +110,7 @@ public class SkillEvolutionEngine {
 
     private static void executeInnovationLoop(String basePrompt, String previousFailures, int attemptsLeft) {
         if (attemptsLeft <= 0) {
-            System.err.println("Ciel Error: Innovation aborted. Failed to produce valid JSON after maximum attempts.");
+            System.err.println("[Raphael — Skill Innovation] Stopped: no valid skill proposal after maximum attempts.");
             return;
         }
 
@@ -112,7 +119,7 @@ public class SkillEvolutionEngine {
             prompt += "\n\n--- URGENT CORRECTION REQUIRED ---\nYour previous attempt failed with the following error:\n" + previousFailures + "\n\nYou MUST strip all conversational text and markdown fences. Output ONLY a raw, valid JSON object.";
         }
 
-        AIEngine.generateSilentLogic("Propose new skill", prompt).thenAccept(idea -> {
+        AIEngine.generateSilentLogic("Propose new skill", prompt, "Skill Innovation Proposal").thenAccept(idea -> {
             if (idea != null && !idea.isBlank()) {
                 String cleanJson = idea;
                 try {
@@ -127,7 +134,7 @@ public class SkillEvolutionEngine {
                     String skillName = json.get("skill_name").getAsString();
                     String description = json.get("description").getAsString();
 
-                    System.out.println("Ciel Debug: Innovation Idea generated -> [" + skillName + "] " + description);
+                    System.out.println("[Raphael — Skill Innovation] Proposal [" + skillName + "]: " + description);
                     com.cielcompanion.service.SkillCrafterService.synthesizeNewSkill(skillName, description, true);
                 } catch (Exception e) {
                     // --- CRITICAL FAILSAFE: Regex extraction if Swarm AI breaks JSON formatting ---
@@ -137,19 +144,19 @@ public class SkillEvolutionEngine {
                     if (nameMatcher.find() && descMatcher.find()) {
                         String skillName = nameMatcher.group(1);
                         String description = descMatcher.group(1);
-                        System.out.println("Ciel Debug: RegEx Failsafe triggered. Innovation Idea salvaged -> [" + skillName + "] " + description);
+                        System.out.println("[Raphael — Skill Innovation] Recovered proposal [" + skillName + "]: " + description);
                         com.cielcompanion.service.SkillCrafterService.synthesizeNewSkill(skillName, description, true);
                     } else {
-                        System.err.println("Ciel Debug: Innovation JSON format failed on attempt " + (4 - attemptsLeft) + ". Retrying...");
+                        System.err.println("[Raphael — Skill Innovation] Invalid JSON on attempt " + (4 - attemptsLeft) + "; retrying.");
                         executeInnovationLoop(basePrompt, "JSON Parse Exception. Your output was not a clean JSON object:\n" + idea, attemptsLeft - 1);
                     }
                 }
             } else {
-                System.out.println("Ciel Debug: Innovation skipped. AI returned empty.");
+                System.out.println("[Raphael — Skill Innovation] Skipped: AI returned an empty response.");
                 executeInnovationLoop(basePrompt, "API returned an empty string.", attemptsLeft - 1);
             }
         }).exceptionally(ex -> {
-            System.err.println("Ciel Error: Swarm connection failed during Phase 2 Innovation.");
+            System.err.println("[Raphael — Skill Innovation] Failed: AI proposal request did not complete: " + ex.getMessage());
             return null;
         });
     }

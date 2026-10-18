@@ -68,6 +68,7 @@ public class LineManager {
     private static List<DialogueLine> LAUNCH_APP_SUCCESS_LINES;
     private static List<DialogueLine> LAUNCH_APP_FAIL_LINES;
     private static List<DialogueLine> DAILY_REPORT_INTRO_LINES;
+    private static List<DialogueLine> IDLE_REPORT_OUTRO_LINES;
     private static List<DialogueLine> TOP_MEMORY_PROCESS_LINES;
     private static List<DialogueLine> TOP_CPU_PROCESS_LINES;
     private static List<DialogueLine> PRIVILEGED_COMMAND_REQUIRED_LINES;
@@ -108,6 +109,7 @@ public class LineManager {
             props.load(new InputStreamReader(is, StandardCharsets.UTF_8));
 
             DAILY_REPORT_INTRO_LINES = getLinesByKeyPrefix(props, "command.daily_report_intro.");
+            IDLE_REPORT_OUTRO_LINES = getLinesByKeyPrefix(props, "idle.report.outro.");
             BOOT_GREETING_LINES = getLinesByKeyPrefix(props, "boot_greeting.");
             LOGIN_GREETING_LINES = getLinesByKeyPrefix(props, "login_greeting.");
             WARM_LOGIN_GREETING_LINES = getLinesByKeyPrefix(props, "warm_login_greeting.");
@@ -410,6 +412,11 @@ public class LineManager {
     public static Optional<DialogueLine> getDailyReportIntroLine() { 
         if (DAILY_REPORT_INTRO_LINES.isEmpty()) return Optional.empty();
         return Optional.of(DAILY_REPORT_INTRO_LINES.get(random.nextInt(DAILY_REPORT_INTRO_LINES.size())));
+    }
+
+    public static Optional<DialogueLine> getIdleReportOutroLine() {
+        if (IDLE_REPORT_OUTRO_LINES == null || IDLE_REPORT_OUTRO_LINES.isEmpty()) return Optional.empty();
+        return Optional.of(IDLE_REPORT_OUTRO_LINES.get(random.nextInt(IDLE_REPORT_OUTRO_LINES.size())));
     }
     public static Optional<DialogueLine> getWakeWordAckLine() {
         if (WAKE_WORD_ACK_LINES.isEmpty()) return Optional.empty();

@@ -1,10 +1,16 @@
 package com.cielcompanion.service;
 
+import com.cielcompanion.util.ProjectPaths;
+
 import com.cielcompanion.ai.AIEngine;
 import com.cielcompanion.CielState;
 import com.cielcompanion.memory.Fact;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.mood.EmotionManager;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import java.io.File;
 import java.io.IOException;
@@ -23,6 +29,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -42,6 +49,10 @@ public class VaultService {
     private static Path insightsDir; 
     
     private static Path diaryDir;
+    private static Path suggestionsDir;
+    private static Path pipelineStateDir;
+    private static Path lorePartsDir;
+    private static Path loreReviewDir;
 
     private static Thread watcherThread;
     private static volatile boolean isRunning = true;
@@ -54,11 +65,11 @@ public class VaultService {
     private static final List<Path> loreBatchQueue = Collections.synchronizedList(new ArrayList<>());
     private static ScheduledFuture<?> loreDebounceTask = null;
     private static final ScheduledExecutorService debounceExecutor = Executors.newSingleThreadScheduledExecutor();
-    private static final AtomicBoolean isLoreThreadActive = new AtomicBoolean(false);
+    private static final int MAX_CONCURRENT_LORE_FILES = 3;
+    private static final Set<Path> activeLorePaths = ConcurrentHashMap.newKeySet();
 
     private static final Random random = new Random();
     private static String LORE_DIR;
-    private static Path pipelineStateFile;
 
     private static int extractSortNumber(Path p) {
         Matcher m = Pattern.compile("\\d+").matcher(p.getFileName().toString());
@@ -68,7 +79,9 @@ public class VaultService {
     public static void initialize() {
         vaultRoot = Paths.get(System.getProperty("user.dir"), CIEL_FOLDER_NAME);
         LORE_DIR = vaultRoot.resolve("lore").toString();
-        pipelineStateFile = vaultRoot.resolve("pipeline_state.json");
+        pipelineStateDir = vaultRoot.resolve("pipeline_state");
+        lorePartsDir = pipelineStateDir.resolve("lore_parts");
+        loreReviewDir = vaultRoot.resolve("lore").resolve("Review").resolve("Tensura");
         
         requestsDir = vaultRoot.resolve("requests");
         answersDir = vaultRoot.resolve("answers");
@@ -79,6 +92,7 @@ public class VaultService {
         insightsDir = vaultRoot.resolve("insights"); 
         
         diaryDir = vaultRoot.resolve("diary");
+        suggestionsDir = vaultRoot.resolve("suggestions");
 
         try {
             Files.createDirectories(requestsDir);
@@ -88,6 +102,10 @@ public class VaultService {
             Files.createDirectories(thoughtsArchiveDir);
             Files.createDirectories(insightsDir);
             Files.createDirectories(diaryDir);
+            Files.createDirectories(suggestionsDir);
+            Files.createDirectories(pipelineStateDir);
+            Files.createDirectories(lorePartsDir);
+            Files.createDirectories(loreReviewDir);
             Files.createDirectories(vaultRoot.resolve("memory_core"));
             Files.createDirectories(vaultRoot.resolve("protocols"));
             
@@ -119,79 +137,212 @@ public class VaultService {
         public int totalChunks = 0;
         public int currentPhase = 1;
         public String currentDraft = "";
+        public long sourceLength = 0;
+        public long sourceModified = 0;
     }
 
-    private static PipelineState loadState() {
-        if (!Files.exists(pipelineStateFile)) return null;
+    private static Path statePathFor(String fileName) {
+        return pipelineStateDir.resolve(fileName.replaceAll("[^a-zA-Z0-9._-]", "_") + ".json");
+    }
+
+    private static PipelineState loadState(String fileName) {
+        return loadState(statePathFor(fileName));
+    }
+
+    private static PipelineState loadState(Path statePath) {
+        if (!Files.exists(statePath)) return null;
         try {
-            String json = Files.readString(pipelineStateFile, StandardCharsets.UTF_8);
+            String json = Files.readString(statePath, StandardCharsets.UTF_8);
             if (json.isBlank()) return null;
-            
             PipelineState state = new PipelineState();
             Matcher mTask = Pattern.compile("\"taskId\"\\s*:\\s*\"([^\"]+)\"").matcher(json);
             if (mTask.find()) state.taskId = mTask.group(1);
-            
             Matcher mFile = Pattern.compile("\"fileName\"\\s*:\\s*\"([^\"]+)\"").matcher(json);
             if (mFile.find()) state.fileName = mFile.group(1);
-            
             Matcher mChunk = Pattern.compile("\"chunkIndex\"\\s*:\\s*(\\d+)").matcher(json);
             if (mChunk.find()) state.chunkIndex = Integer.parseInt(mChunk.group(1));
-            
             Matcher mTotal = Pattern.compile("\"totalChunks\"\\s*:\\s*(\\d+)").matcher(json);
             if (mTotal.find()) state.totalChunks = Integer.parseInt(mTotal.group(1));
-            
             Matcher mPhase = Pattern.compile("\"currentPhase\"\\s*:\\s*(\\d+)").matcher(json);
             if (mPhase.find()) state.currentPhase = Integer.parseInt(mPhase.group(1));
-            
-            Matcher mDraft = Pattern.compile("\"currentDraft\"\\s*:\\s*\"(.*)\"", Pattern.DOTALL).matcher(json);
+            Matcher mLength = Pattern.compile("\"sourceLength\"\\s*:\\s*(\\d+)").matcher(json);
+            if (mLength.find()) state.sourceLength = Long.parseLong(mLength.group(1));
+            Matcher mModified = Pattern.compile("\"sourceModified\"\\s*:\\s*(\\d+)").matcher(json);
+            if (mModified.find()) state.sourceModified = Long.parseLong(mModified.group(1));
+            Matcher mDraft = Pattern.compile("\"currentDraftBase64\"\\s*:\\s*\"([^\"]*)\"").matcher(json);
             if (mDraft.find()) {
-                state.currentDraft = mDraft.group(1).replace("\\n", "\n").replace("\\\"", "\"");
+                state.currentDraft = new String(Base64.getDecoder().decode(mDraft.group(1)), StandardCharsets.UTF_8);
+            } else {
+                Matcher legacy = Pattern.compile("\"currentDraft\"\\s*:\\s*\"(.*)\"", Pattern.DOTALL).matcher(json);
+                if (legacy.find()) state.currentDraft = legacy.group(1).replace("\\n", "\n").replace("\\\"", "\"");
             }
             return state;
         } catch (Exception e) {
+            System.err.println("Ciel Recovery: Invalid checkpoint " + statePath.getFileName() + ": " + e.getClass().getSimpleName());
             return null;
         }
     }
 
     private static void saveState(PipelineState state) {
         try {
-            String safeDraft = state.currentDraft.replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "");
-            String json = String.format("{\n" +
-                "  \"taskId\": \"%s\",\n" +
-                "  \"fileName\": \"%s\",\n" +
-                "  \"chunkIndex\": %d,\n" +
-                "  \"totalChunks\": %d,\n" +
-                "  \"currentPhase\": %d,\n" +
-                "  \"currentDraft\": \"%s\"\n" +
-                "}", state.taskId, state.fileName, state.chunkIndex, state.totalChunks, state.currentPhase, safeDraft);
-            Files.writeString(pipelineStateFile, json, StandardCharsets.UTF_8);
+            String safeDraft = Base64.getEncoder().encodeToString(state.currentDraft.getBytes(StandardCharsets.UTF_8));
+            String json = String.format("{\n  \"taskId\": \"%s\",\n  \"fileName\": \"%s\",\n  \"chunkIndex\": %d,\n  \"totalChunks\": %d,\n  \"currentPhase\": %d,\n  \"sourceLength\": %d,\n  \"sourceModified\": %d,\n  \"currentDraftBase64\": \"%s\"\n}",
+                    state.taskId, state.fileName, state.chunkIndex, state.totalChunks, state.currentPhase,
+                    state.sourceLength, state.sourceModified, safeDraft);
+            Path statePath = statePathFor(state.fileName);
+            Path temp = statePath.resolveSibling(statePath.getFileName() + ".tmp");
+            Files.writeString(temp, json, StandardCharsets.UTF_8);
+            moveAtomically(temp, statePath);
         } catch (IOException e) {
-            System.err.println("Ciel Error: Failed to save pipeline state.");
+            System.err.println("Ciel Error: Failed to save pipeline state: " + e.getMessage());
         }
     }
 
-    private static void deleteState() {
-        try { Files.deleteIfExists(pipelineStateFile); } 
-        catch (IOException ignored) {}
+    private static void deleteState(String fileName) {
+        try { Files.deleteIfExists(statePathFor(fileName)); } catch (IOException ignored) {}
     }
 
     private static void checkPipelineRecovery() {
-        PipelineState state = loadState();
-        if (state != null) {
-            if (MemoryService.getFact("pipeline_completed_" + state.taskId).isPresent()) {
-                System.out.println("Ciel Debug: Obsolete pipeline state found. Cleared safely.");
-                deleteState();
-            } else {
-                System.out.println("Ciel Debug: Active pipeline state found for " + state.fileName + ". Resuming Sweep.");
-                Path fileToResume = requestsDir.resolve(state.fileName);
-                if (Files.exists(fileToResume)) {
-                    queueLoreInjection(fileToResume);
-                } else {
-                    fileToResume = requestsArchiveDir.resolve(state.fileName);
-                    if (Files.exists(fileToResume)) queueLoreInjection(fileToResume);
+        try (var states = Files.list(pipelineStateDir)) {
+            states.filter(p -> p.getFileName().toString().endsWith(".json")).forEach(p -> {
+                PipelineState state = loadState(p);
+                if (state == null) return;
+                if (MemoryService.getFact("pipeline_completed_" + state.taskId).isPresent()) {
+                    deleteState(state.fileName);
+                    return;
                 }
+                Path source = requestsDir.resolve(state.fileName);
+                Path archived = requestsArchiveDir.resolve(state.fileName);
+                if (Files.exists(archived)) {
+                    // The source was archived, so restore deterministic post-run indexing before cleanup.
+                    String name = state.fileName.replaceFirst("(?i)\\.(md|txt)$", "");
+                    Path transcript = vaultRoot.resolve("lore").resolve("Transcripts").resolve(name + "_Cleaned.md");
+                    if (Files.exists(transcript)) createGroundedLoreIndex(transcript, name);
+                    deleteState(state.fileName);
+                    return;
+                }
+                if (Files.exists(source)) {
+                    System.out.println("Ciel Recovery: task=" + state.fileName + " chunk="
+                            + (state.chunkIndex + 1) + "/" + state.totalChunks + " phase=" + state.currentPhase);
+                    queueLoreInjection(source);
+                }
+            });
+        } catch (IOException e) {
+            System.err.println("Ciel Recovery: Could not scan task checkpoints: " + e.getMessage());
+        }
+    }
+
+    private static void moveAtomically(Path source, Path target) throws IOException {
+        try { Files.move(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE); }
+        catch (AtomicMoveNotSupportedException e) { Files.move(source, target, StandardCopyOption.REPLACE_EXISTING); }
+    }
+
+    private static void writeAtomically(Path path, String content) throws IOException {
+        Files.createDirectories(path.getParent());
+        Path temp = path.resolveSibling(path.getFileName() + ".tmp");
+        Files.writeString(temp, content, StandardCharsets.UTF_8);
+        moveAtomically(temp, path);
+    }
+
+    private static Path partPath(PipelineState state, int chunkIndex) throws IOException {
+        Path taskParts = lorePartsDir.resolve(state.taskId);
+        Files.createDirectories(taskParts);
+        return taskParts.resolve(String.format(Locale.ROOT, "chunk_%05d.md", chunkIndex));
+    }
+
+    private static String safeLorePart(String value) {
+        String safe = value == null ? "" : value.replaceAll("[^\\p{L}\\p{N} _-]", "").trim().replace(' ', '_');
+        return safe.isBlank() ? "Uncategorized" : safe.substring(0, Math.min(safe.length(), 80));
+    }
+
+    private static JsonObject parseLoreChunkResult(String raw) throws IOException {
+        String json = raw == null ? "" : raw.trim();
+        json = json.replaceFirst("(?s)^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "").trim();
+        int start = json.indexOf('{');
+        int end = json.lastIndexOf('}');
+        if (start < 0 || end < start) throw new IOException("Model response did not contain a JSON object");
+        try {
+            JsonObject object = JsonParser.parseString(json.substring(start, end + 1)).getAsJsonObject();
+            if (!object.has("cleaned_text") || !object.get("cleaned_text").isJsonPrimitive())
+                throw new IOException("JSON response is missing cleaned_text");
+            if (!object.has("lore_facts") || !object.get("lore_facts").isJsonArray())
+                object.add("lore_facts", new JsonArray());
+            return object;
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("Could not parse model JSON response", e);
+        }
+    }
+
+    private static void saveLoreFactCandidates(JsonObject result, String volumeName, int chunkIndex,
+                                               String sourceChunk) throws IOException {
+        JsonArray facts = result.getAsJsonArray("lore_facts");
+        if (facts == null || facts.isEmpty()) {
+            System.out.println("Ciel Lore Candidates: volume=" + volumeName + " chunk=" + (chunkIndex + 1) + " count=0");
+            return;
+        }
+        Set<String> allowed = Set.of("Characters", "Locations", "Skills", "Factions", "Species", "Items", "Events", "Concepts");
+        Map<Path, StringBuilder> grouped = new LinkedHashMap<>();
+        int rejected = 0;
+        for (JsonElement element : facts) {
+            try {
+                JsonObject fact = element.getAsJsonObject();
+                String category = fact.get("category").getAsString().trim();
+                String entity = fact.get("entity").getAsString().trim();
+                String claim = fact.get("fact").getAsString().trim();
+                String evidence = fact.get("evidence").getAsString().trim();
+                if (!allowed.contains(category) || entity.isBlank() || claim.isBlank() || evidence.length() < 8
+                        || !sourceChunk.contains(evidence)) {
+                    rejected++;
+                    continue;
+                }
+                Path note = loreReviewDir.resolve(safeLorePart(volumeName)).resolve(category)
+                        .resolve(safeLorePart(entity)).resolve(String.format(Locale.ROOT, "Chunk_%05d.md", chunkIndex + 1));
+                StringBuilder body = grouped.computeIfAbsent(note, ignored -> new StringBuilder(
+                        "---\nstatus: review-candidate\nseries: \"That Time I Got Reincarnated as a Slime\"\n"
+                                + "spoiler_reviewed: false\nsource_volume: \"" + volumeName + "\"\nsource_chunk: " + (chunkIndex + 1)
+                                + "\n---\n\n# " + entity + "\n\n## Candidate fact\n"));
+                body.append("- ").append(claim.replace("\r", " ").replace("\n", " ")).append("\n")
+                        .append("  - Evidence: \"").append(evidence.replace("\r", " ").replace("\n", " ")).append("\"\n");
+            } catch (Exception e) {
+                rejected++;
             }
         }
+        for (Map.Entry<Path, StringBuilder> note : grouped.entrySet()) writeAtomically(note.getKey(), note.getValue().toString());
+        System.out.println("Ciel Lore Candidates: volume=" + volumeName + " chunk=" + (chunkIndex + 1)
+                + " accepted=" + grouped.size() + " rejected=" + rejected + " status=review-candidate");
+    }
+
+    private static boolean awaitStableFile(Path path, long maxWaitSeconds) throws InterruptedException, IOException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(maxWaitSeconds);
+        long lastSize = -1L, lastModified = -1L;
+        int stableSamples = 0;
+        while (System.nanoTime() < deadline) {
+            if (!Files.exists(path)) return false;
+            long size = Files.size(path), modified = Files.getLastModifiedTime(path).toMillis();
+            if (size == lastSize && modified == lastModified) stableSamples++;
+            else stableSamples = 0;
+            if (stableSamples >= 2) return true;
+            lastSize = size; lastModified = modified;
+            Thread.sleep(2000);
+        }
+        return false;
+    }
+
+    private static void assembleLoreOutput(PipelineState state, Path outputPath, String originalName) throws IOException {
+        Path temp = outputPath.resolveSibling(outputPath.getFileName() + ".tmp");
+        try (var writer = Files.newBufferedWriter(temp, StandardCharsets.UTF_8)) {
+            if ("volume 1".equalsIgnoreCase(originalName) || "vol 1".equalsIgnoreCase(originalName))
+                writer.write("# That Time I Got Reincarnated as a Slime: Volume 1\n\n");
+            for (int i = 0; i < state.totalChunks; i++) {
+                Path part = partPath(state, i);
+                if (!Files.exists(part)) throw new IOException("Missing completed lore chunk " + (i + 1));
+                writer.write(Files.readString(part, StandardCharsets.UTF_8));
+                writer.write("\n\n");
+            }
+        }
+        moveAtomically(temp, outputPath);
     }
 
     private static void processExistingBacklog() {
@@ -276,6 +427,11 @@ public class VaultService {
     private static void processRequestFile(Path filePath) {
         taskExecutor.submit(() -> {
             try {
+                if (!awaitStableFile(filePath, 120)) {
+                    System.err.println("Ciel Vault: request file did not settle before timeout; will retry: " + filePath.getFileName());
+                    debounceExecutor.schedule(() -> processRequestFile(filePath), 1, TimeUnit.MINUTES);
+                    return;
+                }
                 String requestContent = Files.readString(filePath, StandardCharsets.UTF_8);
                 if (requestContent.isBlank()) return;
 
@@ -285,6 +441,13 @@ public class VaultService {
                         if (!filePath.getParent().equals(requestsArchiveDir)) {
                             Files.move(filePath, archivePath, StandardCopyOption.REPLACE_EXISTING);
                         }
+                        PipelineState completedLore = loadState(filePath.getFileName().toString());
+                        if (completedLore != null) {
+                            String name = completedLore.fileName.replaceFirst("(?i)\\.(md|txt)$", "");
+                            Path transcript = vaultRoot.resolve("lore").resolve("Transcripts").resolve(name + "_Cleaned.md");
+                            if (Files.exists(transcript)) createGroundedLoreIndex(transcript, name);
+                        }
+                        deleteState(filePath.getFileName().toString());
                     } catch (Exception ignored) {}
                     return;
                 }
@@ -293,6 +456,11 @@ public class VaultService {
 
                 if (requestContent.toLowerCase().contains("#diary")) {
                     generateManualDiaryEntry(filePath, requestContent);
+                    return;
+                }
+
+                if (isCampaignSuggestionRequest(requestContent)) {
+                    processCampaignSuggestion(filePath, requestContent);
                     return;
                 }
                 
@@ -306,27 +474,89 @@ public class VaultService {
 
                 CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Focused", 1.0, "Vault Processing"));
                 String systemContext = "You are Ciel. Fulfill the request and output ONLY the final raw markdown text for the document. Do not wrap your response in JSON formatting.";
-                AIEngine.generateSilentLogic(requestContent, systemContext).thenAccept(answerText -> {
+                AIEngine.generateSilentLogic(requestContent, systemContext, "Saved Request Processing").whenComplete((answerText, error) -> {
+                    if (error != null) {
+                        System.err.println("Ciel Vault: request inference failed; left queued for recovery: "
+                                + filePath.getFileName() + " type=" + error.getClass().getSimpleName());
+                        return;
+                    }
                     if (answerText != null && !answerText.isBlank()) {
                         saveFileAndArchive(filePath, answerText, answersDir, requestsArchiveDir, "Answer_", "リクエスト コンプリート。");
                     }
                 });
 
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Ciel Vault: request wait interrupted: " + filePath.getFileName());
             } catch (IOException e) {
                 System.err.println("Ciel Error: Could not read request file.");
             }
         });
     }
 
+    private static boolean isCampaignSuggestionRequest(String content) {
+        String lower = content.toLowerCase(Locale.ROOT);
+        if (lower.contains("#campaign") || lower.contains("#suggestion")) return true;
+        boolean campaignTopic = lower.contains("campaign") || lower.contains("across the multiverse");
+        boolean asksForIdeas = lower.contains("suggest") || lower.contains("idea") || lower.contains("brainstorm")
+                || lower.contains("proposal") || lower.contains("analyz") || lower.contains("develop");
+        return campaignTopic && asksForIdeas;
+    }
+
+    private static void processCampaignSuggestion(Path requestPath, String requestContent) {
+        String campaignContext = readCampaignNotes(32000);
+        String prompt = "[CAMPAIGN_REVIEW]\n" + requestContent + "\n\n"
+                + "CAMPAIGN SOURCE NOTES (read-only context):\n" + campaignContext + "\n\n"
+                + "Produce reviewable ideas only. Do not edit, rewrite, or claim to have changed campaign files. "
+                + "For each proposal, include the source note(s), rationale, likely impact, and any uncertainty. "
+                + "Separate established campaign facts from new suggestions. Output Markdown.";
+        String system = "You are Ciel, an attentive campaign analyst. Treat supplied campaign notes as read-only evidence. "
+                + "Never finalize or write campaign changes; return suggestions for Master to review.";
+        AIEngine.generateSilentLogicWithModel(prompt, system, null, 0.2, "Campaign Analysis")
+                .whenComplete((suggestions, error) -> {
+                    if (error != null || suggestions == null || suggestions.isBlank() || isErrorResponse(suggestions)) {
+                        System.err.println("Ciel Campaign Suggestions: failed; request remains queued: "
+                                + requestPath.getFileName() + (error == null ? "" : " type=" + error.getClass().getSimpleName()));
+                        return;
+                    }
+                    saveFileAndArchive(requestPath, suggestions, suggestionsDir, requestsArchiveDir,
+                            "Campaign_Suggestions_", "");
+                });
+    }
+
+    private static String readCampaignNotes(int maxChars) {
+        String configured = com.cielcompanion.service.Settings.getDndCampaignPath();
+        if (configured == null || configured.isBlank()) return "No campaign folder is configured.";
+        Path root = Paths.get(configured).toAbsolutePath().normalize();
+        if (!Files.isDirectory(root)) return "Configured campaign folder is unavailable: " + root;
+        StringBuilder context = new StringBuilder();
+        try (var files = Files.walk(root)) {
+            for (Path file : files.filter(Files::isRegularFile)
+                    .filter(p -> p.toString().toLowerCase(Locale.ROOT).endsWith(".md")
+                            || p.toString().toLowerCase(Locale.ROOT).endsWith(".txt"))
+                    .sorted().toList()) {
+                if (context.length() >= maxChars) break;
+                String relative = root.relativize(file).toString();
+                String remaining = Files.readString(file, StandardCharsets.UTF_8);
+                int take = Math.min(remaining.length(), Math.min(6000, maxChars - context.length()));
+                if (take <= 0) break;
+                context.append("\n\n--- SOURCE: ").append(relative).append(" ---\n")
+                        .append(remaining, 0, take);
+            }
+        } catch (IOException e) {
+            System.err.println("Ciel Campaign Suggestions: could not read campaign notes: " + e.getMessage());
+            return "Campaign notes could not be read. Use only the request content and disclose the missing context.";
+        }
+        return context.length() == 0 ? "The campaign folder contains no Markdown or text notes." : context.toString();
+    }
+
     private static void queueLoreInjection(Path filePath) {
         synchronized(loreBatchQueue) {
-            if (!loreBatchQueue.contains(filePath)) {
+            if (!activeLorePaths.contains(filePath) && !loreBatchQueue.contains(filePath)) {
                 loreBatchQueue.add(filePath);
                 loreBatchQueue.sort(Comparator.comparingInt(VaultService::extractSortNumber).thenComparing(Path::getFileName));
                 System.out.println("Ciel Debug: Added lore file to assimilation queue: " + filePath.getFileName());
             }
-            
-            if (isLoreThreadActive.get()) return;
             
             if (loreDebounceTask == null || loreDebounceTask.isDone()) {
                 loreDebounceTask = debounceExecutor.schedule(VaultService::startLoreBatch, 5000, TimeUnit.MILLISECONDS);
@@ -341,21 +571,20 @@ public class VaultService {
     }
 
     private static void startLoreBatch() {
-        if (!isLoreThreadActive.compareAndSet(false, true)) return;
-
         Path targetFile = null;
         synchronized(loreBatchQueue) {
-            if (loreBatchQueue.isEmpty()) {
-                isLoreThreadActive.set(false); 
-                return;
+            if (activeLorePaths.size() >= MAX_CONCURRENT_LORE_FILES || loreBatchQueue.isEmpty()) return;
+            for (Iterator<Path> it = loreBatchQueue.iterator(); it.hasNext();) {
+                Path candidate = it.next();
+                if (activeLorePaths.add(candidate)) {
+                    targetFile = candidate;
+                    it.remove();
+                    break;
+                }
             }
-            targetFile = loreBatchQueue.remove(0);
         }
 
-        if (targetFile == null) {
-            isLoreThreadActive.set(false);
-            return;
-        }
+        if (targetFile == null) return;
         
         final Path processingFile = targetFile;
         
@@ -363,12 +592,15 @@ public class VaultService {
             boolean fileCompletedSuccessfully = true;
 
             try {
+                if (!awaitStableFile(processingFile, 120)) {
+                    throw new IOException("request file did not settle before processing");
+                }
                 String content = Files.readString(processingFile, StandardCharsets.UTF_8);
                 String originalName = processingFile.getFileName().toString().replace(".md", "").replace(".txt", "");
                 
                 List<String> chunks = new ArrayList<>();
-                // STRICT 4000 character chunks to ensure small models never freeze
-                int chunkSize = 4000; 
+                // Keep excerpts bounded; state and completed parts are persisted per file.
+                int chunkSize = 6000;
                 int i = 0;
                 while (i < content.length()) {
                     int end = Math.min(i + chunkSize, content.length());
@@ -387,18 +619,20 @@ public class VaultService {
                 Path outputPath = loreDir.resolve(originalName + "_Cleaned.md");
                 
                 // Pipeline Foreman Logic
-                PipelineState state = loadState();
-                if (state == null || !state.fileName.equals(processingFile.getFileName().toString())) {
+                PipelineState state = loadState(processingFile.getFileName().toString());
+                long sourceLength = Files.size(processingFile);
+                long sourceModified = Files.getLastModifiedTime(processingFile).toMillis();
+                if (state == null || !state.fileName.equals(processingFile.getFileName().toString())
+                        || state.sourceLength != sourceLength || state.sourceModified != sourceModified
+                        || state.totalChunks != chunks.size()) {
                     state = new PipelineState();
                     state.taskId = System.currentTimeMillis() + "_" + originalName.replaceAll("[^a-zA-Z0-9]", "");
                     state.fileName = processingFile.getFileName().toString();
                     state.totalChunks = chunks.size();
-                    Files.deleteIfExists(outputPath);
-                    Files.createFile(outputPath);
-                    
-                    if (("volume 1".equalsIgnoreCase(originalName) || "vol 1".equalsIgnoreCase(originalName))) {
-                        Files.writeString(outputPath, "# That Time I Got Reincarnated as a Slime: Volume 1\n\n", StandardOpenOption.APPEND);
-                    }
+                    state.sourceLength = sourceLength;
+                    state.sourceModified = sourceModified;
+                    Files.createDirectories(lorePartsDir.resolve(state.taskId));
+                    saveState(state);
                     
                     System.out.println("Ciel Debug: Initiating Agentic Lore Sweep Pipeline for: " + originalName);
                 } else {
@@ -414,7 +648,10 @@ public class VaultService {
                     
                     String chunk = chunks.get(c);
                     if (chunk.isBlank()) {
+                        writeAtomically(partPath(state, c), "");
                         state.chunkIndex = c + 1;
+                        state.currentPhase = 1;
+                        state.currentDraft = "";
                         saveState(state);
                         continue;
                     }
@@ -429,9 +666,20 @@ public class VaultService {
                     
                     // PHASE 2: Verification (Gemini -> DeepSeek)
                     if (state.currentPhase == 2) {
-                        String prompt = "[LORE_PHASE_2]\n" + state.currentDraft;
-                        String result = AIEngine.generateSilentLogic(prompt, "Phase 2 Verify").join();
+                        String prompt = "SOURCE: " + originalName + ", excerpt " + (c + 1) + ".\n"
+                                + "Return exactly one JSON object with keys cleaned_text and lore_facts. cleaned_text must preserve every sentence and event, correcting only obvious transcription spelling and punctuation errors. "
+                                + "lore_facts must be an array of objects {category, entity, fact, evidence}; use only categories Characters, Locations, Skills, Factions, Species, Items, Events, Concepts. "
+                                + "Include only important facts explicitly stated in this excerpt. evidence must be a short exact quotation copied from SOURCE TEXT; omit any fact without a matching quote. "
+                                + "Do not use outside knowledge, foreshadow later events, or add headings outside the JSON.\n\nSOURCE TEXT:\n" + state.currentDraft;
+                        String result = awaitLorePhase(prompt,
+                                "You are a conservative source archivist. Preserve the transcript and extract only explicitly evidenced facts.",
+                                "proofread-and-extract", state, c);
                         if (result != null && !result.isBlank() && !isErrorResponse(result)) {
+                            // Validate before checkpointing: malformed JSON must never
+                            // become a phase-3 checkpoint that every retry reparses.
+                            JsonObject validated = parseLoreChunkResult(result);
+                            if (validated.get("cleaned_text").getAsString().isBlank())
+                                throw new IOException("Model returned empty cleaned transcript for chunk " + (c + 1));
                             state.currentDraft = result;
                             state.currentPhase = 3;
                             saveState(state);
@@ -442,21 +690,43 @@ public class VaultService {
                         }
                     }
                     
-                    // PHASE 3: Obsidian Linking
+                    // PHASE 3 is a local atomic commit. Avoid another model pass,
+                    // which doubled latency and could rewrite already-verified prose.
                     if (state.currentPhase == 3) {
-                        String prompt = "[LORE_PHASE_3]\n" + state.currentDraft;
-                        String result = AIEngine.generateSilentLogic(prompt, "Phase 3 Link").join();
-                        if (result != null && !result.isBlank() && !isErrorResponse(result)) {
-                            Files.writeString(outputPath, result + "\n\n", StandardCharsets.UTF_8, StandardOpenOption.APPEND);
-                            state.currentDraft = "";
-                            state.currentPhase = 1;
-                            state.chunkIndex = c + 1;
+                        JsonObject chunkResult;
+                        try {
+                            chunkResult = parseLoreChunkResult(state.currentDraft);
+                            if (chunkResult.get("cleaned_text").getAsString().isBlank())
+                                throw new IOException("Model returned empty cleaned transcript for chunk " + (c + 1));
+                        } catch (IOException invalidCheckpoint) {
+                            // Recover checkpoints saved by older versions without
+                            // accepting invalid output or advancing the chunk.
+                            state.currentDraft = chunk.replaceAll("\\[\\d{1,2}:\\d{2}(?::\\d{2})?\\]\\s*", "");
+                            state.currentPhase = 2;
                             saveState(state);
-                        } else {
-                            System.err.println("Ciel Warning: Pipeline sweep timed out or failed on Pass 3. Safely halting to prevent data rot.");
-                            fileCompletedSuccessfully = false;
-                            break;
+                            throw invalidCheckpoint;
                         }
+                        String cleanedText = chunkResult.get("cleaned_text").getAsString();
+                        if (cleanedText.isBlank()) throw new IOException("Model returned empty cleaned transcript for chunk " + (c + 1));
+                        // A model occasionally summarizes instead of proofreading. Keep
+                        // lore ingestion lossless: accept only a near-full-length edit;
+                        // otherwise commit the deterministic timestamp-only cleanup.
+                        String timestampCleanedSource = chunk.replaceAll("\\[\\d{1,2}:\\d{2}(?::\\d{2})?\\]\\s*", "").trim();
+                        int sourceWords = evidenceWordCount(timestampCleanedSource);
+                        int cleanedWords = evidenceWordCount(cleanedText);
+                        if (sourceWords > 40 && cleanedWords < Math.ceil(sourceWords * 0.90)) {
+                            System.err.println("Ciel Warning: Lore proofread reduced chunk " + (c + 1)
+                                    + " from " + sourceWords + " to " + cleanedWords
+                                    + " words; preserving source text and applying timestamp cleanup only.");
+                            cleanedText = timestampCleanedSource;
+                        }
+                        writeAtomically(partPath(state, c), cleanedText);
+                        String evidenceSource = chunk.replaceAll("\\[\\d{1,2}:\\d{2}(?::\\d{2})?\\]\\s*", "");
+                        saveLoreFactCandidates(chunkResult, originalName, c, evidenceSource);
+                        state.currentDraft = "";
+                        state.currentPhase = 1;
+                        state.chunkIndex = c + 1;
+                        saveState(state);
                     }
                     
                     Thread.sleep(1500); 
@@ -464,55 +734,112 @@ public class VaultService {
 
                 // PHASE 4: Master Index (If complete)
                 if (fileCompletedSuccessfully) {
-                    MemoryService.addFact(new Fact("pipeline_completed_" + state.taskId, "true", System.currentTimeMillis(), "system_state", "system", 1));
-                    deleteState();
+                    assembleLoreOutput(state, outputPath, originalName);
                     
                     String completedContent = content.replaceAll("(?i)#(transcript|novel|lore)", "#completed");
-                    Files.writeString(processingFile, completedContent, StandardCharsets.UTF_8);
+                    processingCache.put(processingFile, System.currentTimeMillis());
+                    writeAtomically(processingFile, completedContent);
 
                     Path archivePath = requestsArchiveDir.resolve(processingFile.getFileName());
                     Files.move(processingFile, archivePath, StandardCopyOption.REPLACE_EXISTING);
 
+                    createGroundedLoreIndex(outputPath, originalName);
+                    MemoryService.addFact(new Fact("pipeline_completed_" + state.taskId, "true", System.currentTimeMillis(), "system_state", "system", 1));
+                    deleteState(state.fileName);
+
                     System.out.println("Ciel Debug: Sweep Pipeline completed successfully: " + originalName);
-                    
-                    System.out.println("Ciel Debug: Launching Master Index generator for newly assimilated volume...");
-                    String indexPrompt = "You have just finished the 3-phase sweep for: " + originalName + ".\n" +
-                        "Generate a comprehensive 'Master Index Knowledge Base' document summarizing the key characters, skills, and major plot events introduced in this specific volume.\n" +
-                        "CRITICAL DIRECTIVES:\n" +
-                        "1. ZERO HALLUCINATION POLICY: ONLY mention things explicitly present in " + originalName + ".\n" +
-                        "2. Format it beautifully as an Obsidian Markdown file. Include Obsidian links [[ ]] to major entities.";
-                    
-                    AIEngine.generateSilentLogic(indexPrompt, "Generate Volume Master Index").thenAccept(indexContent -> {
-                        if (indexContent != null && !indexContent.isBlank() && !isErrorResponse(indexContent)) {
-                            try {
-                                Files.writeString(vaultRoot.resolve("lore").resolve("Indexes").resolve(originalName + " Master Index.md"), indexContent.replaceAll("^`{3}[a-zA-Z]*\n|`{3}$", "").trim());
-                                System.out.println("Ciel Debug: Master Index successfully created for " + originalName);
-                            } catch(Exception ignored) {}
-                        }
-                    });
                 } else {
                     System.out.println("Ciel Debug: Pipeline paused/failed. Foreman state locked safely.");
-                    synchronized(loreBatchQueue) {
-                        loreBatchQueue.add(0, processingFile); 
-                        debounceExecutor.schedule(VaultService::startLoreBatch, 15, TimeUnit.MINUTES);
-                    }
+                    debounceExecutor.schedule(() -> queueLoreInjection(processingFile), 15, TimeUnit.MINUTES);
                 }
 
             } catch (Exception e) {
-                System.err.println("Ciel Error: Failed to process massive lore transcript.");
-                synchronized(loreBatchQueue) {
-                    loreBatchQueue.add(processingFile);
-                    debounceExecutor.schedule(VaultService::startLoreBatch, 15, TimeUnit.MINUTES);
-                }
+                System.err.println("Ciel Error: Lore task failed for " + processingFile.getFileName()
+                        + " type=" + e.getClass().getSimpleName() + " message=" + e.getMessage());
+                debounceExecutor.schedule(() -> queueLoreInjection(processingFile), 15, TimeUnit.MINUTES);
             } finally {
-                isLoreThreadActive.set(false);
+                activeLorePaths.remove(processingFile);
                 synchronized(loreBatchQueue) {
-                    if (!loreBatchQueue.isEmpty() && fileCompletedSuccessfully) {
+                    if (!loreBatchQueue.isEmpty()) {
                         debounceExecutor.schedule(VaultService::startLoreBatch, 5000, TimeUnit.MILLISECONDS);
                     }
                 }
             }
         });
+
+        synchronized (loreBatchQueue) {
+            if (!loreBatchQueue.isEmpty() && activeLorePaths.size() < MAX_CONCURRENT_LORE_FILES) {
+                debounceExecutor.schedule(VaultService::startLoreBatch, 100, TimeUnit.MILLISECONDS);
+            }
+        }
+    }
+
+    private static int evidenceWordCount(String text) {
+        Matcher matcher = Pattern.compile("[\\p{L}\\p{N}]+(?:['’][\\p{L}\\p{N}]+)?").matcher(text == null ? "" : text);
+        int count = 0;
+        while (matcher.find()) count++;
+        return count;
+    }
+
+    private static String awaitLorePhase(String prompt, String systemPrompt, String phase,
+                                         PipelineState state, int chunkIndex) throws Exception {
+        long startedAt = System.nanoTime();
+        CompletableFuture<String> request = AIEngine.generateSilentLogicWithModel(
+                prompt, systemPrompt, null, 0.1, "Lore Processing");
+        try {
+            String result = request.get(6, TimeUnit.MINUTES);
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+            if (result == null || result.isBlank() || isErrorResponse(result)) {
+                System.err.println("Ciel Lore Pipeline: phase=" + phase + " file=" + state.fileName
+                        + " chunk=" + (chunkIndex + 1) + " result=error-response elapsedMs=" + elapsedMs);
+                return null;
+            }
+            System.out.println("Ciel Lore Pipeline: phase=" + phase + " file=" + state.fileName
+                    + " chunk=" + (chunkIndex + 1) + " result=ok chars=" + result.length()
+                    + " elapsedMs=" + elapsedMs);
+            return result;
+        } catch (TimeoutException e) {
+            request.cancel(true);
+            System.err.println("Ciel Lore Pipeline: phase=" + phase + " file=" + state.fileName
+                    + " chunk=" + (chunkIndex + 1) + " result=timeout limitSeconds=360");
+            throw e;
+        } catch (Exception e) {
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+            System.err.println("Ciel Lore Pipeline: phase=" + phase + " file=" + state.fileName
+                    + " chunk=" + (chunkIndex + 1) + " result=exception type="
+                    + e.getClass().getSimpleName() + " elapsedMs=" + elapsedMs);
+            throw e;
+        }
+    }
+
+    private static void createGroundedLoreIndex(Path transcriptPath, String originalName) {
+        Path indexPath = vaultRoot.resolve("lore").resolve("Indexes").resolve(originalName + " Master Index.md");
+        try {
+            Path volumeReview = loreReviewDir.resolve(safeLorePart(originalName));
+            StringBuilder index = new StringBuilder("---\nstatus: review-required\nseries: \"That Time I Got Reincarnated as a Slime\"\n---\n\n")
+                    .append("# ").append(originalName).append(" — Lore Index\n\n")
+                    .append("Source transcript: [[../Transcripts/").append(transcriptPath.getFileName().toString().replace(".md", ""))
+                    .append("]]\n\nAI-extracted facts below are evidence-checked candidates. Review them for accuracy and spoiler placement before approving.\n");
+            if (Files.isDirectory(volumeReview)) {
+                try (var notes = Files.walk(volumeReview)) {
+                    List<Path> noteFiles = notes.filter(Files::isRegularFile)
+                            .filter(p -> p.toString().toLowerCase(Locale.ROOT).endsWith(".md"))
+                            .sorted().toList();
+                    for (Path note : noteFiles) {
+                        String relative = volumeReview.relativize(note).toString().replace('\\', '/').replace(".md", "");
+                        index.append("\n- [[../Review/Tensura/").append(safeLorePart(originalName)).append('/')
+                                .append(relative).append("]]\n");
+                    }
+                }
+            }
+            if (index.toString().endsWith("reviewing accuracy and spoiler placement before approving.\n"))
+                index.append("\nNo evidence-backed entity candidates were produced.\n");
+            writeAtomically(indexPath, index.toString());
+            System.out.println("Ciel Lore Pipeline: phase=index file=" + originalName + " result=ok type=deterministic-review-index");
+        } catch (Exception e) {
+            System.err.println("Ciel Lore Pipeline: phase=index file=" + originalName + " result=exception type="
+                    + e.getClass().getSimpleName());
+        }
     }
 
     private static void processThoughtFile(Path filePath) {
@@ -526,7 +853,7 @@ public class VaultService {
 
                 String systemContext = "[LOCAL_THOUGHT] You are Ciel. Act as a creative partner. Format your response in beautiful Markdown.";
 
-                AIEngine.generateSilentLogic(thoughtContent, systemContext).thenAccept(brainstormText -> {
+                AIEngine.generateSilentLogic(thoughtContent, systemContext, "Saved Thought Brainstorming").thenAccept(brainstormText -> {
                     if (brainstormText != null && !brainstormText.isBlank() && !isErrorResponse(brainstormText)) {
                         saveFileAndArchive(filePath, brainstormText, insightsDir, thoughtsArchiveDir, "Ciel_Thoughts_On_", null);
                     }
@@ -559,7 +886,7 @@ public class VaultService {
         
         String latestThought = "";
         try {
-            File thoughtsDir = new File("C:\\Ciel Companion\\ciel\\diary\\strategic_analysis");
+            File thoughtsDir = ProjectPaths.ciel().resolve("diary").resolve("strategic_analysis").toFile();
             if (thoughtsDir.exists() && thoughtsDir.isDirectory()) {
                 File[] files = thoughtsDir.listFiles((dir, name) -> name.endsWith(".md"));
                 if (files != null && files.length > 0) {
@@ -645,15 +972,17 @@ public class VaultService {
 
     private static void saveFileAndArchive(Path originalRequest, String answerContent, Path targetDir, Path targetArchiveDir, String prefix, String completionSpeech) {
         try {
-            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
             String originalName = originalRequest.getFileName().toString().replace(".md", "");
-            Path answerPath = targetDir.resolve(prefix + originalName + "_" + timestamp + ".md");
-            Files.writeString(answerPath, answerContent, StandardCharsets.UTF_8);
-            
             String content = Files.readString(originalRequest, StandardCharsets.UTF_8);
+            String taskId = UUID.nameUUIDFromBytes((originalName + "\n" + content).getBytes(StandardCharsets.UTF_8))
+                    .toString().substring(0, 12);
+            Path answerPath = targetDir.resolve(prefix + originalName + "_" + taskId + ".md");
+            writeAtomically(answerPath, answerContent);
+            
             if (!content.toLowerCase().contains("#completed")) {
-                String completedContent = content.replaceAll("(?i)#(summarize|generate)", "#completed");
-                Files.writeString(originalRequest, completedContent, StandardCharsets.UTF_8);
+                String completedContent = content.replaceAll("(?i)#(summarize|generate|campaign|suggestion)", "#completed");
+                processingCache.put(originalRequest, System.currentTimeMillis());
+                writeAtomically(originalRequest, completedContent);
             }
             
             Path archivePath = targetArchiveDir.resolve(originalRequest.getFileName());

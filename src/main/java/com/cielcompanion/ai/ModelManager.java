@@ -15,7 +15,7 @@ public class ModelManager {
 
     public enum ModelTier {
         PERSONALITY, // Fast chat (GPU)
-        EVALUATOR,   // Background observer (CPU)
+        EVALUATOR,   // Background observer (CPU -> GPU Dynamic)
         LOGIC,       // Deep D&D reasoning
         LOCAL_LOGIC_FALLBACK, // Deep reasoning (Fallback)
         TRANSLATOR   // Phonetic translation (GPU)
@@ -45,7 +45,7 @@ public class ModelManager {
         String taskIntent = switch (tier) {
             case PERSONALITY -> "Conversational/Contextual Reasoning";
             case EVALUATOR -> "Background Emotion Polling";
-            case LOGIC, LOCAL_LOGIC_FALLBACK -> "Deep Logic Reasoning";
+            case LOGIC, LOCAL_LOGIC_FALLBACK -> "Conversation Context Analysis";
             case TRANSLATOR -> "Katakana Transliteration";
         };
         payload.addProperty("task_intent", taskIntent);
@@ -59,22 +59,24 @@ public class ModelManager {
         }
 
         JsonObject options = new JsonObject();
+        
+        // CRITICAL FIX: Dynamically apply GPU offloading to ALL tiers (including the Evaluator)
+        // unless a heavy game is running, preventing CPU choke timeouts.
+        String gameCmd = getHeavyGameRunning();
+        if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
+            options.addProperty("num_gpu", 99); 
+        } else if (gameCmd != null) {
+            options.addProperty("num_gpu", 0);  
+        } else {
+            options.addProperty("num_gpu", 99); 
+        }
+
         if (tier == ModelTier.EVALUATOR) {
-            options.addProperty("num_gpu", 0);
-            
             JsonObject responseFormat = new JsonObject();
             responseFormat.addProperty("type", "json_object");
             payload.add("response_format", responseFormat);
-        } else {
-            String gameCmd = getHeavyGameRunning();
-            if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
-                options.addProperty("num_gpu", 99); 
-            } else if (gameCmd != null) {
-                options.addProperty("num_gpu", 0);  
-            } else {
-                options.addProperty("num_gpu", 99); 
-            }
         }
+        
         payload.add("options", options);
 
         JsonArray messages = new JsonArray();

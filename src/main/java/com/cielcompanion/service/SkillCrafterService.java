@@ -1,6 +1,7 @@
 package com.cielcompanion.service;
 
 import com.cielcompanion.ai.AIEngine;
+import com.cielcompanion.util.ProjectPaths;
 import com.cielcompanion.ai.SkillManager;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
 import com.google.gson.JsonObject;
@@ -10,6 +11,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.concurrent.CompletableFuture;
@@ -18,7 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class SkillCrafterService {
 
-    private static final String SKILLS_DIR = "C:\\Ciel Companion\\ciel\\skills";
+    private static final String SKILLS_DIR = ProjectPaths.ciel().resolve("skills").toString();
     
     private static final AtomicBoolean activelySynthesizing = new AtomicBoolean(false);
 
@@ -58,6 +62,33 @@ public class SkillCrafterService {
             return;
         }
 
+        String normalizedTask = taskDescription.toLowerCase(java.util.Locale.ROOT);
+        if (!isSilent && normalizedTask.matches("(?s).*(repair|fix|heal).*" )
+                && normalizedTask.matches("(?s).*(stremio|media tracking|media commentary|media contract).*")) {
+            if (!ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
+                SpeechService.speakPreformatted("[Concerned] Media core repair requires your existing privileged mode authorization.");
+                return;
+            }
+            if (!activelySynthesizing.compareAndSet(false, true)) return;
+            System.out.println("[Media Repair] Authenticated request routed to staged core repair; dynamic skill writer bypassed.");
+            CompletableFuture.supplyAsync(() -> requestMediaCoreRepair(taskDescription))
+                    .orTimeout(15, TimeUnit.MINUTES).whenComplete((result, error) -> {
+                        activelySynthesizing.set(false);
+                        if (error != null) {
+                            System.err.println("[Media Repair] Request incomplete: " + error.getMessage());
+                            SpeechService.speakPreformatted("[Concerned] The media repair request did not finish. I have not confirmed any installed repair.");
+                            return;
+                        }
+                        System.out.println("[Media Repair] " + result);
+                        if (result != null && result.startsWith("MEDIA_REPAIR_APPLIED_RESTART_REQUIRED:")) {
+                            SpeechService.speakPreformatted("[Proud] The media repair passed its regression checks and Java build. Restart me to activate it.");
+                        } else {
+                            SpeechService.speakPreformatted("[Observing] The media repair did not install a change. I retained the diagnostic details in my logs.");
+                        }
+                    });
+            return;
+        }
+
         System.out.println("Ciel Debug: Delegating task to Swarm Code Factory: [" + intendedName + "] " + taskDescription);
         
         if (!isSilent) {
@@ -91,10 +122,11 @@ public class SkillCrafterService {
                         promptForPython += "\n\nWARNING: Previous attempts failed. Please read the failure log and adjust your approach. If you timed out, write a simpler/shorter script. If you failed safety, remove destructive commands. If you missed code blocks, ensure you use markdown fences.\nFailure Log:\n" + previousFailures;
                     }
 
-                    // CRITICAL FIX: Use generateSilentLogic with a 15-minute timeout. Do NOT use generateDiaryEntrySync.
+                    promptForPython += "\n\n" + DeviceProfileService.context()
+                        + "\nDevice-aware skills must read from ciel_tools import get_device_profile at execution time, validate status=available, and check local prerequisites. Never hardcode laptop/desktop hardware from shared memories.";
                     String swarmResponse = null;
                     try {
-                        swarmResponse = AIEngine.generateSilentLogic(promptForPython, "You are the Ciel Interface. Pass the Swarm's output to the user.").get(15, TimeUnit.MINUTES);
+                        swarmResponse = AIEngine.generateSilentLogic(promptForPython, "You are the Ciel Interface. Pass the Swarm's output to the user.", "Requested Skill Code Generation").get(15, TimeUnit.MINUTES);
                     } catch (Exception e) {
                         System.err.println("Ciel Error: Skill synthesis future timed out or interrupted.");
                     }
@@ -125,6 +157,39 @@ public class SkillCrafterService {
                 activelySynthesizing.set(false);
             }
         });
+    }
+
+    private static String requestMediaCoreRepair(String taskDescription) {
+        java.net.HttpURLConnection connection = null;
+        try {
+            Path keyFile = ProjectPaths.ciel().resolve("runtime").resolve("media_repair.key");
+            Files.createDirectories(keyFile.getParent());
+            if (!Files.exists(keyFile)) {
+                String key = java.util.UUID.randomUUID().toString() + java.util.UUID.randomUUID();
+                Files.writeString(keyFile, key, StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.CREATE_NEW);
+            }
+            String key = Files.readString(keyFile, StandardCharsets.UTF_8).trim();
+            connection = (java.net.HttpURLConnection) new java.net.URL("http://localhost:8000/repair_media_contract").openConnection();
+            connection.setRequestMethod("POST");
+            connection.setConnectTimeout(3000);
+            connection.setReadTimeout(14 * 60 * 1000);
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            connection.setRequestProperty("X-Ciel-Media-Repair-Key", key);
+            JsonObject payload = new JsonObject();
+            payload.addProperty("request", taskDescription);
+            try (java.io.OutputStream output = connection.getOutputStream()) {
+                output.write(payload.toString().getBytes(StandardCharsets.UTF_8));
+            }
+            if (connection.getResponseCode() != 200) return "MEDIA_REPAIR_NOT_APPLIED: Repair service returned HTTP " + connection.getResponseCode();
+            try (java.io.Reader input = new java.io.InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8)) {
+                return com.google.gson.JsonParser.parseReader(input).getAsJsonObject().get("result").getAsString();
+            }
+        } catch (Exception failure) {
+            return "MEDIA_REPAIR_NOT_APPLIED: " + failure.getClass().getSimpleName() + ": " + failure.getMessage();
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
     }
 
     private static boolean compileAndSaveSkill(String intendedName, String originalTask, String swarmOutput, boolean isSilent) {
@@ -190,11 +255,20 @@ public class SkillCrafterService {
                     filePath = Paths.get(SKILLS_DIR, fileName);
                 }
                 
-                Files.writeString(filePath, code);
+                Path tempPath = filePath.resolveSibling(filePath.getFileName() + ".tmp");
+                Files.writeString(tempPath, code, StandardCharsets.UTF_8);
+                try {
+                    Files.move(tempPath, filePath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException moveFallback) {
+                    Files.move(tempPath, filePath, StandardCopyOption.REPLACE_EXISTING);
+                }
+
+                // CRITICAL FIX: Verify gaming status AFTER the massive generation window
+                boolean isGamingNow = ShortTermMemoryService.getMemory().isInGamingSession() || "Gaming".equalsIgnoreCase(HabitTrackerService.getCurrentCategory());
 
                 if (isDraftRequest) {
                     System.out.println("Ciel Debug: Core System Upgrade Draft routed safely to quarantine folder: " + fileName);
-                    if (!isSilent) {
+                    if (!isSilent && !isGamingNow) {
                         SpeechService.speakPreformatted("[Proud] I have drafted a proposal for a core system upgrade. I have placed it in the requests/drafts folder for your review, Master.");
                     } else {
                         HabitTrackerService.queueNonCriticalAnnouncement("[Observing] I identified a potential architectural optimization. A draft proposal has been filed in your requests folder.", "Core Upgrade Proposal: " + safeName.replace("_", " "));
@@ -216,10 +290,10 @@ public class SkillCrafterService {
                 
                 System.out.println("Ciel Debug: Raw Skill and Metadata compiled successfully: " + fileName);
                 
-                if (!isSilent) {
-                    SpeechService.speakPreformatted("[Happy] The new skill has been successfully compiled and assimilated. You may execute it at your discretion.");
+                String friendlyName = safeName.replace("_", " ");
+                if (!isSilent && !isGamingNow) {
+                    SpeechService.speakPreformatted("[Happy] I have autonomously developed and assimilated a new system skill to improve your workflow: " + friendlyName + ".");
                 } else {
-                    String friendlyName = safeName.replace("_", " ");
                     HabitTrackerService.queueNonCriticalAnnouncement("[Proud] I have autonomously developed and assimilated a new system skill to improve your workflow: " + friendlyName + ".", "New Skill Synthesized: " + friendlyName);
                 }
 
@@ -236,8 +310,6 @@ public class SkillCrafterService {
             return false;
         }
     }
-    
-    // --- SANITIZATION METHODS ---
     
     private static String purgeArgparse(String code) {
         String cleaned = code.replaceAll("(?m)^.*\\bargparse\\b.*\\n?", "");

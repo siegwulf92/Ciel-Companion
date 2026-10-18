@@ -4,7 +4,9 @@ import com.cielcompanion.ai.SkillManager;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
 import com.cielcompanion.service.LineManager.DialogueLine;
 import com.cielcompanion.CielCompanion;
+import com.cielcompanion.util.ProjectPaths;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -95,7 +97,13 @@ public class SystemLifecycleService {
             } else if (action == LifecycleAction.UPDATE) {
                 System.out.println("Ciel Debug: Update sequence terminating JVM and launching Autonomous Re-Compiler.");
                 try {
-                    Runtime.getRuntime().exec("cmd /c start update_ciel.bat");
+                    Path root = ProjectPaths.root();
+                    String rootArg = root.toString().replace("'", "''");
+                    String updaterArg = root.resolve("update_ciel.bat").toString().replace("'", "''");
+                    String launchHidden = "Start-Process -FilePath '" + updaterArg
+                            + "' -WorkingDirectory '" + rootArg + "' -WindowStyle Hidden";
+                    new ProcessBuilder("powershell.exe", "-WindowStyle", "Hidden", "-NoProfile",
+                            "-NonInteractive", "-Command", launchHidden).start();
                 } catch (Exception e) { e.printStackTrace(); }
             }
             System.exit(0);

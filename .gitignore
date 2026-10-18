@@ -35,3 +35,18 @@ hs_err_pid*
 replay_pid*
 
 ciel_secrets.properties
+
+# Device state and private Python companion stay outside the public repository.
+.local/
+.venv/
+Ciel/
+config/
+OpenJarvis-main/
+*.py
+__pycache__/
+*.db
+*.db-*
+*.pem
+*.key
+*.pub
+trigger-keys.properties

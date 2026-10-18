@@ -35,6 +35,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 public class CielController {
@@ -44,7 +45,8 @@ public class CielController {
     private static final Set<String> GAME_AWARENESS_EXCLUSIONS = Set.of("steamwebhelper", "copilot", "steam");
     private static final int HIGH_CPU_THRESHOLD = 90;
     private static final long CPU_ALERT_COOLDOWN_MS = 60000;
-    private static final int REQUIRED_ACTIVE_TICKS_FOR_RETURN = 3;
+    private static final int REQUIRED_ACTIVE_TICKS_FOR_RETURN = 1;
+    private static final AtomicLong idleReportGeneration = new AtomicLong();
 
     private static final AppLauncherService appLauncher = new AppLauncherService();
     private static ScheduledExecutorService logoutScheduler;
@@ -55,6 +57,7 @@ public class CielController {
     // Diagnostic flags for logs
     private static boolean loggedWaitingFor5s = false;
     private static boolean loggedWaitingFor2m = false;
+    private static long lastAudioIdleDiagnostic;
 
     public static void checkAndSpeak() {
         try {
@@ -69,31 +72,45 @@ public class CielController {
                 System.err.println("Ciel Error: Background emotion polling failed gracefully: " + t.getMessage());
             }
 
-            if (currentTime < memory.getSpeechEndTime()) return;
-
             handleGreetings();
             
             logStatus(metrics);
             
-            if (handleApplicationAwareness(metrics)) {
-                CielState.setNextSpeakAt(Long.MAX_VALUE);
-                return;
-            }
-            
-            handleSystemAlerts(metrics);
+            handleApplicationAwareness(metrics);
 
             int oldPhase = memory.getCurrentPhase();
             int newPhase = determinePhase(metrics.idleTimeMinutes(), memory.isInGamingSession());
+            // Application focus must not block activity transitions or permanently
+            // set the chatter timer to "never". Gaming suppression is applied below.
 
             String currentCat = HabitTrackerService.getCurrentCategory();
             boolean isGaming = memory.isInGamingSession() || "Gaming".equalsIgnoreCase(currentCat);
             boolean isMedia = metrics.isPlayingMedia() || "Media".equalsIgnoreCase(currentCat);
 
+            // Watching is activity, not suppressed loneliness. Clear any phase
+            // accumulated before detection without firing a return greeting or
+            // interrupting media commentary already being spoken.
+            if (isMedia) {
+                newPhase = 0;
+                if (oldPhase > 0) {
+                    idleReportGeneration.incrementAndGet();
+                    memory.setCurrentPhase(0);
+                    CielState.setFinalPlayed(false);
+                    CielState.setConsecutiveActiveTicks(0);
+                    memory.setInPhase4Monologue(false);
+                    VaultService.resetFinalLogFlag();
+                    if (logoutScheduler != null && !logoutScheduler.isShutdown()) logoutScheduler.shutdownNow();
+                    scheduleNextSpeakBasedOnPhase(0);
+                    System.out.println("[Audio/Idle] Media activity cleared idle phase silently; no return greeting.");
+                    oldPhase = 0;
+                }
+            }
+
             // Hard Mute = Total silence (e.g. OBS streaming is active)
             boolean isHardMuted = metrics.isHardMuted() || metrics.isStreaming();
             
             // Suppress Idle Chatter = Do not ramble Phase 1/2 lines while watching a movie.
-            boolean suppressIdleChatter = isHardMuted || (!isGaming && isMedia) || (!isGaming && metrics.isInFullScreen() && !metrics.isBrowserActive());
+            boolean suppressIdleChatter = isHardMuted || (!isGaming && isMedia);
 
             // Enforce Game Silence: If gaming, suppress idle chatter UNLESS we hit Phase 3 (5+ mins idle)
             if (isGaming && newPhase < 3) {
@@ -106,26 +123,42 @@ public class CielController {
             } else if (!suppressIdleChatter && CielState.isLockedOut()) {
                 System.out.println("Ciel Debug: Restoring standard idle chatter.");
                 CielState.setLockedOut(false);
+                scheduleNextSpeakBasedOnPhase(newPhase);
             }
+
+            boolean isReturnFromIdle = newPhase == 0 && oldPhase > 0;
+            if (currentTime < memory.getSpeechEndTime() && !isReturnFromIdle) return;
 
             if (newPhase != oldPhase) {
                 if (newPhase == 0 && oldPhase > 0) {
-                    if (CielState.isLockedOut() && !isHardMuted) {
-                        CielState.setConsecutiveActiveTicks(0);
-                        return; 
-                    }
+                    // Cancel report/dialogue at the first confirmed active sample.
+                    // The return line is then the next utterance, never queued behind it.
+                    idleReportGeneration.incrementAndGet();
+                    SpeechService.cancelSequentialSpeech();
+                    SpeechService.stopCurrentPlayback();
                     CielState.incrementConsecutiveActiveTicks();
                     if (CielState.getConsecutiveActiveTicks() < REQUIRED_ACTIVE_TICKS_FOR_RETURN) return; 
                     
                     CielState.setConsecutiveActiveTicks(0);
                     performReturnFromIdle(memory, oldPhase);
+                    // Do not let this polling tick deliver pending media, alerts,
+                    // or phase chatter alongside the welcome-back line.
+                    return;
                 } else {
                     CielState.setConsecutiveActiveTicks(0);
-                    performPhaseChange(memory, oldPhase, newPhase, metrics);
+                    if (suppressIdleChatter) {
+                        memory.setCurrentPhase(newPhase);
+                        scheduleNextSpeakBasedOnPhase(newPhase);
+                    } else performPhaseChange(memory, oldPhase, newPhase, metrics);
                 }
             } else if (newPhase == 0) {
                 CielState.setConsecutiveActiveTicks(0);
             }
+
+            // Activity transitions must be processed even while speech is in progress.
+            // In particular, returning from idle cancels the report before its next line.
+            if (currentTime < memory.getSpeechEndTime()) return;
+            handleSystemAlerts(metrics);
 
             // --- ALWAYS ALLOW MEDIA COMMENTARY IF NOT HARD MUTED ---
             if (!isHardMuted) {
@@ -217,6 +250,8 @@ public class CielController {
 
     private static void performReturnFromIdle(ShortTermMemory memory, int oldPhase) {
         System.out.printf("Ciel Debug: Phase changed from %d to 0 confirmed.%n", oldPhase);
+        long cancelledReport = idleReportGeneration.incrementAndGet();
+        System.out.printf("Ciel Debug: Idle report generation %d cancelled on user return; source report data remains available.%n", cancelledReport - 1);
         CielState.getEmotionManager().ifPresent(em -> {
             em.triggerEmotion("Focused", 1.0, "Activity");
             em.triggerEmotion("Happy", 0.5, "UserReturn");
@@ -229,8 +264,9 @@ public class CielController {
         System.out.println("Ciel Debug: Waking up from idle. Forcing reconnect to NVIDIA Broadcast and flushing Vosk audio buffers...");
         SpeechService.getVoiceListener().ifPresent(com.cielcompanion.service.VoiceListener::forceMicReinitialization);
 
-        SpeechService.stopCurrentPlayback();
+        // Instantly cancel any ongoing sequential speech (like the daily report)
         SpeechService.cancelSequentialSpeech();
+        SpeechService.stopCurrentPlayback();
 
         if (oldPhase >= 4) {
             memory.setInPhase4Monologue(false);
@@ -259,6 +295,15 @@ public class CielController {
         ShortTermMemory memory = ShortTermMemoryService.getMemory();
         String currentlyTrackedGame = memory.getCurrentlyTrackedGameProcess();
 
+        AppProfile profile = AppProfilerService.identifyActiveApp(metrics.activeProcessName(), metrics.activeWindowTitle());
+
+        // CRITICAL FIX: If we detect a launcher, and we are ALREADY in a gaming session, IGNORE THE LAUNCHER ENTIRELY.
+        // This prevents the infinite grace period loop when launchers (like Witcher 3) pop in and out of the background.
+        if (profile != null && profile.isLauncher() && memory.isInGamingSession()) {
+            return true;
+        }
+
+        // Handle process disappearance (Game Closed)
         if (currentlyTrackedGame != null && !metrics.runningProcesses().contains(currentlyTrackedGame)) {
             if (memory.getGameSessionGracePeriodEnd() == 0) {
                 System.out.println("Ciel Debug: Tracked game '" + currentlyTrackedGame + "' process disappeared. Starting grace period.");
@@ -272,11 +317,10 @@ public class CielController {
                 
                 SpeechService.getVoiceListener().ifPresent(com.cielcompanion.service.VoiceListener::refresh);
             }
-            return true;
+            return true; // Still in grace period, return true to suppress chatter
         }
         
-        AppProfile profile = AppProfilerService.identifyActiveApp(metrics.activeProcessName(), metrics.activeWindowTitle());
-
+        // Handle new Game Launch
         if (profile != null && "Game".equalsIgnoreCase(profile.category())) {
             String procNameLower = profile.processName().toLowerCase();
             
@@ -284,7 +328,9 @@ public class CielController {
                 return memory.isInGamingSession();
             }
             
-            if (currentlyTrackedGame == null || !currentlyTrackedGame.equals(procNameLower)) {
+            // Only swap the tracked game if it's NOT a launcher. 
+            // We never want to formally track a launcher as the active game process.
+            if ((currentlyTrackedGame == null || !currentlyTrackedGame.equals(procNameLower)) && !profile.isLauncher()) {
                 System.out.println("Ciel Debug: New game session detected: " + profile.displayName());
                 memory.setInGamingSession(true);
                 CielState.getEmotionManager().ifPresent(em -> em.triggerSpecialEvent("GAME_START"));
@@ -320,22 +366,76 @@ public class CielController {
 
         if (!CielState.hasPlayedAstronomyReport()) {
             CielState.setHasPlayedAstronomyReport(true); 
+            final long reportGeneration = idleReportGeneration.incrementAndGet();
             AstronomyReport report = AstronomyService.getTodaysAstronomyReport();
+            List<String> sourceLines = new ArrayList<>(report.sequentialEvents().values());
+            sourceLines.addAll(report.reportAmbientLines());
+            HolidayService.getDailyReportAddition().ifPresent(sourceLines::add);
+            persistGeneratedIdleReport(reportGeneration, createIdleReportLines(reportGeneration, sourceLines));
             
-            com.cielcompanion.ai.WeatherAwareAstronomyEngine.processReport(report, finalReport -> {
-                List<String> linesToSpeak = new ArrayList<>(finalReport.sequentialEvents().values());
-                linesToSpeak.addAll(finalReport.reportAmbientLines()); 
-
-                HolidayService.getDailyReportAddition().ifPresent(linesToSpeak::add);
-
-                if (!linesToSpeak.isEmpty()) {
-                    speakSpecialEventsSequentially(linesToSpeak, () -> speakSubsequentPhase1Chatter());
-                } else {
-                    SpeechService.speakPreformatted("Scanning celestial data. No significant events detected in your sector today.");
-                }
-            });
+            try {
+                // Hold ordinary phase-1 chatter while the asynchronous weather filter runs.
+                CielState.setNextSpeakAt(Long.MAX_VALUE);
+                com.cielcompanion.ai.WeatherAwareAstronomyEngine.processReport(report,
+                        finalReport -> deliverIdleReport(reportGeneration, finalReport));
+            } catch (RuntimeException e) {
+                System.err.println("Ciel Warning: Weather filtering failed to start; delivering the saved report: " + e.getMessage());
+                deliverIdleReport(reportGeneration, report);
+            }
         } else {
             speakSubsequentPhase1Chatter();
+        }
+    }
+
+    private static void deliverIdleReport(long reportGeneration, AstronomyReport finalReport) {
+        List<String> linesToSpeak = new ArrayList<>(finalReport.sequentialEvents().values());
+        linesToSpeak.addAll(finalReport.reportAmbientLines());
+        HolidayService.getDailyReportAddition().ifPresent(linesToSpeak::add);
+
+        List<DialogueLine> reportLines = createIdleReportLines(reportGeneration, linesToSpeak);
+        persistGeneratedIdleReport(reportGeneration, reportLines);
+        if (!isCurrentIdleReport(reportGeneration)) {
+            System.out.println("Ciel Debug: Saved completed idle report data without speaking it because the Master has returned.");
+            return;
+        }
+        SpeechService.speakSequentially(reportLines, 1200, true, () -> {
+            if (isCurrentIdleReport(reportGeneration)) scheduleNextSpeakBasedOnPhase(1);
+        });
+    }
+
+    private static List<DialogueLine> createIdleReportLines(long generation, List<String> contentLines) {
+        List<DialogueLine> reportLines = new ArrayList<>();
+        LineManager.getDailyReportIntroLine().ifPresent(reportLines::add);
+        for (int i = 0; i < contentLines.size(); i++) {
+            reportLines.add(new DialogueLine("idle_report." + generation + "." + i, contentLines.get(i)));
+        }
+        if (contentLines.isEmpty()) {
+            reportLines.add(new DialogueLine("idle_report.none", "スキャニング コンプリート。トゥデイ、レポートブル イベント ワズ ディテクテッド。"));
+        }
+        LineManager.getIdleReportOutroLine().ifPresent(reportLines::add);
+        return reportLines;
+    }
+
+    private static boolean isCurrentIdleReport(long generation) {
+        return idleReportGeneration.get() == generation
+                && ShortTermMemoryService.getMemory().getCurrentPhase() == 1;
+    }
+
+    private static void persistGeneratedIdleReport(long generation, List<DialogueLine> reportLines) {
+        try {
+            com.google.gson.JsonArray savedLines = new com.google.gson.JsonArray();
+            for (DialogueLine line : reportLines) {
+                com.google.gson.JsonObject item = new com.google.gson.JsonObject();
+                item.addProperty("key", line.key());
+                item.addProperty("text", line.text());
+                savedLines.add(item);
+            }
+            String key = "ciel.idle_report.generated." + java.time.LocalDate.now();
+            MemoryService.addFact(new com.cielcompanion.memory.Fact(key, savedLines.toString(),
+                    System.currentTimeMillis(), "daily_report", "system", 1));
+            System.out.println("Ciel Debug: Persisted generated idle report " + key + " (generation " + generation + ") before speech.");
+        } catch (Exception e) {
+            System.err.println("Ciel Warning: Could not persist generated idle report before delivery: " + e.getMessage());
         }
     }
 
@@ -396,6 +496,7 @@ public class CielController {
                 System.out.println("Ciel Debug: Logout interrupted during diary generation. Aborting.");
                 return;
             }
+            CielState.setDiaryWrittenThisSession(true);
 
             DialogueLine logoutLine = LineManager.getLogoutWarningLine();
             if (logoutLine == null || logoutLine.text() == null || logoutLine.text().isBlank()) {
@@ -408,25 +509,13 @@ public class CielController {
             logoutScheduler = Executors.newSingleThreadScheduledExecutor();
 
             logoutScheduler.schedule(() -> {
-                System.out.println("Ciel Debug: 1s mark. Initiating graceful Swarm VRAM purge...");
-                CielCompanion.killJarvis();
-            }, 1, TimeUnit.SECONDS);
-
-            logoutScheduler.schedule(() -> {
-                System.out.println("Ciel Debug: 25s mark. Force-killing AI processes to prepare for clean OS logout...");
-                try {
-                    Runtime.getRuntime().exec("taskkill /F /IM ollama_llama_server.exe /T");
-                    Runtime.getRuntime().exec("taskkill /F /IM ollama.exe /T");
-                    Runtime.getRuntime().exec("taskkill /F /IM lmstudio-server.exe /T");
-                    Runtime.getRuntime().exec("taskkill /F /IM python.exe /T");
-                } catch (Exception ignored) {}
-            }, 25, TimeUnit.SECONDS);
-
-            logoutScheduler.schedule(() -> {
                 if (SystemMonitor.getSystemMetrics().idleTimeMinutes() >= Settings.getPhase4ThresholdMin() && ShortTermMemoryService.getMemory().isInPhase4Monologue()) {
-                    System.out.println("Ciel Debug: 30s mark. Executing OS logout command.");
+                    System.out.println("Ciel Debug: 30s mark. Gracefully stopping OpenJarvis before OS logout.");
                     try {
-                        Runtime.getRuntime().exec("shutdown -l");
+                        CielCompanion.killJarvisAndWait(5);
+                        new ProcessBuilder("powershell.exe", "-NoProfile", "-Command",
+                                "Start-Sleep -Seconds 15; shutdown.exe -l").start();
+                        System.out.println("Ciel Debug: Logout scheduled after Java cleanup; local model servers will be left to Windows.");
                     } catch (IOException e) { e.printStackTrace(); }
                     System.exit(0);
                 } else {
@@ -536,6 +625,15 @@ public class CielController {
     }
 
     private static void logStatus(SystemMetrics metrics) {
+        long now = System.currentTimeMillis();
+        if (now - lastAudioIdleDiagnostic >= 60000) {
+            lastAudioIdleDiagnostic = now;
+            System.out.printf("[Audio/Idle] idleMinutes=%d phase=%d inputMuted=%b outputSuppressed=%b hardMute=%b media=%b fullscreen=%b speaking=%b nextSpeechMs=%s%n",
+                metrics.idleTimeMinutes(), ShortTermMemoryService.getMemory().getCurrentPhase(),
+                CielState.isManuallyMuted(), CielState.isLockedOut(), metrics.isHardMuted(),
+                metrics.isPlayingMedia() || metrics.isStreaming(), metrics.isInFullScreen(), SpeechService.isActivelySpeaking(),
+                CielState.getNextSpeakAt() == Long.MAX_VALUE ? "pending-report" : Long.toString(Math.max(0,CielState.getNextSpeakAt()-now)));
+        }
         if (!Settings.isVerboseLoggingEnabled()) return;
         String currentCat = HabitTrackerService.getCurrentCategory();
         boolean isMedia = metrics.isPlayingMedia() || "Media".equalsIgnoreCase(currentCat);

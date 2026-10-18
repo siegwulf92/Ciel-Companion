@@ -13,6 +13,7 @@ import com.cielcompanion.service.conversation.ConversationService;
 import com.cielcompanion.service.nlu.IntentService;
 import com.cielcompanion.ui.CielGui;
 import com.cielcompanion.ui.GuiSettings;
+import com.cielcompanion.util.ProjectPaths;
 
 import javax.swing.*;
 import java.io.BufferedReader;
@@ -25,6 +26,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
@@ -38,10 +43,13 @@ public class CielCompanion {
     private static ScheduledExecutorService scheduler;
     private static VoiceListener voiceListener;
     private static CielGui cielGui;
-    private static final int SINGLE_INSTANCE_PORT = 54321; 
-    private static ServerSocket instanceSocket;
-    private static final String COMMAND_TRIGGER_PASSPHRASE = "ciel_privileged_access_protocol_-alpha-";
-    private static final String SEARCH_TRIGGER_PASSPHRASE = "ciel_web_search_protocol-beta-";
+    private static final Path INSTANCE_LOCK_PATH = Paths.get(
+            System.getenv().getOrDefault("LOCALAPPDATA", System.getProperty("user.home")),
+            "CielCompanion", "ciel-instance.lock");
+    private static FileChannel instanceLockChannel;
+    private static FileLock instanceFileLock;
+    private static final String COMMAND_TRIGGER_PASSPHRASE = localTriggerKey("command");
+    private static final String SEARCH_TRIGGER_PASSPHRASE = localTriggerKey("search");
     private static final Path SHUTDOWN_FLAG_PATH = Paths.get(System.getenv("LOCALAPPDATA") + File.separator + "CielCompanion", "clean_shutdown.flag");
     private static Process jarvisProcess;
 
@@ -55,6 +63,7 @@ public class CielCompanion {
 
         FileLogger.initialize();
         System.out.println("Ciel Companion starting... (Clean Lock Acquired)");
+        reportUpdaterStatus();
         
         try {
             Class.forName("org.sqlite.JDBC");
@@ -70,8 +79,11 @@ public class CielCompanion {
             }
 
             Settings.initialize();
+            DeviceProfileService.initialize();
             GuiSettings.initialize();
             LineManager.load();
+            voiceListener = new VoiceListener(null);
+            if (Settings.isHotkeyEnabled()) new HotkeyService(voiceListener).initialize();
             
             EmotionManager emotionManager = new EmotionManager();
             CielState.setEmotionManager(emotionManager);
@@ -81,7 +93,7 @@ public class CielCompanion {
             SwingUtilities.invokeLater(cielGui::initialize);
             CielState.setCielGui(cielGui);
             
-            SpeechService.initialize(null); 
+            SpeechService.initialize(voiceListener);
             HabitTrackerService.initialize();
             GameMonitorService.initialize();
             startMainLoop(emotionManager);
@@ -91,6 +103,7 @@ public class CielCompanion {
             CompletableFuture.runAsync(() -> {
                 try {
                     MemoryService.initialize();
+                    com.cielcompanion.service.CodexAgentService.initialize();
                     VaultService.initialize();
                     AppProfilerService.initialize();
                     PhoneticsService.initialize();
@@ -119,7 +132,7 @@ public class CielCompanion {
                         combatTrackerService, spellCheckService 
                     );
 
-                    voiceListener = new VoiceListener(commandService);
+                    voiceListener.setCommandService(commandService);
                     commandService.setVoiceListener(voiceListener);
                     
                     SpeechService.initialize(voiceListener); 
@@ -149,7 +162,12 @@ public class CielCompanion {
             String contextSummary = recentMemories.isEmpty() ? "No significant interactions recorded this session." : String.join("\n- ", recentMemories);
             boolean isReboot = !CielState.isPerformingColdShutdown();
             
-            VaultService.generateSystemDiaryEntryBlocking(contextSummary, isReboot);
+            if (!CielState.isDiaryWrittenThisSession()) {
+                VaultService.generateSystemDiaryEntryBlocking(contextSummary, isReboot);
+                CielState.setDiaryWrittenThisSession(true);
+            } else {
+                System.out.println("Ciel Debug: Final diary already saved by the lifecycle command; skipping duplicate shutdown-hook entry.");
+            }
 
             if (isReboot) {
                 try {
@@ -178,19 +196,67 @@ public class CielCompanion {
         }));
     }
 
+    private static synchronized String localTriggerKey(String name) {
+        Path file = ProjectPaths.root().resolve(".local/trigger-keys.properties");
+        java.util.Properties keys = new java.util.Properties();
+        try {
+            if (Files.isRegularFile(file)) {
+                try (var input = Files.newInputStream(file)) { keys.load(input); }
+            }
+            String key = keys.getProperty(name);
+            if (key == null) {
+                byte[] bytes = new byte[32];
+                new java.security.SecureRandom().nextBytes(bytes);
+                key = java.util.HexFormat.of().formatHex(bytes);
+                keys.setProperty(name, key);
+                Files.createDirectories(file.getParent());
+                Path staging = file.resolveSibling("trigger-keys.properties.tmp");
+                try (var output = Files.newOutputStream(staging)) {
+                    keys.store(output, "Device-local trigger keys; never commit or share");
+                }
+                Files.move(staging, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+            if (key.length() < 32 || key.contains("\n") || key.contains("\r"))
+                throw new IllegalStateException("Invalid device-local trigger key: " + name);
+            return key;
+        } catch (IOException error) {
+            throw new IllegalStateException("Cannot load device-local trigger keys", error);
+        }
+    }
+
     private static boolean acquireInstanceLock() {
         try {
-            instanceSocket = new ServerSocket(SINGLE_INSTANCE_PORT);
-            return true;
+            Files.createDirectories(INSTANCE_LOCK_PATH.getParent());
+            instanceLockChannel = FileChannel.open(INSTANCE_LOCK_PATH,
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+            instanceFileLock = instanceLockChannel.tryLock();
+            if (instanceFileLock != null) return true;
+            instanceLockChannel.close();
+            instanceLockChannel = null;
+            System.err.println("Ciel instance lock is already held by another process.");
+            return false;
+        } catch (OverlappingFileLockException e) {
+            closeInstanceLockChannel();
+            System.err.println("Ciel instance lock is already held in this process.");
+            return false;
         } catch (IOException e) {
+            closeInstanceLockChannel();
+            System.err.println("Could not acquire Ciel instance lock at " + INSTANCE_LOCK_PATH + ": " + e);
             return false;
         }
     }
 
     private static void releaseInstanceLock() {
-        if (instanceSocket != null && !instanceSocket.isClosed()) {
-            try { instanceSocket.close(); } catch (IOException ignored) {}
-        }
+        try { if (instanceFileLock != null && instanceFileLock.isValid()) instanceFileLock.release(); }
+        catch (IOException e) { System.err.println("Could not release Ciel instance lock: " + e); }
+        instanceFileLock = null;
+        closeInstanceLockChannel();
+    }
+
+    private static void closeInstanceLockChannel() {
+        try { if (instanceLockChannel != null && instanceLockChannel.isOpen()) instanceLockChannel.close(); }
+        catch (IOException e) { System.err.println("Could not close Ciel instance lock channel: " + e); }
+        instanceLockChannel = null;
     }
 
     private static void startMainLoop(EmotionManager emotionManager) {
@@ -214,9 +280,8 @@ public class CielCompanion {
         new Thread(() -> {
             try {
                 CompletableFuture.runAsync(() -> {
-                    waitForInferenceEngines();
-                    com.cielcompanion.ai.AIEngine.warmUpModels();
                     ensureJarvisServerRunning();
+                    if (waitForInferenceEngines()) com.cielcompanion.ai.AIEngine.warmUpModels();
                 });
 
                 FinanceService.initialize();
@@ -230,7 +295,10 @@ public class CielCompanion {
                 voiceListener.initialize();
                 voiceListener.initializeMicrophoneAsync();
                 
-                startTriggerListener(5555, COMMAND_TRIGGER_PASSPHRASE, () -> {
+                // VoiceAttack mapping: 5555 is the search trigger; 5556 is the
+                // authenticated command trigger that unlocks privileged actions.
+                startTriggerListener(5555, SEARCH_TRIGGER_PASSPHRASE, () -> voiceListener.startListeningForSearchQuery());
+                startTriggerListener(5556, COMMAND_TRIGGER_PASSPHRASE, () -> {
                     System.out.println("Ciel Debug: VoiceAttack Command Trigger received. Granting Privileged Mode.");
                     if (voiceListener != null) {
                         System.out.println("Ciel Debug: Forcing Watchdog Mic Reinitialization for VoiceAttack Trigger...");
@@ -248,12 +316,8 @@ public class CielCompanion {
                     }
                 });
                 
-                startTriggerListener(5556, SEARCH_TRIGGER_PASSPHRASE, () -> voiceListener.startListeningForSearchQuery());
+
                 
-                if (Settings.isHotkeyEnabled()) {
-                    HotkeyService hotkeyService = new HotkeyService(voiceListener);
-                    hotkeyService.initialize();
-                }
                 System.out.println("Ciel Debug: Background initialization complete.");
             } catch (Exception e) {
                 e.printStackTrace();
@@ -289,8 +353,11 @@ public class CielCompanion {
         System.out.println("Ciel Debug: Auto-starting local AI Swarm server...");
         try {
             long javaPid = ProcessHandle.current().pid();
-            ProcessBuilder pb = new ProcessBuilder("cmd.exe", "/c", "python openjarvis.py " + javaPid);
-            pb.directory(new File("C:\\Ciel Companion\\OpenJarvis-main"));
+            Path localPython = ProjectPaths.root().resolve(".venv/Scripts/python.exe");
+            String python = System.getProperty("ciel.python", Files.isRegularFile(localPython) ? localPython.toString() : "python");
+            ProcessBuilder pb = new ProcessBuilder(python,
+                    ProjectPaths.root().resolve("OpenJarvis-main/openjarvis.py").toString(), Long.toString(javaPid));
+            pb.directory(ProjectPaths.root().resolve("OpenJarvis-main").toFile());
             pb.redirectErrorStream(true); 
             
             jarvisProcess = pb.start();
@@ -307,7 +374,7 @@ public class CielCompanion {
             }, "Jarvis-Console-Stream").start();
             
             int attempts = 0;
-            while (!isJarvisAlive() && attempts < 45) {
+            while (!isJarvisAlive() && attempts < 120 && jarvisProcess.isAlive()) {
                 Thread.sleep(1000);
                 attempts++;
             }
@@ -315,7 +382,9 @@ public class CielCompanion {
             if (isJarvisAlive()) {
                 System.out.println("Ciel Debug: OpenJarvis Swarm successfully auto-started in the background.");
             } else {
-                System.err.println("Ciel Error: OpenJarvis failed to respond after 45 seconds. Check the [OpenJarvis Swarm] logs above for errors.");
+                System.err.println("Ciel Error: OpenJarvis readiness failed after " + attempts
+                        + " seconds; process_alive=" + jarvisProcess.isAlive()
+                        + ". Check the [OpenJarvis Swarm] logs above for errors.");
             }
             
         } catch (Exception e) {
@@ -355,14 +424,53 @@ public class CielCompanion {
     }
 
     public static void killJarvis() {
+        killJarvisAndWait(4);
+    }
+
+    public static boolean killJarvisAndWait(int timeoutSeconds) {
+        if (!isJarvisAlive()) {
+            System.out.println("Ciel Debug: OpenJarvis is already stopped.");
+            return true;
+        }
         try {
-            System.out.println("Ciel Debug: Sending graceful shutdown signal to Swarm (VRAM Purge)...");
+            System.out.println("Ciel Debug: Sending graceful shutdown signal to OpenJarvis...");
             java.net.HttpURLConnection connection = (java.net.HttpURLConnection) new java.net.URL("http://localhost:8000/shutdown").openConnection();
             connection.setRequestMethod("POST");
-            connection.setConnectTimeout(1500);
-            connection.setReadTimeout(1500);
-            connection.getResponseCode();
-        } catch (Exception e) {}
+            connection.setConnectTimeout(2500);
+            connection.setReadTimeout(2500);
+            int status = connection.getResponseCode();
+            System.out.println("Ciel Debug: OpenJarvis shutdown endpoint returned HTTP " + status + ".");
+            connection.disconnect();
+            long deadline = System.currentTimeMillis() + Math.max(1, timeoutSeconds) * 1000L;
+            while (System.currentTimeMillis() < deadline) {
+                if (!isJarvisAlive()) {
+                    System.out.println("Ciel Debug: OpenJarvis shutdown confirmed; port 8000 is closed.");
+                    return true;
+                }
+                Thread.sleep(250);
+            }
+            System.err.println("Ciel Warning: OpenJarvis did not stop within " + timeoutSeconds + " seconds.");
+            return false;
+        } catch (Exception e) {
+            boolean stopped = !isJarvisAlive();
+            System.out.println("Ciel " + (stopped ? "Debug" : "Warning") + ": OpenJarvis shutdown request ended with " + e.getMessage());
+            return stopped;
+        }
+    }
+
+    private static void reportUpdaterStatus() {
+        Path statusFile = ProjectPaths.ciel().resolve("logs/update_status.txt");
+        if (!Files.isRegularFile(statusFile)) return;
+        try {
+            System.out.println("[Ciel Update Status] Previous updater report:");
+            for (String line : Files.readAllLines(statusFile, StandardCharsets.UTF_8)) {
+                System.out.println("[Ciel Update Status] " + line);
+            }
+            Path reportedFile = statusFile.resolveSibling("update_status.last_reported.txt");
+            Files.move(statusFile, reportedFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            System.err.println("Ciel Warning: Could not read/acknowledge updater status: " + e.getMessage());
+        }
     }
 
     private static boolean isJarvisAlive() {
@@ -414,8 +522,9 @@ public class CielCompanion {
     private static void startTriggerListener(int port, String passphrase, Runnable action) {
         new Thread(() -> {
             boolean bindSuccess = false;
+            long lastBindErrorLog = 0;
             while (!bindSuccess && !Thread.currentThread().isInterrupted()) {
-                try (ServerSocket serverSocket = new ServerSocket(port)) {
+                try (ServerSocket serverSocket = new ServerSocket(port, 50, java.net.InetAddress.getByName("127.0.0.1"))) {
                     System.out.println("Ciel Debug: Trigger listener started on port " + port);
                     bindSuccess = true;
                     
@@ -437,7 +546,12 @@ public class CielCompanion {
                         }
                     }
                 } catch (IOException e) {
-                    System.err.println("Ciel Error: Could not bind trigger port " + port + ". Retrying in 5 seconds...");
+                    long now = System.currentTimeMillis();
+                    if (now - lastBindErrorLog >= 60_000) {
+                        System.err.println("Ciel Error: Could not bind trigger port " + port + " (" + e.getClass().getSimpleName()
+                                + ": " + e.getMessage() + "). Retrying in 5 seconds.");
+                        lastBindErrorLog = now;
+                    }
                     try { Thread.sleep(5000); } catch (InterruptedException ie) { break; }
                 }
             }

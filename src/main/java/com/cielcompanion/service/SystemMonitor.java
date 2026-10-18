@@ -87,11 +87,10 @@ public class SystemMonitor {
             isStreaming = m.find();
         }
 
-        if (isBrowser && isFullScreen) {
-            isStreaming = true;
-        }
+        // Fullscreen browsing alone is not evidence of media playback/streaming.
 
-        boolean isMedia = activeProcName.matches(Settings.getPlayerProcessesRegex());
+        boolean isMedia = activeProcName.matches(Settings.getPlayerProcessesRegex())
+                || activeProcName.toLowerCase(java.util.Locale.ROOT).contains("stremio");
         boolean isMediaPlatform = activeTitle.toLowerCase().matches(".*(youtube|netflix|twitch|crunchyroll|hulu|prime video|disney\\+|max|peacock|paramount\\+|apple tv).*");
         boolean isHardMuted = Settings.getHardMuteProcs().stream().anyMatch(processes::contains);
         boolean isGaming = ShortTermMemoryService.getMemory().isInGamingSession();
@@ -100,7 +99,7 @@ public class SystemMonitor {
         boolean isHabitMedia = "Media".equals(HabitTrackerService.getCurrentCategory());
 
         // THE ULTIMATE MEDIA LOCK: If ANY part of the system knows you are watching media, freeze the idle timer.
-        if ((isStreaming || isMedia || isMediaPlatform || isHabitMedia || isHardMuted) && !isGaming) {
+        if (isMedia || isHabitMedia || ((isStreaming || isMediaPlatform || isHardMuted) && !isGaming)) {
             idleMin = 0;
             virtualIdleStartTime = System.currentTimeMillis(); 
         }
@@ -117,10 +116,21 @@ public class SystemMonitor {
         return pid.getValue();
     }
 
+    // OSHI 7 renamed this metric; allow validation against either device's
+    // current dependency set while the paired deployment is being reconciled.
+    private static long residentMemory(OSProcess process) {
+        for (String name : new String[]{"getResidentMemory", "getResidentSetSize"}) {
+            try { return ((Number) OSProcess.class.getMethod(name).invoke(process)).longValue(); }
+            catch (NoSuchMethodException unavailable) { /* Try the supported older API. */ }
+            catch (ReflectiveOperationException error) { throw new IllegalStateException("OSHI memory metric failed", error); }
+        }
+        throw new IllegalStateException("OSHI resident memory metric unavailable");
+    }
+
     public static Optional<ProcessInfo> getTopProcessByMemory() {
-        return os.getProcesses(null, (p1, p2) -> Long.compare(p2.getResidentSetSize(), p1.getResidentSetSize()), 1).stream()
+        return os.getProcesses(null, (p1, p2) -> Long.compare(residentMemory(p2), residentMemory(p1)), 1).stream()
             .findFirst()
-            .map(p -> new ProcessInfo(p.getName(), p.getResidentSetSize() / 1024.0 / 1024.0, p.getProcessID()));
+            .map(p -> new ProcessInfo(p.getName(), residentMemory(p) / 1024.0 / 1024.0, p.getProcessID()));
     }
 
     public static Optional<ProcessInfo> getTopProcessByCpu() {

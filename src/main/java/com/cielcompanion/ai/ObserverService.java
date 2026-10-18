@@ -109,7 +109,12 @@ public class ObserverService {
                 // CRITICAL FIX: Do NOT trigger memory alerts if the culprit is an AI model runner
                 if (!IGNORED_GUARDIAN_PROCESSES.contains(procName)) {
                     lastSystemWarningTime = System.currentTimeMillis();
-                    String warningData = "SYSTEM ALERT: PC is under heavy load. CPU: " + metrics.cpuLoadPercent() + "%, RAM: " + metrics.memoryUsagePercent() + "%. The culprit process is " + topProc.get().name() + ".";
+                    
+                    // Enforce strict JSON to prevent hallucinatory parsing errors
+                    String warningData = "SYSTEM ALERT: PC is under heavy load. CPU: " + metrics.cpuLoadPercent() + "%, RAM: " + metrics.memoryUsagePercent() + "%. The culprit process is " + topProc.get().name() + ".\n" +
+                        "CRITICAL INSTRUCTION: You MUST respond ONLY with a valid JSON object containing a 'speech' key. The speech string MUST start with a bracketed emotion tag like [Concerned] or [Annoyed].\n" +
+                        "Example: {\"speech\": \"[Concerned] Master, the system is under heavy load from an application.\"}";
+                        
                     String context = ContextBuilder.buildObserverContext();
                     
                     AIEngine.evaluateBackground(warningData, context).thenAccept(result -> {
@@ -134,7 +139,10 @@ public class ObserverService {
                 long elapsedMs = System.currentTimeMillis() - appFocusStartTime;
                 if (elapsedMs > FATIGUE_THRESHOLD_MS && !hasWarnedForFatigue) { 
                     hasWarnedForFatigue = true;
-                    String warningData = "SYSTEM ALERT: The Master has been actively focused on the application '" + truncateLog(metrics.activeWindowTitle()) + "' (" + activeApp + ") for over 2 hours straight without changing windows. Proactively suggest they take a brief break, hydrate, or check their posture.";
+                    String warningData = "SYSTEM ALERT: The Master has been actively focused on the application '" + truncateLog(metrics.activeWindowTitle()) + "' (" + activeApp + ") for over 2 hours straight without changing windows. Proactively suggest they take a brief break, hydrate, or check their posture.\n" +
+                        "CRITICAL INSTRUCTION: You MUST respond ONLY with a valid JSON object containing a 'speech' key. The speech string MUST start with a bracketed emotion tag like [Concerned].\n" +
+                        "Example: {\"speech\": \"[Concerned] Master, you have been focused for two hours. Please hydrate.\"}";
+                        
                     String context = ContextBuilder.buildObserverContext();
 
                     AIEngine.evaluateBackground(warningData, context).thenAccept(result -> {

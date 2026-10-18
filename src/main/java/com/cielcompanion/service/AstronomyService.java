@@ -30,6 +30,10 @@ public class AstronomyService {
     private static AstronomyConfig config = null;
     private static final String LAST_FETCH_DATE_KEY = "ciel.astronomy.last_fetch_date";
     private static final String CACHED_DATA_KEY = "ciel.astronomy.last_combined_api_data";
+    private static String locationKey(String key) {
+        String position = String.format(java.util.Locale.ROOT, "%.2f,%.2f", LocationService.getLatitude(), LocationService.getLongitude());
+        return key + "." + Integer.toHexString(position.hashCode());
+    }
     
     private static CombinedAstronomyData todaysApiData = null;
 
@@ -55,12 +59,12 @@ public class AstronomyService {
             return;
         }
         
-        Optional<Fact> lastFetchDateFact = MemoryService.getFact(LAST_FETCH_DATE_KEY);
+        Optional<Fact> lastFetchDateFact = MemoryService.getFact(locationKey(LAST_FETCH_DATE_KEY));
         if (lastFetchDateFact.isPresent()) {
             LocalDate lastFetchDate = LocalDate.parse(lastFetchDateFact.get().value());
             if (lastFetchDate.equals(LocalDate.now())) {
                 CielState.setNeedsAstronomyApiFetch(false);
-                Optional<Fact> cachedDataFact = MemoryService.getFact(CACHED_DATA_KEY);
+                Optional<Fact> cachedDataFact = MemoryService.getFact(locationKey(CACHED_DATA_KEY));
 
                 if (cachedDataFact.isPresent()) {
                      try {
@@ -232,8 +236,8 @@ public class AstronomyService {
             oos.writeObject(todaysApiData);
             oos.close();
             String serializedData = Base64.getEncoder().encodeToString(baos.toByteArray());
-            MemoryService.addFact(new Fact(CACHED_DATA_KEY, serializedData, System.currentTimeMillis(), "system_cache", "system", 1));
-            MemoryService.addFact(new Fact(LAST_FETCH_DATE_KEY, LocalDate.now().toString(), System.currentTimeMillis(), "system_cache", "system", 1));
+            MemoryService.addFact(new Fact(locationKey(CACHED_DATA_KEY), serializedData, System.currentTimeMillis(), "system_cache", "system", 1));
+            MemoryService.addFact(new Fact(locationKey(LAST_FETCH_DATE_KEY), LocalDate.now().toString(), System.currentTimeMillis(), "system_cache", "system", 1));
             CielState.setNeedsAstronomyApiFetch(false);
         } catch (Exception e) {
              System.err.println("Ciel Error: Failed to serialize combined astronomy data for caching.");

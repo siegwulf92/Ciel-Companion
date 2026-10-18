@@ -100,7 +100,8 @@ public class AstronomyService {
      */
     private void fetchOpenMeteoDataForToday() throws Exception {
         LocalDate today = LocalDate.now();
-        if (cachedOpenMeteoResponse != null && today.equals(lastOpenMeteoFetchDate)) {
+        String locationKey = com.cielcompanion.service.LocationService.getLatitude() + "," + com.cielcompanion.service.LocationService.getLongitude();
+        if (cachedOpenMeteoResponse != null && today.equals(lastOpenMeteoFetchDate) && locationKey.equals(lastLocationKey)) {
             // Use cached data if already fetched for today
             System.out.println("Ciel Debug (AstronomyService): Using cached Open-Meteo data for " + today);
             return;
@@ -108,9 +109,9 @@ public class AstronomyService {
 
         System.out.println("Ciel Debug (AstronomyService): Fetching new Open-Meteo data for " + today);
 
-        double latitude = config.getLocationLat();
-        double longitude = config.getLocationLon();
-        String timezone = config.getLocationTimezone();
+        double latitude = com.cielcompanion.service.LocationService.getLatitude();
+        double longitude = com.cielcompanion.service.LocationService.getLongitude();
+        String timezone = com.cielcompanion.service.LocationService.getTimezone();
 
         if (latitude == 0.0 || longitude == 0.0) {
             throw new IllegalStateException("Ciel Error (AstronomyService): Latitude and Longitude not set. Cannot fetch Open-Meteo data.");
@@ -133,9 +134,12 @@ public class AstronomyService {
         String jsonResponse = readStream(conn.getInputStream());
         cachedOpenMeteoResponse = gson.fromJson(jsonResponse, JsonObject.class);
         lastOpenMeteoFetchDate = today;
+        lastLocationKey = locationKey;
 
         System.out.println("Ciel Debug (AstronomyService): Successfully fetched Open-Meteo data.");
     }
+
+    private String lastLocationKey;
 
 
     /**
@@ -173,7 +177,7 @@ public class AstronomyService {
         String sunriseStr = sunriseTimes.get(0).getAsString();
         String sunsetStr = sunsetTimes.get(0).getAsString();
 
-        ZoneId zoneId = ZoneId.of(config.getLocationTimezone());
+        ZoneId zoneId = ZoneId.of(com.cielcompanion.service.LocationService.getTimezone());
 
         LocalDateTime sunriseLocal = LocalDateTime.parse(sunriseStr);
         LocalDateTime sunsetLocal = LocalDateTime.parse(sunsetStr);
