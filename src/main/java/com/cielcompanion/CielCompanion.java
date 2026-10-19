@@ -216,7 +216,9 @@ public class CielCompanion {
                 }
                 Files.move(staging, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             }
-            if (key.length() < 32 || key.contains("\n") || key.contains("\r"))
+            // Preserve existing local VoiceAttack keys during migration.
+            // Newly generated keys above remain 32 random bytes (64 hex characters).
+            if (key.length() < 24 || key.contains("\n") || key.contains("\r"))
                 throw new IllegalStateException("Invalid device-local trigger key: " + name);
             return key;
         } catch (IOException error) {
