@@ -154,10 +154,10 @@ public class AIEngine {
 
     private static String localKatakanaFallback(String text) {
         if (!ALPHA_PATTERN.matcher(text).find()) return text;
-        java.nio.file.Path root = java.nio.file.Paths.get(System.getProperty("user.dir"));
+        java.nio.file.Path root = com.cielcompanion.util.ProjectPaths.root();
         Process process = null;
         try {
-            process = new ProcessBuilder(root.resolve(".venv/Scripts/python.exe").toString(),
+            process = new ProcessBuilder(com.cielcompanion.util.ProjectPaths.pythonExecutable(),
                 root.resolve("Ciel/skills/ciel_phonetics.py").toString())
                 .redirectError(ProcessBuilder.Redirect.DISCARD).start();
             JsonObject payload = new JsonObject(); payload.addProperty("text", text);

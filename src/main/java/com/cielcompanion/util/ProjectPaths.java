@@ -14,6 +14,17 @@ public final class ProjectPaths {
 
     public static Path ciel() { return ROOT.resolve("ciel"); }
 
+    /** Use the same device runtime for the router and offline pronunciation. */
+    public static String pythonExecutable() {
+        String configured = System.getProperty("ciel.python");
+        if (configured != null && !configured.isBlank()) return configured;
+        for (String relative : new String[]{".venv/Scripts/python.exe", "OpenJarvis-main/.venv/Scripts/python.exe"}) {
+            Path candidate = ROOT.resolve(relative);
+            if (java.nio.file.Files.isRegularFile(candidate)) return candidate.toString();
+        }
+        return "python";
+    }
+
     private static Path resolveRoot() {
         String configured = System.getProperty("ciel.root");
         if (configured != null && !configured.isBlank()) return Paths.get(configured).toAbsolutePath().normalize();
