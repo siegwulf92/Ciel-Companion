@@ -53,16 +53,31 @@ public class VoiceListener {
     private TargetDataLine microphone;
     private final ExecutorService commandExecutor = Executors.newSingleThreadExecutor();
     private Thread listeningThread;
-    private final CommandService commandService;
+    private volatile CommandService commandService;
     private final AtomicBoolean isProcessing = new AtomicBoolean(false);
     private volatile boolean isRunning = true;
     private boolean isInitialized = false;
+    private final AtomicBoolean initializingMicrophone = new AtomicBoolean(false);
 
     public VoiceListener(CommandService commandService) {
         this.commandService = commandService;
+        java.nio.file.Path saved = Paths.get(System.getProperty("user.dir"), ".local", "listening-state.json");
+        if (java.nio.file.Files.exists(saved)) {
+            try {
+                boolean muted = JsonParser.parseString(java.nio.file.Files.readString(saved)).getAsJsonObject().get("muted").getAsBoolean();
+                isMuted.set(muted);
+            } catch (Exception e) {
+                isMuted.set(true);
+                System.err.println("Ciel Warning: Listening preference unreadable; microphone remains muted.");
+            }
+            CielState.setManuallyMuted(isMuted.get());
+            System.out.println("Ciel Debug: Restored microphone listening preference: " + (isMuted.get() ? "muted" : "unmuted") + "; speech output unchanged.");
+        }
     }
+    public void setCommandService(CommandService service) { this.commandService = service; }
 
-    public void initialize() {
+    public synchronized void initialize() {
+        if (voskModel != null && isInitialized) return;
         System.out.println("Ciel Debug: Initializing Voice Listener...");
         try {
             String modelPath = Paths.get(System.getProperty("user.dir"), "model").toString();
@@ -93,13 +108,16 @@ public class VoiceListener {
     }
 
     public void initializeMicrophoneAsync() {
-        if (!isInitialized) return;
+        if (!initializingMicrophone.compareAndSet(false, true)) return;
         new Thread(() -> {
             try {
+                if (!isInitialized || voskModel == null) initialize();
+                if (!isInitialized || !isRunning) return;
                 microphone = getTargetDataLine();
                 if (microphone != null) {
                     microphone.open(new AudioFormat(16000, 16, 1, true, false));
                     microphone.start();
+                    if (isMuted.get()) microphone.stop();
                     startContinuousListening();
                     startWatchdog(); 
                     System.out.println("Ciel Debug: Microphone line opened. Continuous listening started.");
@@ -109,6 +127,9 @@ public class VoiceListener {
             } catch (LineUnavailableException e) {
                 System.err.println("Ciel Error: Microphone line is unavailable.");
                 e.printStackTrace();
+            } finally {
+                initializingMicrophone.set(false);
+                if (isRunning) startWatchdog();
             }
         }, "Ciel-Mic-Initializer").start();
     }
@@ -125,8 +146,8 @@ public class VoiceListener {
     }
 
     private TargetDataLine getTargetDataLine() throws LineUnavailableException {
-        for (int i = 0; i < 8; i++) { 
-            System.out.println("Ciel Debug: Checking for " + MIC_PRIORITY[0] + "... (Attempt " + (i + 1) + "/8)");
+        for (int i = 0; i < 1; i++) {
+            System.out.println("Ciel Debug: Checking preferred microphone, then available fallbacks.");
             for (Mixer.Info mixerInfo : AudioSystem.getMixerInfo()) {
                 if (mixerInfo.getName().toLowerCase().contains(MIC_PRIORITY[0].toLowerCase())) {
                     Mixer mixer = AudioSystem.getMixer(mixerInfo);
@@ -136,10 +157,6 @@ public class VoiceListener {
                         return (TargetDataLine) mixer.getLine(info);
                     }
                 }
-            }
-            if (i < 7) {
-                System.out.println("Ciel Debug: " + MIC_PRIORITY[0] + " not available. Waiting 30 seconds...");
-                try { Thread.sleep(30000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             }
         }
         
@@ -167,6 +184,7 @@ public class VoiceListener {
     }
     
     private void processRecognitionResult(String result) {
+        if (commandService == null) return;
         if (isMuted.get() || isInternallyMuted.get()) {
             return;
         }
@@ -236,9 +254,26 @@ public class VoiceListener {
             newMuteState = !currentMuteState;
         } while (!isMuted.compareAndSet(currentMuteState, newMuteState));
 
-        String lineKey = newMuteState ? "command.toggle_listening.off" : "command.toggle_listening.on";
-        LineManager.getDialogueLine(lineKey).ifPresent(line -> SpeechService.speakPreformatted(line.text()));
         CielState.setManuallyMuted(newMuteState);
+        try {
+            java.nio.file.Path saved = Paths.get(System.getProperty("user.dir"), ".local", "listening-state.json");
+            java.nio.file.Files.createDirectories(saved.getParent());
+            java.nio.file.Files.writeString(saved, "{\"muted\":" + newMuteState + "}");
+        } catch (Exception e) {
+            System.err.println("Ciel Warning: Could not save listening preference: " + e.getClass().getSimpleName());
+        }
+        System.out.println("Ciel Debug: Microphone listening " + (newMuteState ? "muted" : "unmuted") + "; speech output unchanged.");
+        if (!newMuteState) {
+            isProcessing.set(false);
+            ignoreSttUntil = System.currentTimeMillis() + 1500;
+            refresh(); // Keep the loaded model; rebuild capture and recognizer parameters.
+        } else if (microphone != null) {
+            microphone.stop();
+            microphone.flush();
+        }
+        String lineKey = newMuteState ? "command.toggle_listening.off" : "command.toggle_listening.on";
+        try { LineManager.getDialogueLine(lineKey).ifPresent(line -> SpeechService.speakPreformatted(line.text())); }
+        catch (Exception e) { System.out.println("Ciel Debug: Listening toggle applied; spoken acknowledgement not ready yet."); }
     }
 
     public void setInternalMute(boolean isMuted) { isInternallyMuted.set(isMuted); }
@@ -269,6 +304,11 @@ public class VoiceListener {
         watchdogThread = new Thread(() -> {
             while (isRunning) {
                 try { Thread.sleep(2000); } catch (InterruptedException e) { break; }
+                if (isMuted.get()) { lastAudioTime = System.currentTimeMillis(); continue; }
+                if (listeningThread == null || !listeningThread.isAlive()) {
+                    initializeMicrophoneAsync();
+                    continue;
+                }
                 
                 if (needsMicReinitialization.get()) {
                     lastAudioTime = System.currentTimeMillis(); 
@@ -292,6 +332,7 @@ public class VoiceListener {
     }
 
     private void startContinuousListening() {
+        if (listeningThread != null && listeningThread.isAlive()) return;
         listeningThread = new Thread(() -> {
             lastAudioTime = System.currentTimeMillis();
             while (isRunning) {
@@ -302,7 +343,13 @@ public class VoiceListener {
                 try (Recognizer recognizer = new Recognizer(voskModel, 16000)) {
                     recognizer.setWords(true);
                     byte[] buffer = new byte[4096];
+                    long zeroAudioSince = 0;
                     while (isRunning && microphone != null && microphone.isOpen() && !needsMicReinitialization.get()) {
+                        if (isMuted.get()) {
+                            lastAudioTime = System.currentTimeMillis();
+                            try { Thread.sleep(20); } catch (InterruptedException e) { break; }
+                            continue;
+                        }
                         
                         int available = microphone.available();
                         if (available > 0) {
@@ -310,6 +357,25 @@ public class VoiceListener {
                             int bytesRead = microphone.read(buffer, 0, bytesToRead);
                             if (bytesRead > 0) {
                                 lastAudioTime = System.currentTimeMillis(); 
+                                if (isMuted.get() || isInternallyMuted.get()) {
+                                    recognizer.reset();
+                                    continue; // Discard muted audio; never queue it for after unmute.
+                                }
+                                boolean allZero = true;
+                                for (int sample = 0; sample < bytesRead; sample++) {
+                                    if (buffer[sample] != 0) { allZero = false; break; }
+                                }
+                                if (allZero) {
+                                    if (zeroAudioSince == 0) zeroAudioSince = System.currentTimeMillis();
+                                } else if (zeroAudioSince != 0) {
+                                    if (System.currentTimeMillis() - zeroAudioSince >= 3000) {
+                                        recognizer.reset();
+                                        recognizer.setWords(true);
+                                        isProcessing.set(false);
+                                        System.out.println("Ciel Debug: Microphone audio resumed after digital silence; Vosk recognition state refreshed. Speech output unchanged.");
+                                    }
+                                    zeroAudioSince = 0;
+                                }
                                 if (recognizer.acceptWaveForm(buffer, bytesRead)) {
                                     processRecognitionResult(recognizer.getResult());
                                 }
@@ -336,6 +402,7 @@ public class VoiceListener {
             if (microphone != null) {
                 microphone.open(new AudioFormat(16000, 16, 1, true, false));
                 microphone.start();
+                if (isMuted.get()) microphone.stop();
                 System.out.println("Ciel Debug: Microphone successfully rebuilt by Watchdog.");
             }
         } catch (Exception e) {

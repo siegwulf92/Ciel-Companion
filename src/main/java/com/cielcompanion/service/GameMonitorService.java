@@ -115,7 +115,7 @@ public class GameMonitorService {
                                 "Make a short, witty, in-character comment (1 to 2 sentences max) acknowledging this game. " +
                                 "Do not ask questions, just make an observation, offer encouragement, or make a meta-comment.";
                 
-                AIEngine.generateSilentLogic("[GAME_LAUNCH]", prompt).thenAccept(response -> {
+                AIEngine.generateSilentLogic("[GAME_LAUNCH]", prompt, "Game Launch Commentary").thenAccept(response -> {
                     if (response != null && !response.isBlank()) {
                         // Pass explicitly as "game_launch" so the SpeechService doesn't suppress it
                         SpeechService.speakPreformatted(response.trim(), "game_launch");
@@ -169,7 +169,9 @@ public class GameMonitorService {
         // Ignore other common background/overlay apps
         if (lower.contains("discord") || lower.contains("obs64") || lower.contains("wallpaper")) return true;
         // Ignore storefront launchers
-        if (lower.contains("steam.exe") || lower.contains("epicgameslauncher") || lower.contains("goggalaxy")) return true;
+        if (lower.contains("steam.exe") || lower.contains("epicgameslauncher") || lower.contains("goggalaxy") || lower.contains("launcher.exe")) return true;
+        // Ignore core windows processes
+        if (lower.contains("dwm.exe") || lower.contains("explorer.exe") || lower.contains("searchhost.exe") || lower.contains("norton") || lower.contains("gearlink")) return true;
         
         return false;
     }

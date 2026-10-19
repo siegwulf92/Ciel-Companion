@@ -20,7 +20,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -83,14 +85,34 @@ public class AIEngine {
     }
 
     private static synchronized void addHistory(String role, String content) {
-        lastInteractionTime = System.currentTimeMillis();
+        hydrateRecentHistoryIfEmpty();
+        long createdAt = System.currentTimeMillis();
+        lastInteractionTime = createdAt;
         JsonObject msg = new JsonObject();
         msg.addProperty("role", role);
         msg.addProperty("content", content);
         conversationHistory.add(msg);
+        MemoryService.recordConversationTurn(role, content, createdAt);
         if (conversationHistory.size() > MAX_HISTORY) {
             conversationHistory.removeFirst();
         }
+    }
+
+    public static void recordExternalTurn(String role, String content) {
+        addHistory(role, content);
+    }
+
+    private static void hydrateRecentHistoryIfEmpty() {
+        if (!conversationHistory.isEmpty()) return;
+        List<MemoryService.ConversationTurn> saved = MemoryService.getRecentConversationTurns(MAX_HISTORY);
+        java.util.Collections.reverse(saved);
+        for (MemoryService.ConversationTurn turn : saved) {
+            JsonObject msg = new JsonObject();
+            msg.addProperty("role", turn.role());
+            msg.addProperty("content", turn.content());
+            conversationHistory.add(msg);
+        }
+        if (!saved.isEmpty()) lastInteractionTime = saved.get(saved.size() - 1).createdAtMs();
     }
 
     private static void ensureLiteLlmProvider(JsonObject payload) {
@@ -103,14 +125,12 @@ public class AIEngine {
     }
 
     public static void warmUpModels() {
-        System.out.println("Ciel Debug: Sending lightweight silent ping to wake local Translator...");
-        CompletableFuture.runAsync(() -> {
-            attemptTransliteration("Warmup ping.");
-        });
+        System.out.println("[Raphael — Japanese Speech Formatting] Models load on demand; startup inference warm-up skipped.");
     }
 
     public static CompletableFuture<String> transliterateAsync(String englishText) {
         return CompletableFuture.supplyAsync(() -> {
+            if (englishText == null || englishText.isBlank()) return "";
             if (!ALPHA_NUM_PATTERN.matcher(englishText).find()) return englishText;
 
             String fallbackResult = attemptTransliteration(englishText);
@@ -118,18 +138,44 @@ public class AIEngine {
                 return fallbackResult; 
             }
 
-            System.err.println("Ciel Warning: Swarm Transliteration failed. Returning raw English text.");
-            return englishText; 
+            String localFallback = localKatakanaFallback(englishText);
+            System.err.println("[Speech Phonetics] Formatter endpoint unavailable; using the offline phoneme converter.");
+            return localFallback;
         }, translationExecutor);
     }
 
     public static String transliterateToKatakanaSync(String englishText) {
         try {
-            // Allows Python to retry internally up to 150s max before Java hard-fails to English.
-            return transliterateAsync(englishText).get(150, TimeUnit.SECONDS); 
+            return transliterateAsync(englishText).get(45, TimeUnit.SECONDS);
         } catch (Exception e) {
-            return englishText; 
+            return localKatakanaFallback(englishText);
         }
+    }
+
+    private static String localKatakanaFallback(String text) {
+        if (!ALPHA_PATTERN.matcher(text).find()) return text;
+        java.nio.file.Path root = com.cielcompanion.util.ProjectPaths.root();
+        Process process = null;
+        try {
+            process = new ProcessBuilder(com.cielcompanion.util.ProjectPaths.pythonExecutable(),
+                root.resolve("Ciel/skills/ciel_phonetics.py").toString())
+                .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+            JsonObject payload = new JsonObject(); payload.addProperty("text", text);
+            try (var input = process.getOutputStream()) { input.write(gson.toJson(payload).getBytes(StandardCharsets.UTF_8)); }
+            final Process running = process;
+            var output = CompletableFuture.supplyAsync(() -> {
+                try { return new String(running.getInputStream().readNBytes(128000), StandardCharsets.UTF_8); }
+                catch (Exception e) { return ""; }
+            });
+            if (!process.waitFor(12, TimeUnit.SECONDS) || process.exitValue()!=0) throw new IllegalStateException("Local phoneme converter failed");
+            JsonObject result=JsonParser.parseString(output.get(1,TimeUnit.SECONDS)).getAsJsonObject();
+            String kana=result.get("katakana").getAsString();
+            if (ALPHA_PATTERN.matcher(kana).find()) throw new IllegalStateException("Unconverted speech rejected");
+            return kana;
+        } catch (Exception error) {
+            System.err.println("[Speech Phonetics] Pronunciation unavailable; refusing unsafe letter-spelling fallback.");
+            throw new IllegalStateException("Safe pronunciation unavailable",error);
+        } finally { if(process!=null) process.destroyForcibly(); }
     }
 
     private static String attemptTransliteration(String englishText) {
@@ -140,32 +186,29 @@ public class AIEngine {
             JsonObject payload = new JsonObject();
             payload.addProperty("text", englishText);
             
-            for (int attempt = 1; attempt <= 3; attempt++) {
-                try {
+            try {
                     HttpRequest request = HttpRequest.newBuilder()
                             .uri(URI.create(url))
                             .header("Content-Type", "application/json")
-                            .timeout(Duration.ofSeconds(150)) // Reduced to 150 seconds per attempt
+                            .timeout(Duration.ofSeconds(20))
                             .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                             .build();
 
                     HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
                     if (response.statusCode() == 200) {
                         JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
+                        if (json.has("status") && !json.get("status").getAsString().equals("CACHE_HIT")) {
+                            System.out.println("[Raphael — Phonokana] pronunciation_path=" + json.get("status").getAsString());
+                        }
                         if (json.has("katakana")) {
                             String result = json.get("katakana").getAsString();
                             if (!result.contains("エラー")) return result;
                         }
-                    } else if (attempt == 3) {
-                        System.err.println("Ciel Katakana Error: HTTP Status " + response.statusCode());
-                    }
-                } catch (Exception e) {
-                    if (attempt == 3) {
-                        System.err.println("Ciel Katakana Network Error: " + e.getMessage());
                     } else {
-                        try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
+                        System.err.println("[Raphael — Japanese Speech Formatting] Transliteration endpoint returned HTTP " + response.statusCode() + ".");
                     }
-                }
+            } catch (Exception e) {
+                System.err.println("[Raphael — Japanese Speech Formatting] Transliteration request failed: " + e.getMessage());
             }
         } finally {
             activeSwarmTasks.decrementAndGet();
@@ -174,9 +217,16 @@ public class AIEngine {
     }
 
     public static CompletableFuture<String> generateSilentLogic(String userMessage, String systemContext) {
+        String caller = StackWalker.getInstance().walk(frames -> frames.skip(1).findFirst()
+                .map(frame -> frame.getClassName().substring(frame.getClassName().lastIndexOf('.') + 1)
+                        + "." + frame.getMethodName()).orElse("UnknownCaller"));
+        return generateSilentLogic(userMessage, systemContext, caller);
+    }
+
+    public static CompletableFuture<String> generateSilentLogic(String userMessage, String systemContext, String taskIntent) {
         double temp = systemContext.toLowerCase().contains("worker") ||
                       systemContext.toLowerCase().contains("lore") ? 0.3 : 0.1;
-        return generateSilentLogicWithModel(userMessage, systemContext, null, temp, "Deep Logic Reasoning");
+        return generateSilentLogicWithModel(userMessage, systemContext, null, temp, taskIntent);
     }
 
     public static CompletableFuture<String> generateSilentLogicWithModel(
@@ -192,6 +242,9 @@ public class AIEngine {
         JsonObject payload = (forcedModel == null)
                 ? ModelManager.buildPayload(ModelManager.ModelTier.LOGIC, systemContext, userMessage, false)
                 : buildForcedPayload(systemContext, userMessage, forcedModel, temperature, taskIntent);
+
+        payload.addProperty("task_intent", taskIntent);
+        payload.addProperty("temperature", temperature);
 
         ensureLiteLlmProvider(payload);
 
@@ -253,7 +306,8 @@ public class AIEngine {
             System.out.println("Ciel Debug: Conversation idle. Digesting short-term buffer into Long-Term Episodic Memory...");
             
             JsonArray historyArray = new JsonArray();
-            for (JsonObject obj : conversationHistory) historyArray.add(obj);
+            List<JsonObject> digestedSnapshot = new ArrayList<>(conversationHistory);
+            for (JsonObject obj : digestedSnapshot) historyArray.add(obj);
             
             String prompt = "You are the memory core of Ciel. Review this conversation history array:\n" + 
                             gson.toJson(historyArray) + 
@@ -263,19 +317,27 @@ public class AIEngine {
                             "If it was just casual greetings or small talk, set actionable to false.";
                             
             evaluateBackground(prompt, "You are a memory extraction sub-process.").thenAccept(result -> {
-                if (result != null && result.has("actionable") && result.get("actionable").getAsBoolean()) {
+                if (result == null || !result.has("actionable")) {
+                    System.err.println("Ciel Warning: Memory digestion returned no valid result; keeping the conversation buffer.");
+                    return;
+                }
+                if (result.get("actionable").getAsBoolean() && result.has("summary") && !result.get("summary").getAsString().isBlank()) {
                     String summary = result.get("summary").getAsString();
                     System.out.println("Ciel Debug: Memory Digested -> " + summary);
                     String memoryKey = "Memory_" + System.currentTimeMillis();
                     MemoryService.addFact(new Fact(memoryKey, summary, System.currentTimeMillis(), "episodic_memory", "auto-digestion", 1));
                 }
-                conversationHistory.clear(); 
+                synchronized (AIEngine.class) {
+                    java.util.Set<JsonObject> digested = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+                    digested.addAll(digestedSnapshot);
+                    while (!conversationHistory.isEmpty() && digested.contains(conversationHistory.getFirst())) conversationHistory.removeFirst();
+                }
             });
         }
     }
 
     public static void chatFast(String userMessage, String systemContext, Runnable onComplete) {
-        System.out.println("Ciel Debug: Routing to Personality Core (Local Dialogue Race -> Manager Audit)...");
+        System.out.println("[Raphael — Local Dialogue] Requesting the single available local inference slot.");
         
         activeSwarmTasks.incrementAndGet();
         addHistory("user", userMessage);
@@ -284,6 +346,7 @@ public class AIEngine {
         
         JsonObject payload = buildPayloadWithHistory(ModelManager.ModelTier.PERSONALITY, systemContext, false);
         payload.addProperty("model", "local");
+        payload.addProperty("task_intent", "Local Reflex Dialogue");
         
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -321,6 +384,11 @@ public class AIEngine {
     }
 
     public static CompletableFuture<JsonObject> evaluateBackground(String transcriptBuffer, String systemContext) {
+        return evaluateBackground(transcriptBuffer, systemContext, Duration.ofMinutes(15));
+    }
+
+    public static CompletableFuture<JsonObject> evaluateBackground(
+            String transcriptBuffer, String systemContext, Duration requestTimeout) {
         activeSwarmTasks.incrementAndGet();
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.EVALUATOR);
         JsonObject payload = ModelManager.buildPayload(ModelManager.ModelTier.EVALUATOR, systemContext, "TRANSCRIPT:\n" + transcriptBuffer, false);
@@ -329,7 +397,7 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofMinutes(15)) 
+                .timeout(requestTimeout)
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -371,7 +439,7 @@ public class AIEngine {
                     }
                 })
                 .exceptionally(e -> {
-                    System.err.println("Ciel AI Error: Primary Logic Core unreachable. Falling back to Local Phi-4.");
+                    System.err.println("Ciel AI Error: Primary reasoning attempt failed. Requesting another eligible scored model.");
                     reasonDeeplyLocalFallback(userMessage, systemContext, onComplete);
                     return null;
                 })
@@ -379,13 +447,14 @@ public class AIEngine {
     }
 
     private static void reasonDeeplyLocalFallback(String userMessage, String systemContext, Runnable onComplete) {
-        System.out.println("Ciel Debug: Routing to Local Fallback Logic Core (LM Studio: Phi-4)...");
+        System.out.println("Ciel Debug: Routing fallback through the scored model pool...");
         activeSwarmTasks.incrementAndGet();
         
-        String url = Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
+        String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOCAL_LOGIC_FALLBACK);
         
         JsonObject payload = new JsonObject();
-        payload.addProperty("model", "phi-4-reasoning-plus"); 
+        payload.addProperty("model", "router-selected");
+        payload.addProperty("task_intent", "Deep Logic Reasoning");
         payload.addProperty("temperature", 0.3); 
         payload.addProperty("stream", false);
         ensureLiteLlmProvider(payload);
@@ -448,13 +517,14 @@ public class AIEngine {
     }
 
     private static void triggerFallback(String userMessage, String systemContext, Runnable onComplete) {
-        System.out.println("Ciel Debug: Triggering final fallback core (LM Studio: Phi-4)...");
+        System.out.println("Ciel Debug: Requesting final eligible fallback through the scored model pool...");
         activeSwarmTasks.incrementAndGet();
         
-        String url = Settings.getLlmLocalLogicFallbackUrl() + "/chat/completions";
+        String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOCAL_LOGIC_FALLBACK);
         
         JsonObject payload = new JsonObject();
-        payload.addProperty("model", "phi-4-reasoning-plus"); 
+        payload.addProperty("model", "router-selected");
+        payload.addProperty("task_intent", "Deep Logic Reasoning");
         payload.addProperty("temperature", 0.3); 
         payload.addProperty("stream", false);
         ensureLiteLlmProvider(payload);
@@ -519,9 +589,20 @@ public class AIEngine {
         sysMsg.addProperty("content", systemContext);
         messages.add(sysMsg);
 
-        synchronized (conversationHistory) {
-            for (JsonObject historicMsg : conversationHistory) {
-                messages.add(historicMsg);
+        // Refresh from durable memory for every request: the paired device can
+        // add a turn while this JVM's in-memory history is already populated.
+        List<MemoryService.ConversationTurn> savedTurns = MemoryService.getRecentConversationTurns(MAX_HISTORY);
+        if (!savedTurns.isEmpty()) {
+            java.util.Collections.reverse(savedTurns);
+            for (MemoryService.ConversationTurn turn : savedTurns) {
+                JsonObject message = new JsonObject();
+                message.addProperty("role", turn.role());
+                message.addProperty("content", turn.content());
+                messages.add(message);
+            }
+        } else {
+            synchronized (conversationHistory) {
+                for (JsonObject historicMsg : conversationHistory) messages.add(historicMsg);
             }
         }
 

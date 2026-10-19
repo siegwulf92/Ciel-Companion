@@ -1,5 +1,7 @@
 package com.cielcompanion.ai;
 
+import com.cielcompanion.util.ProjectPaths;
+
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
@@ -8,15 +10,16 @@ import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 public class LoreAnalyzerService {
     private static ScheduledExecutorService loreScheduler;
 
-    private static final String CIEL_ROOT = "C:\\Ciel Companion\\ciel";
-    private static final String LORE_DIR = CIEL_ROOT + "\\lore";
-    private static final String RAW_DIR = LORE_DIR + "\\Raw_Transcripts";
-    private static final String CLEAN_DIR = LORE_DIR + "\\Cleaned_Transcripts";
-    private static final String ARCHIVE_DIR = LORE_DIR + "\\Archived_Raw";
+    private static final String CIEL_ROOT = ProjectPaths.ciel().toString();
+    private static final String LORE_DIR = ProjectPaths.ciel().resolve("lore").toString();
+    private static final String RAW_DIR = ProjectPaths.ciel().resolve("lore").resolve("Raw_Transcripts").toString();
+    private static final String CLEAN_DIR = ProjectPaths.ciel().resolve("lore").resolve("Cleaned_Transcripts").toString();
+    private static final String ARCHIVE_DIR = ProjectPaths.ciel().resolve("lore").resolve("Archived_Raw").toString();
 
     private static final Object PIPELINE_LOCK = new Object();
     private static boolean pipelineInUse = false;
@@ -60,7 +63,9 @@ public class LoreAnalyzerService {
             String tsRemoved = rawText.replaceAll("\\[\\d{1,2}:\\d{2}(?::\\d{2})?\\]\\s*", "");
 
             // 2. Split into massive 15,000 char chunks to utilize 1M+ context cloud models
-            List<String> chunks = splitIntoChunks(tsRemoved, 15000);
+            // Smaller chunks keep proofread and audit requests within practical
+            // provider limits and make failures attributable to a single part.
+            List<String> chunks = splitIntoChunks(tsRemoved, 3500);
             List<String> cleanedChunks = new ArrayList<>();
 
             for (int i = 0; i < chunks.size(); i++) {
@@ -82,7 +87,7 @@ public class LoreAnalyzerService {
                         "5. Output ONLY the cleaned story prose. No markdown fences, no conversational text.";
 
                 // Pass blank model to let openjarvis.py dynamic router pick the best High-Context Cloud model
-                String cleanedText = AIEngine.generateSilentLogicWithModel(cleanPrompt, cleanSystem, null, 0.3, "Lore Processing").join();
+                String cleanedText = runLorePass(cleanPrompt, cleanSystem, target, i, "proofread", 0.3);
 
                 if (isBadResponse(cleanedText)) {
                     throw new Exception("Swarm Editor failed or timed out on chunk " + (i+1));
@@ -102,7 +107,7 @@ public class LoreAnalyzerService {
                         "3. If the CLEANED text is accurate to the ORIGINAL prose, output the CLEANED text exactly as is.\n" +
                         "4. Output ONLY the verified story prose. No markdown fences, no conversational text.";
 
-                String auditedText = AIEngine.generateSilentLogicWithModel(auditPrompt, auditSystem, null, 0.1, "Lore Processing").join();
+                String auditedText = runLorePass(auditPrompt, auditSystem, target, i, "audit", 0.1);
 
                 if (isBadResponse(auditedText)) {
                     throw new Exception("Swarm Auditor failed or timed out on chunk " + (i+1));
@@ -118,7 +123,13 @@ public class LoreAnalyzerService {
             if (finalOutput.isBlank()) throw new Exception("Final concatenated output was blank.");
 
             File outFile = new File(CLEAN_DIR, target.getName());
-            Files.writeString(outFile.toPath(), finalOutput);
+            File tempFile = new File(CLEAN_DIR, target.getName() + ".tmp");
+            Files.writeString(tempFile.toPath(), finalOutput);
+            try {
+                Files.move(tempFile.toPath(), outFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(tempFile.toPath(), outFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
 
             System.out.println("Ciel Debug: Transcript cleaning successful for " + target.getName() + ". Saved to Cleaned_Transcripts.");
 
@@ -131,6 +142,32 @@ public class LoreAnalyzerService {
             synchronized (PIPELINE_LOCK) {
                 pipelineInUse = false;
             }
+        }
+    }
+
+    private static String runLorePass(String prompt, String system, File source, int chunkIndex,
+                                     String pass, double temperature) throws Exception {
+        long started = System.nanoTime();
+        java.util.concurrent.CompletableFuture<String> request = AIEngine.generateSilentLogicWithModel(
+                prompt, system, null, temperature, "Lore Processing");
+        try {
+            String result = request.get(4, TimeUnit.MINUTES);
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+            System.out.println("Ciel Transcript Pipeline: file=" + source.getName() + " chunk=" + (chunkIndex + 1)
+                    + " pass=" + pass + " result=" + ((result == null || result.isBlank()) ? "empty" : "ok")
+                    + " chars=" + (result == null ? 0 : result.length()) + " elapsedMs=" + elapsedMs);
+            return result;
+        } catch (TimeoutException e) {
+            request.cancel(true);
+            System.err.println("Ciel Transcript Pipeline: file=" + source.getName() + " chunk=" + (chunkIndex + 1)
+                    + " pass=" + pass + " result=timeout limitSeconds=240");
+            throw e;
+        } catch (Exception e) {
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+            System.err.println("Ciel Transcript Pipeline: file=" + source.getName() + " chunk=" + (chunkIndex + 1)
+                    + " pass=" + pass + " result=exception type=" + e.getClass().getSimpleName()
+                    + " elapsedMs=" + elapsedMs);
+            throw e;
         }
     }
 

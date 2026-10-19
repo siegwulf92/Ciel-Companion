@@ -41,7 +41,7 @@ public class IpGeoLocationApi {
 
     public static GeoLocationData fetchGeoLocationData(String apiKey) throws Exception {
         String url = "https://api.ipgeolocation.io/ipgeo?apiKey=" + apiKey;
-        System.out.println("Ciel Debug (IpGeoLocation): Fetching Geo URL: " + url);
+        System.out.println("Ciel Debug (IpGeoLocation): Fetching geolocation endpoint (API key redacted).");
         String json = HttpUtil.get(url, "CielCompanion/1.0");
         Gson gson = new Gson();
         return gson.fromJson(json, GeoLocationData.class);
@@ -53,7 +53,7 @@ public class IpGeoLocationApi {
             "https://api.ipgeolocation.io/astronomy?apiKey=%s&lat=%f&long=%f",
             apiKey, lat, lon);
         
-        System.out.println("Ciel Debug (IpGeoLocation): Fetching Astronomy URL: " + url);
+        System.out.println("Ciel Debug (IpGeoLocation): Fetching astronomy endpoint (API key redacted).");
         String json = HttpUtil.get(url, "CielCompanion/1.0");
         
         Gson gson = new Gson();

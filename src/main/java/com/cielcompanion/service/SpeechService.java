@@ -1,26 +1,21 @@
 package com.cielcompanion.service;
 
-import com.cielcompanion.CielState;
 import com.cielcompanion.ai.AIEngine;
-import com.cielcompanion.memory.Fact;
-import com.cielcompanion.memory.MemoryService;
-import com.cielcompanion.memory.stwm.ShortTermMemory;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
-import com.cielcompanion.mood.Emotion;
-import com.cielcompanion.mood.MoodConfig;
-import com.cielcompanion.service.SystemMonitor.SystemMetrics;
 import com.cielcompanion.ui.CielGui;
-import com.cielcompanion.service.LineManager.DialogueLine;
-import com.cielcompanion.util.CielTools;
-import com.cielcompanion.service.Settings;
 import com.cielcompanion.service.AzureSpeechService;
 import com.cielcompanion.service.CielVoiceManager;
 import com.cielcompanion.service.VoiceListener;
 import com.cielcompanion.service.TranslationService;
+import com.cielcompanion.mood.MoodConfig;
+import com.cielcompanion.CielState;
+import com.cielcompanion.service.LineManager.DialogueLine;
+import com.cielcompanion.mood.Emotion;
 
 import java.awt.AWTException;
 import java.awt.Robot;
 import java.awt.event.KeyEvent;
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
@@ -32,34 +27,28 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.nio.charset.StandardCharsets;
 import java.util.stream.Collectors;
 
-/**
- * Handles Text-to-Speech operations using Azure Cognitive Services.
- * Integrated: universal media queuing, World Voice (Tensura) support,
- * and dynamic emotion variance.
- */
 public class SpeechService {
 
-    /* ------------------------------------------------------------------ */
-    /*  Thread-pools & state tracking                                     */
-    /* ------------------------------------------------------------------ */
+    private record SpeechMood(String source, String style, String pitch, double intensity) {}
+
     private static final ExecutorService speechExecutor = Executors.newSingleThreadExecutor();
     private static volatile Future<?> sequentialSpeechTask = null;
     private static volatile Future<?> currentSpeechTask = null;
     private static final AtomicBoolean isActivelySpeaking = new AtomicBoolean(false);
+    // Invalidates already queued/in-flight speech when a higher-priority event
+    // (especially returning from idle) interrupts the current utterance.
+    private static final AtomicLong speechGeneration = new AtomicLong(0);
     private static volatile boolean sequenceCancelled = false;
     private static final AtomicReference<Process> activeProcess = new AtomicReference<>();
     private static VoiceListener voiceListener;
     private static final Random random = new Random();
 
-    /* ------------------------------------------------------------------ */
-    /*  GLOBAL MEDIA MANAGER – pause-while-speaking logic                  */
-    /* ------------------------------------------------------------------ */
     private static final AtomicInteger speechQueueCount = new AtomicInteger(0);
     private static volatile boolean mediaWasPausedForSpeech = false;
     private static volatile boolean gameWasPausedForSpeech = false;
@@ -79,16 +68,11 @@ public class SpeechService {
         return isActivelySpeaking.get();
     }
 
-    /* ------------------------------------------------------------------ */
-    /*  CORE PAUSE/RESUME LOGIC                                            */
-    /* ------------------------------------------------------------------ */
     private static void enqueueSpeech() {
         synchronized (pauseLock) {
             if (speechQueueCount.getAndIncrement() == 0) {
-                SystemMetrics metrics = SystemMonitor.getSystemMetrics();
-                ShortTermMemory memory = ShortTermMemoryService.getMemory();
+                SystemMonitor.SystemMetrics metrics = SystemMonitor.getSystemMetrics();
                 String currentCategory = HabitTrackerService.getCurrentCategory();
-
                 String activeProcLower = metrics.activeProcessName() != null ? metrics.activeProcessName().toLowerCase() : "";
 
                 boolean isMediaActive = metrics.isPlayingMedia() ||
@@ -97,13 +81,11 @@ public class SpeechService {
                         activeProcLower.contains("stremio") ||
                         activeProcLower.contains("crunchyroll");
 
-                boolean isGamingActive = memory.isInGamingSession() || "Gaming".equalsIgnoreCase(currentCategory);
+                boolean isGamingActive = ShortTermMemoryService.getMemory().isInGamingSession() || "Gaming".equalsIgnoreCase(currentCategory);
 
                 if (isMediaActive && !isGamingActive) {
-                    System.out.println("Ciel Debug: Global Speech Queue active. Media detected. Suspending playback immediately.");
-                    mediaWasPausedForSpeech = true;
-                    // Properly delegates to HabitTracker to execute the OS-level pause
-                    HabitTrackerService.toggleMediaPlayback();
+                    mediaWasPausedForSpeech = HabitTrackerService.pauseMediaForSpeech();
+                    System.out.println("[Media Transport] Speech owns pause=" + mediaWasPausedForSpeech);
                 }
 
                 if (isGamingActive && HabitTrackerService.isCurrentGamePausable()) {
@@ -125,14 +107,13 @@ public class SpeechService {
 
     private static void dequeueSpeech() {
         if (speechQueueCount.decrementAndGet() == 0) {
-            // Maintains the 1.5s natural pause buffer AFTER Ciel stops speaking before resuming the media
             Executors.newSingleThreadScheduledExecutor().schedule(() -> {
                 synchronized (pauseLock) {
                     if (speechQueueCount.get() == 0) {
                         if (mediaWasPausedForSpeech) {
                             System.out.println("Ciel Debug: Global Speech Queue empty. Restoring media playback.");
                             mediaWasPausedForSpeech = false;
-                            HabitTrackerService.toggleMediaPlayback();
+                            HabitTrackerService.resumeMediaAfterSpeech();
                         }
                         if (gameWasPausedForSpeech) {
                             System.out.println("Ciel Debug: Global Speech Queue empty. Restoring game.");
@@ -147,7 +128,6 @@ public class SpeechService {
                                 AzureSpeechService.isSimulatingKeystroke = false;
                             } catch (AWTException | InterruptedException ignored) {}
                         }
-                        // FIX: Safely return GUI to idle ONLY when the entire queue is empty
                         CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
                     }
                 }
@@ -156,6 +136,7 @@ public class SpeechService {
     }
 
     public static void stopCurrentPlayback() {
+        speechGeneration.incrementAndGet();
         if (currentSpeechTask != null && !currentSpeechTask.isDone()) {
             currentSpeechTask.cancel(true);
         }
@@ -177,16 +158,20 @@ public class SpeechService {
     }
 
     public static void cancelSequentialSpeech() {
+        speechGeneration.incrementAndGet();
         sequenceCancelled = true;
         if (sequentialSpeechTask != null) {
             sequentialSpeechTask.cancel(true);
         }
+        AzureSpeechService.isIntentionalCancellation = true; 
+        if (currentSpeechTask != null) {
+            currentSpeechTask.cancel(true);
+        }
+        AzureSpeechService.stopAllAudio();
         ShortTermMemoryService.getMemory().setSpeechEndTime(System.currentTimeMillis());
+        isActivelySpeaking.set(false);
     }
 
-    /* ------------------------------------------------------------------ */
-    /*  SPEAK API                                                          */
-    /* ------------------------------------------------------------------ */
     public static void speak(String text) { speakPreformatted(text, null, false, true); }
     public static void speak(String text, boolean isRare) { speakPreformatted(text, null, isRare, true); }
     public static void speak(String text, String key) { speakPreformatted(text, key, false, true); }
@@ -203,15 +188,12 @@ public class SpeechService {
         try {
             if (text == null || text.isBlank()) return;
 
-            // CRITICAL FIX: Ensure greetings are ALWAYS spoken, completely ignoring gaming suppression.
             boolean isGreeting = key != null && (key.startsWith("boot_greeting") || key.startsWith("login_greeting") || key.startsWith("warm_login"));
 
-            // Suppress unwanted background chatter while gaming
             if (!isGreeting && ShortTermMemoryService.getMemory().isInGamingSession() && !ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
                 boolean isGameLaunch = "game_launch".equals(key);
                 boolean isPhase3Or4 = ShortTermMemoryService.getMemory().getCurrentPhase() >= 3;
                 
-                // If it's not the initial launch comment, and we aren't heavily idle, suppress it.
                 if (!isGameLaunch && !isPhase3Or4) {
                     System.out.println("Ciel Debug: Suppressing non-critical speech (" + key + ") due to active Gaming Mode.");
                     return;
@@ -221,6 +203,7 @@ public class SpeechService {
             if (flushQueue) {
                 stopCurrentPlayback();
             }
+            final long taskGeneration = speechGeneration.get();
 
             Matcher matcher = Pattern.compile("\\[([a-zA-Z]+)\\]").matcher(text);
             String emotionToTrigger = null;
@@ -274,19 +257,17 @@ public class SpeechService {
 
             final String finalStyle = style;
             final String finalPitch = pitch;
-            final String finalAttitude = attitude;
             final String finalCleanText = cleanText;
 
             currentSpeechTask = speechExecutor.submit(() -> {
+                if (taskGeneration != speechGeneration.get()) return;
                 boolean hasEnqueued = false;
                 try {
                     String textToSpeak = finalCleanText;
 
-                    // --------------------------------------------------------------
-                    //  ★  HARD CACHE BYPASS: PREVENTS KATAKANA NETWORK FREEZING ★
-                    // --------------------------------------------------------------
                     boolean needsLanguageConversion = false;
-                    boolean isAlreadyCached = AzureSpeechService.isCached(key, finalStyle, langCode);
+                    String speechKey = com.cielcompanion.util.SpeechText.cacheKey(key, finalCleanText, langCode);
+                    boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, finalStyle, langCode);
 
                     if (!isAlreadyCached) {
                         if (CielVoiceManager.isLanguageLocked()) {
@@ -296,7 +277,6 @@ public class SpeechService {
                         }
 
                         if (needsLanguageConversion) {
-                            // Update GUI, but do NOT pause media yet!
                             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
                         }
 
@@ -310,11 +290,7 @@ public class SpeechService {
                     } else {
                         System.out.println("Ciel Debug: Audio is locally cached (" + key + "). Bypassing Swarm translation pipeline.");
                     }
-                    // --------------------------------------------------------------
 
-                    // CRITICAL FIX: The Katakana translation might have taken 5-10 seconds.
-                    // We only enqueue the speech (and thus pause the media) right now, exactly
-                    // 600ms before she begins physically speaking.
                     if (!hasEnqueued) {
                         enqueueSpeech();
                         hasEnqueued = true;
@@ -325,8 +301,10 @@ public class SpeechService {
                         CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
                     }
 
-                    executeSpeechBlocking(textToSpeak, key, Settings.getTtsRate(),
-                            finalStyle, finalPitch, langCode);
+                    if (taskGeneration != speechGeneration.get() || Thread.currentThread().isInterrupted()) return;
+
+                    executeSpeechBlocking(textToSpeak, speechKey, Settings.getTtsRate(),
+                            finalStyle, finalPitch, langCode, taskGeneration);
                 } finally {
                     if (hasEnqueued) {
                         dequeueSpeech();
@@ -339,9 +317,6 @@ public class SpeechService {
         }
     }
 
-    /* ------------------------------------------------------------------ */
-    /*  Sequential speech (still uses the same queue logic)                */
-    /* ------------------------------------------------------------------ */
     public static void speakSequentially(List<DialogueLine> lines, long delayMs, boolean preformatted, Runnable onComplete) {
         if (lines == null || lines.isEmpty()) {
             if (onComplete != null) onComplete.run();
@@ -349,14 +324,18 @@ public class SpeechService {
         }
 
         sequenceCancelled = false;
+        final long taskGeneration = speechGeneration.get();
 
         sequentialSpeechTask = speechExecutor.submit(() -> {
             boolean hasEnqueued = false;
             try {
                 CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Curious", 0.7, "SequenceDialogue"));
+                SpeechMood sequenceMood = resolveSpeechMood();
+                String sequencePitch = applyHumanVariance(sequenceMood.pitch());
                 for (int i = 0; i < lines.size(); i++) {
                     
-                    if (sequenceCancelled || Thread.currentThread().isInterrupted()) {
+                    if (sequenceCancelled || Thread.currentThread().isInterrupted()
+                            || taskGeneration != speechGeneration.get()) {
                         System.out.println("Ciel Debug: Sequential speech loop explicitly broken via flag.");
                         break;
                     }
@@ -376,44 +355,28 @@ public class SpeechService {
                         if (emotionToTrigger != null && !emotionToTrigger.isBlank()) {
                             final String finalEmotion = emotionToTrigger;
                             CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion(finalEmotion, 0.8, "Dialogue Tag"));
+                            sequenceMood = resolveSpeechMood();
+                            sequencePitch = applyHumanVariance(sequenceMood.pitch());
+                            System.out.println("Ciel Debug (Voice): Dialogue emotion tag changed sequence delivery to "
+                                    + sequenceMood.source() + ".");
+                        } else {
+                            SpeechMood observedMood = resolveSpeechMood();
+                            if (isMajorSpeechMoodShift(sequenceMood, observedMood)) {
+                                sequenceMood = observedMood;
+                                sequencePitch = applyHumanVariance(sequenceMood.pitch());
+                                System.out.println("Ciel Debug (Voice): Speech delivery shifted to "
+                                        + sequenceMood.source() + " after a high-intensity mood change.");
+                            }
                         }
 
-                        String style = "default";
-                        String pitch = "+0%";
-                        String attitude = "Professional";
-
-                        if (CielState.getEmotionManager().isPresent()) {
-                             attitude = CielState.getEmotionManager().get().getCurrentAttitude();
-                             if (!"Professional".equals(attitude)) {
-                                 Optional<MoodConfig.AttitudeDefinition> attDef = MoodConfig.getAttitudeDef(attitude);
-                                 if (attDef.isPresent()) {
-                                     pitch = attDef.get().pitchModifier();
-                                     style = attDef.get().styleModifier();
-                                 }
-                             } else {
-                                 List<Emotion> active = CielState.getEmotionManager().get()
-                                         .getEmotionalState()
-                                         .getActiveEmotions()
-                                         .values()
-                                         .stream()
-                                         .sorted(Comparator.comparingDouble(Emotion::intensity).reversed())
-                                         .collect(Collectors.toList());
-                                 if (!active.isEmpty()) {
-                                     Optional<MoodConfig.EmotionDefinition> def = MoodConfig.getEmotionDef(active.get(0).name());
-                                     if (def.isPresent()) {
-                                         pitch = def.get().pitch();
-                                         style = def.get().ssmlStyle();
-                                     }
-                                 }
-                             }
-                             pitch = applyHumanVariance(pitch);
-                        }
+                        String style = sequenceMood.style();
+                        String pitch = sequencePitch;
 
                         String langCode = CielVoiceManager.getActiveLanguageCode();
 
-                        // --- HARD CACHE BYPASS ---
                         boolean needsLanguageConversion = false;
-                        boolean isAlreadyCached = AzureSpeechService.isCached(line.key(), style, langCode);
+                        String speechKey = com.cielcompanion.util.SpeechText.cacheKey(line.key(), textToSpeak, langCode);
+                        boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, style, langCode);
 
                         if (!isAlreadyCached) {
                             if (CielVoiceManager.isLanguageLocked()) {
@@ -439,9 +402,11 @@ public class SpeechService {
                             try { Thread.sleep(600); } catch (Exception ignored) {}
                         }
 
-                        executeSpeechBlocking(textToSpeak, line.key(), Settings.getTtsRate(), style, pitch, langCode);
+                        if (taskGeneration != speechGeneration.get() || Thread.currentThread().isInterrupted()) break;
+                        executeSpeechBlocking(textToSpeak, speechKey, Settings.getTtsRate(), style, pitch, langCode, taskGeneration);
 
-                        if (sequenceCancelled || Thread.currentThread().isInterrupted()) {
+                        if (sequenceCancelled || Thread.currentThread().isInterrupted()
+                                || taskGeneration != speechGeneration.get()) {
                             System.out.println("Ciel Debug: Sequential speech loop explicitly broken via flag.");
                             break;
                         }
@@ -468,8 +433,9 @@ public class SpeechService {
         });
     }
 
-    private static void executeSpeechBlocking(String text, String key, int rate, String style, String pitch, String langCode) {
-        if (Thread.currentThread().isInterrupted()) return;
+    private static void executeSpeechBlocking(String text, String key, int rate, String style, String pitch,
+                                              String langCode, long taskGeneration) {
+        if (Thread.currentThread().isInterrupted() || taskGeneration != speechGeneration.get()) return;
 
         try {
             if (voiceListener != null) voiceListener.setInternalMute(true);
@@ -489,20 +455,19 @@ public class SpeechService {
                 }
             }
 
-            if (!azureSuccess && !AzureSpeechService.isIntentionalCancellation) {
+            if (!azureSuccess && !AzureSpeechService.isIntentionalCancellation
+                    && taskGeneration == speechGeneration.get() && !Thread.currentThread().isInterrupted()) {
                 System.out.println("Ciel Debug: SAPI Speaking (Clean Fallback): \"" + text + "\"");
 
-                String safeText = text.replace("'", "''");
+                String safeSsml = AzureSpeechService.buildFallbackSsml(text, langCode).replace("'", "''");
                 
-                // Enforce a clean default SAPI fallback, ignoring all Azure pitch/style modifiers.
-                // We explicitly attempt to catch Microsoft Haruka Desktop so Katakana reads correctly.
                 String psScript = "$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
                         + "Add-Type -AssemblyName System.Speech; "
                         + "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
                         + "$s.SetOutputToDefaultAudioDevice(); "
                         + "try { $s.SelectVoice('Microsoft Haruka Desktop'); } catch { try { $s.SelectVoiceByHints('Female') } catch {} } "
                         + "$s.Rate = 0; "
-                        + "$s.Speak('" + safeText + "'); "
+                        + "$s.SpeakSsml('" + safeSsml + "'); "
                         + "$s.Dispose();";
                 
                 String encodedCommand = Base64.getEncoder().encodeToString(psScript.getBytes(StandardCharsets.UTF_16LE));
@@ -557,5 +522,42 @@ public class SpeechService {
 
     public static void cleanup() {
         speechExecutor.shutdownNow();
+    }
+
+    private static SpeechMood resolveSpeechMood() {
+        return CielState.getEmotionManager().map(manager -> {
+            String attitude = manager.getCurrentAttitude();
+            if (!"Professional".equals(attitude)) {
+                Optional<MoodConfig.AttitudeDefinition> definition = MoodConfig.getAttitudeDef(attitude);
+                if (definition.isPresent()) {
+                    MoodConfig.AttitudeDefinition value = definition.get();
+                    return new SpeechMood("attitude:" + attitude, normalizeSpeechStyle(value.styleModifier()),
+                            normalizeSpeechPitch(value.pitchModifier()), 1.0);
+                }
+            }
+
+            return manager.getEmotionalState().getActiveEmotions().values().stream()
+                    .max(Comparator.comparingDouble(Emotion::intensity))
+                    .map(emotion -> MoodConfig.getEmotionDef(emotion.name())
+                            .map(definition -> new SpeechMood(emotion.name(),
+                                    normalizeSpeechStyle(definition.ssmlStyle()),
+                                    normalizeSpeechPitch(definition.pitch()), emotion.intensity()))
+                            .orElse(new SpeechMood(emotion.name(), "default", "+0%", emotion.intensity())))
+                    .orElse(new SpeechMood("Professional", "default", "+0%", 0.0));
+        }).orElse(new SpeechMood("Professional", "default", "+0%", 0.0));
+    }
+
+    private static boolean isMajorSpeechMoodShift(SpeechMood current, SpeechMood candidate) {
+        return !current.source().equals(candidate.source())
+                && !current.style().equals(candidate.style())
+                && candidate.intensity() >= 0.9;
+    }
+
+    private static String normalizeSpeechStyle(String style) {
+        return style == null || style.isBlank() ? "default" : style;
+    }
+
+    private static String normalizeSpeechPitch(String pitch) {
+        return pitch == null || pitch.isBlank() || pitch.equalsIgnoreCase("default") ? "+0%" : pitch;
     }
 }

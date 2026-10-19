@@ -25,6 +25,7 @@ import com.cielcompanion.service.SystemMonitor.SystemMetrics;
 import com.cielcompanion.service.SystemMonitor.ProcessInfo;
 import com.cielcompanion.util.AstroUtils;
 import com.cielcompanion.util.PhonoKana;
+import com.cielcompanion.util.ProjectPaths;
 import com.cielcompanion.astronomy.CombinedAstronomyData;
 import com.cielcompanion.service.AstronomyService.AstronomyReport;
 
@@ -48,6 +49,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class CommandService {
 
@@ -149,7 +152,7 @@ public class CommandService {
             "If it's just normal conversation, return: {\"confidence\": 0, \"intent\": \"UNKNOWN\"}";
 
         try {
-            String response = AIEngine.generateSilentLogic(activeText, prompt).join();
+            String response = AIEngine.generateSilentLogic(activeText, prompt, "Voice Command Context Analysis").join();
             if (response != null) {
                 int confidence = 0;
                 String intentStr = "UNKNOWN";
@@ -185,6 +188,43 @@ public class CommandService {
     public void handleCommand(String originalText, boolean hasWakeWord, Runnable onComplete) {
         if (originalText == null || originalText.isBlank()) {
             if(onComplete != null) onComplete.run();
+            return;
+        }
+
+        Matcher codexRequest = Pattern.compile("(?i)^\\s*(?:ciel[, ]+)?(?:(?:can|could|would)\\s+you\\s+)?(?:ask|tell|have|use)\\s+codex(?:\\s+to)?\\s+(.+)$").matcher(originalText);
+        if (codexRequest.matches()) {
+            boolean explicitlyRequestsEdits = Pattern.compile("(?i)\\b(fix|change|edit|implement|modify|refactor|write|update)\\b")
+                    .matcher(codexRequest.group(1)).find();
+            if (!hasWakeWord && !ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
+                System.out.println("Ciel Debug: Ignored background speech that resembled a Codex task; direct address is required.");
+                if (onComplete != null) onComplete.run();
+                return;
+            }
+            if (!isBusy.compareAndSet(false, true)) {
+                SpeechService.speakPreformatted("[Impatient] I'm already handling another request, Master.");
+                if (onComplete != null) onComplete.run();
+                return;
+            }
+            String task = codexRequest.group(1).trim();
+            AIEngine.recordExternalTurn("user", task);
+            String access = explicitlyRequestsEdits ? "workspace-write" : "read-only";
+            System.out.println("Ciel Debug: Explicit Codex request routed with " + access + " access.");
+            SpeechService.speakPreformatted("[Focused] I'll ask Codex to handle that. Its access is limited to this project, and I'll report back when it finishes.");
+            CodexAgentService.runUserTask(task, explicitlyRequestsEdits).whenComplete((result, error) -> {
+                try {
+                    if (error != null) {
+                        String reason = error.getCause() != null && error.getCause().getMessage() != null
+                                ? error.getCause().getMessage() : error.getMessage();
+                        System.err.println("Ciel Error: Codex request failed: " + reason);
+                        SpeechService.speakPreformatted("[Concerned] Codex could not complete that task. The details are in the Ciel log.");
+                    } else {
+                        SpeechService.speakPreformatted("[Focused] " + result);
+                    }
+                } finally {
+                    isBusy.set(false);
+                    if (onComplete != null) onComplete.run();
+                }
+            });
             return;
         }
 
@@ -501,10 +541,28 @@ public class CommandService {
         if (CielState.needsAstronomyApiFetch()) {
             AstronomyService.performApiFetch();
         }
-        AstronomyReport report = AstronomyService.getTodaysAstronomyReport();
         List<String> linesToSpeak = new ArrayList<>();
-        linesToSpeak.addAll(report.sequentialEvents().values());
-        linesToSpeak.addAll(report.reportAmbientLines());
+        String savedReportKey = "ciel.idle_report.generated." + java.time.LocalDate.now();
+        Optional<Fact> savedReport = MemoryService.getFact(savedReportKey);
+        if (savedReport.isPresent()) {
+            try {
+                com.google.gson.JsonArray entries = com.google.gson.JsonParser.parseString(savedReport.get().value()).getAsJsonArray();
+                for (com.google.gson.JsonElement entry : entries) {
+                    if (entry.isJsonObject() && entry.getAsJsonObject().has("text")) {
+                        linesToSpeak.add(entry.getAsJsonObject().get("text").getAsString());
+                    }
+                }
+                System.out.println("Ciel Debug: Reusing saved idle report " + savedReportKey + " for the requested daily report.");
+            } catch (Exception e) {
+                System.err.println("Ciel Warning: Saved idle report could not be read; rebuilding from cached astronomy data: " + e.getMessage());
+                linesToSpeak.clear();
+            }
+        }
+        if (linesToSpeak.isEmpty()) {
+            AstronomyReport report = AstronomyService.getTodaysAstronomyReport();
+            linesToSpeak.addAll(report.sequentialEvents().values());
+            linesToSpeak.addAll(report.reportAmbientLines());
+        }
         
         String data = String.join(" ", linesToSpeak);
         if (data.isBlank()) data = "No significant daily events detected.";
@@ -840,31 +898,6 @@ public class CommandService {
     }
 
     // -----------------------------------------------------------------
-    //  Ask the Python helper (OpenJarvis) to do its pre-shutdown work:
-    //   - save open files / flush caches
-    //   - tell the Swarm/Ollama/LMStudio to release VRAM
-    // -----------------------------------------------------------------
-    private static boolean askPythonToPrepareShutdown(int timeoutSeconds) {
-        String urlStr = "http://127.0.0.1:8000/pre_shutdown"; // <-- adjust host/port if needed
-        try {
-            URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setConnectTimeout(timeoutSeconds * 1000);
-            conn.setReadTimeout(timeoutSeconds * 1000);
-            conn.setDoOutput(true);
-            try (OutputStream os = conn.getOutputStream()) {
-                os.write("{}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            }
-            int rc = conn.getResponseCode();
-            return rc >= 200 && rc < 300;   // any 2xx means "ready"
-        } catch (Exception e) {
-            System.out.println("[Ciel Debug] Python pre-shutdown request failed: " + e.getMessage());
-            return false;   // continue anyway - we must not get stuck
-        }
-    }
-
-    // -----------------------------------------------------------------
     //  Called from the voice pipeline when a CANCEL_SHUTDOWN intent is seen.
     // -----------------------------------------------------------------
     private static void abortShutdownSequence() {
@@ -886,19 +919,8 @@ public class CommandService {
         CielState.setDiaryWrittenThisSession(false);
         VaultService.resetFinalLogFlag();
 
-        // Restart the Swarm (Python side) so the user can keep working
-        CompletableFuture.runAsync(() -> {
-            try {
-                long javaPid = ProcessHandle.current().pid();
-                ProcessBuilder pb = new ProcessBuilder(
-                        "cmd.exe", "/c", "python openjarvis.py " + javaPid);
-                pb.directory(new File("C:\\Ciel Companion\\OpenJarvis-main"));
-                pb.redirectErrorStream(true);
-                pb.start();
-            } catch (Exception e) {
-                System.err.println("[Ciel Error] Failed to restart Swarm after abort: " + e.getMessage());
-            }
-        });
+        // The cancellable portion does not stop OpenJarvis. Do not launch a
+        // second server here; the prior implementation created duplicate Swarms.
 
         LineManager.getDialogueLine("shutdown_abort").ifPresent(line -> {
             SpeechService.speakPreformatted(line.text(), line.key(), false, false);
@@ -913,7 +935,6 @@ public class CommandService {
             SpeechService.stopCurrentPlayback();
             SpeechService.cancelSequentialSpeech();
         } catch (Exception ignored) {}
-        try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
         System.out.println("[Ciel Debug] Java side exiting now - no further work will be done.");
         System.exit(0);
     }
@@ -955,10 +976,7 @@ public class CommandService {
                 try { Thread.sleep(200); } catch (InterruptedException ignored) {}
             }
 
-            // 2. Prepare Python side and write Diary
-            System.out.println("[Ciel Debug] Asking Python helper to prepare for shutdown...");
-            askPythonToPrepareShutdown(5); 
-
+            // 2. Write the diary while the inference service is still available.
             if (!CielState.isDiaryWrittenThisSession()) {
                 String context = "The Master initiated a " + commandType + " sequence. Please synthesize your final thoughts and next-cycle action plan.";
                 System.out.println("[Ciel Debug] Blocking thread to write final system diary entry...");
@@ -997,31 +1015,19 @@ public class CommandService {
                     abortShutdownSequence();
                 });
 
-                // T=25s: Kill AI processes silently (No speech to prevent blocking OS shutdown)
+                // At T=30, schedule the OS action with time for the JVM shutdown
+                // hook to flush Ciel state and stop OpenJarvis cleanly.
                 shutdownScheduler.schedule(() -> {
                     if (!isShuttingDown.get()) return;
-                    System.out.println("[Ciel Debug] 25s mark. Terminating AI processes for clean exit...");
-                    
-                    CielCompanion.killJarvis();
-                    try {
-                        Runtime.getRuntime().exec("taskkill /F /IM ollama_llama_server.exe /T");
-                        Runtime.getRuntime().exec("taskkill /F /IM ollama.exe /T");
-                        Runtime.getRuntime().exec("taskkill /F /IM lmstudio-server.exe /T");
-                        Runtime.getRuntime().exec("taskkill /F /IM python.exe /T");
-                    } catch (Exception ignored) {}
-                }, 25, TimeUnit.SECONDS);
-
-                // T=30s: Instant OS Shutdown
-                shutdownScheduler.schedule(() -> {
-                    if (!isShuttingDown.get()) return;
-                    System.out.println("[Ciel Debug] 30s mark. Executing 0-second OS command.");
+                    System.out.println("[Ciel Debug] 30s mark. Scheduling OS shutdown/reboot after Java cleanup.");
                     try {
                         if (isReboot) {
-                            Runtime.getRuntime().exec("shutdown -r -t 0");
+                            Runtime.getRuntime().exec("shutdown -r -t 20");
                         } else if (isLogout) {
-                            Runtime.getRuntime().exec("shutdown -l");
+                            new ProcessBuilder("powershell.exe", "-NoProfile", "-Command",
+                                    "Start-Sleep -Seconds 20; shutdown.exe -l").start();
                         } else {
-                            Runtime.getRuntime().exec("shutdown -s -t 0");
+                            Runtime.getRuntime().exec("shutdown -s -t 20");
                         }
                     } catch (IOException e) {
                         e.printStackTrace();
@@ -1059,19 +1065,6 @@ public class CommandService {
         
         CielState.setPerformingColdShutdown(true); 
 
-        // Send the update command to Python side via HTTP
-        CompletableFuture.runAsync(() -> {
-            try {
-                URL url = new URL("http://localhost:8000/update_system");
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setConnectTimeout(5000);
-                conn.getResponseCode(); 
-            } catch (Exception e) {
-                System.out.println("Ciel Debug: Failed to trigger Python update: " + e.getMessage());
-            }
-        });
-
         // Step 1: Speak initial phrase
         LineManager.getDialogueLine("update_init").ifPresent(line -> {
             SpeechService.speakPreformatted(line.text(), line.key(), false, true);
@@ -1100,16 +1093,10 @@ public class CommandService {
                 Thread.sleep(1000);
                 while (SpeechService.isActivelySpeaking()) { Thread.sleep(500); }
 
-                // Step 4: Kill AI processes
-                CielCompanion.killJarvis(); 
-                Thread.sleep(2000); 
-                
-                try {
-                    Runtime.getRuntime().exec("taskkill /F /IM ollama_llama_server.exe /T");
-                    Runtime.getRuntime().exec("taskkill /F /IM ollama.exe /T");
-                    Runtime.getRuntime().exec("taskkill /F /IM lmstudio-server.exe /T");
-                    Runtime.getRuntime().exec("taskkill /F /IM python.exe /T");
-                } catch (Exception ignored) {}
+                // Step 4: Stop Ciel's helper service and wait for its port to close.
+                if (!CielCompanion.killJarvisAndWait(8)) {
+                    System.err.println("Ciel Warning: OpenJarvis did not confirm shutdown before update launch; updater will record the result.");
+                }
 
                 // Step 5: Execute Recompilation Batch Script
                 triggerMavenRecompileBatch();
@@ -1122,54 +1109,14 @@ public class CommandService {
 
     private static void triggerMavenRecompileBatch() {
         try {
-            File script = new File("C:\\Ciel Companion\\update_ciel.bat");
-            String batContent = "@echo off\n" +
-                                "title Ciel Autonomous Re-Compiler\n" +
-                                "echo [Ciel] Memory core detached. Waiting 10 seconds for JVM to fully exit...\n" +
-                                "timeout /t 10 /nobreak\n" +
-                                "echo [Ciel] Locating backup drive...\n" +
-                                "set BACKUP_DRIVE=\n" +
-                                "if exist \"D:\\Ciel Backups\\\" (\n" +
-                                "    set BACKUP_DRIVE=D:\\Ciel Backups\n" +
-                                ") else (\n" +
-                                "    for %%d in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do (\n" +
-                                "        if exist %%d:\\ (\n" +
-                                "            fsutil fsinfo drivetype %%d: | findstr /i \"Removable\" >nul\n" +
-                                "            if not errorlevel 1 set BACKUP_DRIVE=%%d:\n" +
-                                "        )\n" +
-                                "    )\n" +
-                                ")\n" +
-                                "if \"%BACKUP_DRIVE%\"==\"\" set BACKUP_DRIVE=C:\\Ciel_Backups\n" +
-                                "set T=%time: =0%\n" +
-                                "set BACKUP_PATH=%BACKUP_DRIVE%\\Ciel_Backup_%date:~-4,4%%date:~-10,2%%date:~-7,2%_%T:~0,2%%T:~3,2%\n" +
-                                "echo [Ciel] Backing up to %BACKUP_PATH%...\n" +
-                                "mkdir \"%BACKUP_PATH%\"\n" +
-                                "robocopy \"C:\\Ciel Companion\" \"%BACKUP_PATH%\" /MIR /XD \"target\" \".git\" \"logs\" \"model\" /XF \"*.log\" \"ciel_companion_*.log\"\n" +
-                                "cd /d \"C:\\Ciel Companion\"\n" +
-                                "echo [Ciel] Initiating Maven Clean Package as requested by Master...\n" +
-                                "call mvn clean package\n" +
-                                "if %ERRORLEVEL% NEQ 0 (\n" +
-                                "    echo.\n" +
-                                "    echo ====================================================\n" +
-                                "    echo [CIEL FATAL ERROR] Maven compilation failed!\n" +
-                                "    echo The Swarm generated code with syntax errors.\n" +
-                                "    echo Please review the output above to diagnose the issue.\n" +
-                                "    echo ====================================================\n" +
-                                "    pause\n" +
-                                "    exit /b %ERRORLEVEL%\n" +
-                                ")\n" +
-                                "echo.\n" +
-                                "echo [Ciel] Compilation successful. Relaunching Ciel Companion silently...\n" +
-                                "echo Set objShell = WScript.CreateObject(\"WScript.Shell\") > launch_ciel.vbs\n" +
-                                "echo objShell.Run \"cmd /c mvn exec:java -Dexec.mainClass=com.cielcompanion.CielCompanion\", 0, False >> launch_ciel.vbs\n" +
-                                "cscript //nologo launch_ciel.vbs\n" +
-                                "del launch_ciel.vbs\n" +
-                                "exit";
-            Files.writeString(script.toPath(), batContent);
-            
-            Runtime.getRuntime().exec(new String[]{"cmd.exe", "/c", "start", "\"Ciel Updater\"", "\"" + script.getAbsolutePath() + "\""});
+            Path script = ProjectPaths.root().resolve("update_ciel.bat");
+            if (!Files.isRegularFile(script)) throw new IOException("Updater script is missing: " + script);
+            new ProcessBuilder("cmd.exe", "/c", "start", "\"Ciel Updater\"", "\"" + script + "\"")
+                    .directory(ProjectPaths.root().toFile())
+                    .start();
         } catch (Exception e) {
-            e.printStackTrace();
+            System.err.println("Ciel Error: Could not launch updater: " + e.getMessage());
+            return;
         }
         
         System.out.println("Ciel Debug: Self-update sequence complete. Exiting JVM to allow recompilation.");

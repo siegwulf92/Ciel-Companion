@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -53,7 +54,7 @@ public class WeatherAwareAstronomyEngine {
             "If you cancel it, write a short, wry, or disappointed English sentence explaining exactly why you can't show him the stars right now. (e.g. referencing the sun blocking the view, or the specific weather). " +
             "Output strictly valid JSON: { \"cancel_visuals\": true/false, \"reason\": \"brief internal logic\", \"complaint\": \"Your dynamic English response here (or empty string if false)\" }.";
 
-        AIEngine.evaluateBackground("Check if sky is visible.", prompt).thenAccept(jsonResponse -> {
+        AIEngine.evaluateBackground("Check if sky is visible.", prompt, Duration.ofSeconds(30)).thenAccept(jsonResponse -> {
             if (jsonResponse == null) {
                 onComplete.accept(rawReport);
                 return;
@@ -96,6 +97,8 @@ public class WeatherAwareAstronomyEngine {
                 onComplete.accept(rawReport);
             }
         }).exceptionally(e -> {
+            System.err.println("Ciel Warning: Weather visibility check failed or timed out; delivering the saved astronomy report."
+                    + " Cause: " + e.getClass().getSimpleName());
             onComplete.accept(rawReport);
             return null;
         });

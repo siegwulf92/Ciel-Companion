@@ -56,7 +56,7 @@ public class DynamicScriptEngine {
     }
 
     private static void attemptGenerationAndExecution(String prompt, String systemContext, int attemptNum, Runnable onComplete) {
-        AIEngine.generateSilentLogic(prompt, systemContext).thenAccept(response -> {
+        AIEngine.generateSilentLogic(prompt, systemContext, "Dynamic Script Planning").thenAccept(response -> {
             if (response == null || response.isBlank()) {
                 speakStatus("[Annoyed] スクリプト ジェネレーション フェイルド。");
                 if (onComplete != null) onComplete.run();

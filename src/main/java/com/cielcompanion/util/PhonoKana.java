@@ -47,7 +47,9 @@ public final class PhonoKana {
 
     public String toKatakana(String input) {
         if (input == null || input.isBlank()) return "";
-        String normalizedInput = Normalizer.normalize(input, Normalizer.Form.NFD).replaceAll("\\p{M}", "");
+        // Remove Latin accent marks without stripping dakuten from existing kana.
+        String normalizedInput = Normalizer.normalize(input, Normalizer.Form.NFD)
+                .replaceAll("([A-Za-z])\\p{M}+", "$1");
         String preprocessedInput = expandRomanNumerals(normalizedInput);
         String s = Normalizer.normalize(preprocessedInput, Normalizer.Form.NFC);
         List<Token> tokens = tokenize(s);
@@ -84,30 +86,140 @@ public final class PhonoKana {
     }
 
     private String romajiLikeToKatakana(String r) {
-        r = r.replaceAll("(?<![aiueo])(k)([aiueo])", "ク$2");
-        return r.replace("shon", "ション").replace("jon", "ジョン").replace("chaa", "チャー").replace("jaa", "ジャー")
-                .replace("va", "ヴァ").replace("vi", "ヴィ").replace("ve", "ヴェ").replace("vo", "ヴォ")
-                .replace("fa", "ファ").replace("fi", "フィ").replace("fe", "フェ").replace("fo", "フォ")
-                .replace("ti", "ティ").replace("di", "ディ").replace("tu", "テュ").replace("du", "デュ")
-                .replace("shi", "シ").replace("chi", "チ").replace("tsu", "ツ")
-                .replace("kya", "キャ").replace("kyu", "キュ").replace("kyo", "キョ")
-                .replace("sha", "シャ").replace("shu", "シュ").replace("sho", "ショ")
-                .replace("ai", "アイ").replace("a", "ア").replace("i", "イ").replace("u", "ウ").replace("e", "エ").replace("o", "オ")
-                .replace("ka", "カ").replace("ki", "キ").replace("ku", "ク").replace("ke", "ケ").replace("ko", "コ")
-                .replace("sa", "サ").replace("su", "ス").replace("se", "セ").replace("so", "ソ")
-                .replace("ta", "タ").replace("te", "テ").replace("to", "ト")
-                .replace("na", "ナ").replace("ni", "ニ").replace("nu", "ヌ").replace("ne", "ネ").replace("no", "ノ")
-                .replace("ha", "ハ").replace("hi", "ヒ").replace("fu", "フ").replace("he", "ヘ").replace("ho", "ホ")
-                .replace("ma", "マ").replace("mi", "ミ").replace("mu", "ム").replace("me", "メ").replace("mo", "モ")
-                .replace("ya", "ヤ").replace("yu", "ユ").replace("yo", "ヨ")
-                .replace("ra", "ラ").replace("ri", "リ").replace("ru", "ル").replace("re", "レ").replace("ro", "ロ")
-                .replace("wa", "ワ").replace("wo", "ヲ").replace("n", "ン")
-                .replace("ga", "ガ").replace("gi", "ギ").replace("gu", "グ").replace("ge", "ゲ").replace("go", "ゴ")
-                .replace("za", "ザ").replace("ji", "ジ").replace("zu", "ズ").replace("ze", "ゼ").replace("zo", "ゾ")
-                .replace("da", "ダ").replace("de", "ディ").replace("do", "ド")
-                .replace("ba", "バ").replace("bi", "ビ").replace("bu", "ブ").replace("be", "ベ").replace("bo", "ボ")
-                .replace("pa", "パ").replace("pi", "ピ").replace("pu", "プ").replace("pe", "ペ").replace("po", "ポ")
-                .replaceAll("aa", "アー").replaceAll("ii", "イー").replaceAll("uu", "ウー").replaceAll("ee", "エー").replaceAll("oo", "オー");
+        // Greedy whole syllables: replacing vowels first destroyed ka/shi/etc.
+        String[][] syllables = {
+                {"shon", "ション"},
+                {"chaa", "チャー"},
+                {"jon", "ジョン"},
+                {"jaa", "ジャー"},
+                {"shi", "シ"},
+                {"chi", "チ"},
+                {"tsu", "ツ"},
+                {"kya", "キャ"},
+                {"kyu", "キュ"},
+                {"kyo", "キョ"},
+                {"sha", "シャ"},
+                {"shu", "シュ"},
+                {"sho", "ショ"},
+                {"va", "ヴァ"},
+                {"vi", "ヴィ"},
+                {"ve", "ヴェ"},
+                {"vo", "ヴォ"},
+                {"fa", "ファ"},
+                {"fi", "フィ"},
+                {"fe", "フェ"},
+                {"fo", "フォ"},
+                {"ti", "ティ"},
+                {"di", "ディ"},
+                {"tu", "テュ"},
+                {"du", "デュ"},
+                {"ai", "アイ"},
+                {"ka", "カ"},
+                {"ki", "キ"},
+                {"ku", "ク"},
+                {"ke", "ケ"},
+                {"ko", "コ"},
+                {"sa", "サ"},
+                {"su", "ス"},
+                {"se", "セ"},
+                {"so", "ソ"},
+                {"ta", "タ"},
+                {"te", "テ"},
+                {"to", "ト"},
+                {"na", "ナ"},
+                {"ni", "ニ"},
+                {"nu", "ヌ"},
+                {"ne", "ネ"},
+                {"no", "ノ"},
+                {"ha", "ハ"},
+                {"hi", "ヒ"},
+                {"fu", "フ"},
+                {"he", "ヘ"},
+                {"ho", "ホ"},
+                {"ma", "マ"},
+                {"mi", "ミ"},
+                {"mu", "ム"},
+                {"me", "メ"},
+                {"mo", "モ"},
+                {"ya", "ヤ"},
+                {"yu", "ユ"},
+                {"yo", "ヨ"},
+                {"ra", "ラ"},
+                {"ri", "リ"},
+                {"ru", "ル"},
+                {"re", "レ"},
+                {"ro", "ロ"},
+                {"wa", "ワ"},
+                {"wo", "ヲ"},
+                {"ga", "ガ"},
+                {"gi", "ギ"},
+                {"gu", "グ"},
+                {"ge", "ゲ"},
+                {"go", "ゴ"},
+                {"za", "ザ"},
+                {"ji", "ジ"},
+                {"zu", "ズ"},
+                {"ze", "ゼ"},
+                {"zo", "ゾ"},
+                {"da", "ダ"},
+                {"de", "ディ"},
+                {"do", "ド"},
+                {"ba", "バ"},
+                {"bi", "ビ"},
+                {"bu", "ブ"},
+                {"be", "ベ"},
+                {"bo", "ボ"},
+                {"pa", "パ"},
+                {"pi", "ピ"},
+                {"pu", "プ"},
+                {"pe", "ペ"},
+                {"po", "ポ"},
+                {"aa", "アー"},
+                {"ii", "イー"},
+                {"uu", "ウー"},
+                {"ee", "エー"},
+                {"oo", "オー"},
+                {"a", "ア"},
+                {"i", "イ"},
+                {"u", "ウ"},
+                {"e", "エ"},
+                {"o", "オ"},
+                {"n", "ン"},
+                {"b", "ブ"},
+                {"c", "ク"},
+                {"d", "ド"},
+                {"f", "フ"},
+                {"g", "グ"},
+                {"h", "フ"},
+                {"j", "ジ"},
+                {"k", "ク"},
+                {"l", "ル"},
+                {"m", "ム"},
+                {"p", "プ"},
+                {"q", "ク"},
+                {"r", "ル"},
+                {"s", "ス"},
+                {"t", "ト"},
+                {"v", "ヴ"},
+                {"w", "ウ"},
+                {"x", "クス"},
+                {"y", "イ"},
+                {"z", "ズ"}
+        };
+        StringBuilder out = new StringBuilder();
+        for (int offset = 0; offset < r.length();) {
+            boolean matched = false;
+            for (String[] syllable : syllables) {
+                if (r.startsWith(syllable[0], offset)) {
+                    out.append(syllable[1]);
+                    offset += syllable[0].length();
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) out.append(r.charAt(offset++));
+        }
+        return out.toString();
     }
 
     private String expandRomanNumerals(String s) {

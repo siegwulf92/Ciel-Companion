@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import com.cielcompanion.util.ProjectPaths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
@@ -13,7 +14,7 @@ import java.time.temporal.ChronoField;
 
 public class FileLogger {
 
-    private static final String LOG_DIRECTORY_PATH = "C:\\Ciel Companion\\logs";
+    private static final String LOG_DIRECTORY_PATH = ProjectPaths.root().resolve("logs").toString();
     private static final DateTimeFormatter TIMESTAMP_FORMATTER = new DateTimeFormatterBuilder()
             .appendValue(ChronoField.HOUR_OF_DAY, 2)
             .appendLiteral(':')

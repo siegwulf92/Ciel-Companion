@@ -11,6 +11,12 @@ public class HotkeyService implements NativeKeyListener {
 
     private final VoiceListener voiceListener;
     private int toggleKeyCode;
+    private final java.util.concurrent.atomic.AtomicBoolean keyDown = new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.concurrent.ExecutorService actions = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "Ciel-Hotkey-Action");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     // CORRECTED: Constructor now accepts the VoiceListener
     public HotkeyService(VoiceListener voiceListener) {
@@ -47,13 +53,19 @@ public class HotkeyService implements NativeKeyListener {
 
     @Override
     public void nativeKeyPressed(NativeKeyEvent e) {
-        if (e.getKeyCode() == toggleKeyCode) {
-            voiceListener.toggleListening();
+        if (e.getKeyCode() == toggleKeyCode && keyDown.compareAndSet(false, true)) {
+            actions.execute(voiceListener::toggleListening);
         }
+    }
+
+    @Override
+    public void nativeKeyReleased(NativeKeyEvent e) {
+        if (e.getKeyCode() == toggleKeyCode) keyDown.set(false);
     }
 
     // CORRECTED: Renamed method for consistency
     public void cleanUp() {
+        actions.shutdownNow();
         try {
             if (GlobalScreen.isNativeHookRegistered()) {
                 GlobalScreen.removeNativeKeyListener(this);

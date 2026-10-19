@@ -49,7 +49,7 @@ public class WindowsInputService {
             // GetTickCount returns time since boot
             // dwTime returns time of last input since boot
             // Diff is idle time
-            return Kernel32.INSTANCE.GetTickCount() - lastInputInfo.dwTime;
+            return Integer.toUnsignedLong(Kernel32.INSTANCE.GetTickCount() - lastInputInfo.dwTime);
         }
         return 0;
     }

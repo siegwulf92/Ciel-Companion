@@ -11,6 +11,8 @@ import java.util.Set;
 
 public class MemoryService {
 
+    public record ConversationTurn(String role, String content, long createdAtMs) {}
+
     public static void initialize() {
         try {
             DatabaseManager.initialize();
@@ -101,6 +103,52 @@ public class MemoryService {
             System.err.println("Ciel Error: Failed to retrieve episodic memories.");
         }
         return memories;
+    }
+
+    public static void recordConversationTurn(String role, String content, long createdAtMs) {
+        if (role == null || content == null || content.isBlank()) return;
+        String sql = "INSERT INTO conversation_history(role, content, created_at_ms) VALUES(?,?,?)";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, role);
+            pstmt.setString(2, content);
+            pstmt.setLong(3, createdAtMs);
+            pstmt.executeUpdate();
+            try (var cleanup = conn.createStatement()) {
+                cleanup.executeUpdate("DELETE FROM conversation_history WHERE id NOT IN (SELECT id FROM conversation_history ORDER BY created_at_ms DESC, role DESC, content DESC LIMIT 5000)");
+            }
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Failed to persist conversation turn: " + e.getMessage());
+        }
+    }
+
+    public static List<ConversationTurn> getRecentConversationTurns(int limit) {
+        List<ConversationTurn> turns = new ArrayList<>();
+        String sql = "SELECT role, content, created_at_ms FROM conversation_history ORDER BY created_at_ms DESC, role DESC, content DESC LIMIT ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setInt(1, Math.max(1, limit));
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) turns.add(new ConversationTurn(rs.getString("role"), rs.getString("content"), rs.getLong("created_at_ms")));
+            }
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Failed to read persisted conversation history: " + e.getMessage());
+        }
+        return turns;
+    }
+
+    public static Optional<Fact> getLatestFactByTag(String tag) {
+        String sql = "SELECT key, value, created_at_ms, tags, source, version FROM facts WHERE tags LIKE ? ORDER BY created_at_ms DESC LIMIT 1";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, "%" + tag + "%");
+            try (ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) return Optional.of(new Fact(rs.getString("key"), rs.getString("value"), rs.getLong("created_at_ms"), rs.getString("tags"), rs.getString("source"), rs.getInt("version")));
+            }
+        } catch (Exception e) {
+            System.err.println("Ciel Error: Failed to read latest memory fact for tag '" + tag + "': " + e.getMessage());
+        }
+        return Optional.empty();
     }
 
     public static void recordSpokenLine(SpokenLine line) {

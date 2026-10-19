@@ -13,6 +13,8 @@ public class EmotionalState {
     private final Map<String, Emotion> activeEmotions = new ConcurrentHashMap<>();
     private static final double DECAY_RATE_PER_SECOND = 0.05; // 5% decay per second
     private String lastDominantEmotionName = ""; // To track for logging
+    private long lastDominantEmotionLogTime = 0L;
+    private int suppressedDominantEmotionTransitions = 0;
 
     public void triggerEmotion(String name, double intensity, String cause) {
         MoodConfig.EmotionDefinition def = MoodConfig.getEmotionDef(name).orElse(null);
@@ -54,8 +56,14 @@ public class EmotionalState {
     }
     
     public Optional<Emotion> getDominantEmotion() {
-        return activeEmotions.values().stream()
+        Optional<Emotion> strongest = activeEmotions.values().stream()
             .max((e1, e2) -> Double.compare(e1.intensity(), e2.intensity()));
+        Emotion previous = activeEmotions.get(lastDominantEmotionName);
+        if (strongest.isPresent() && previous != null
+                && previous.intensity() >= strongest.get().intensity() - 0.05) {
+            return Optional.of(previous);
+        }
+        return strongest;
     }
 
     public record VisualState(Color color, MoodConfig.AnimationStyle animation, double brightness) {}
@@ -68,13 +76,22 @@ public class EmotionalState {
         Emotion dominantEmotion = getDominantEmotion().orElse(new Emotion("Observing", 1.0, null, 0, "default", "default"));
 
         if (!dominantEmotion.name().equals(lastDominantEmotionName)) {
-            String activeEmotionsString = activeEmotions.values().stream()
-                .map(e -> String.format("%s(%.2f)", e.name(), e.intensity()))
-                .collect(Collectors.joining(", "));
-            System.out.printf("Ciel Debug: Dominant emotion changed from %s to %s. Active emotions: [%s]%n",
-                lastDominantEmotionName.isEmpty() ? "None" : lastDominantEmotionName,
-                dominantEmotion.name(),
-                activeEmotionsString);
+            long now = System.currentTimeMillis();
+            if (lastDominantEmotionLogTime == 0L || now - lastDominantEmotionLogTime >= 10000L) {
+                String activeEmotionsString = activeEmotions.values().stream()
+                    .map(e -> String.format("%s(%.2f)", e.name(), e.intensity()))
+                    .collect(Collectors.joining(", "));
+                System.out.printf("Ciel Debug: Dominant emotion changed from %s to %s. Active emotions: [%s]%s%n",
+                    lastDominantEmotionName.isEmpty() ? "None" : lastDominantEmotionName,
+                    dominantEmotion.name(),
+                    activeEmotionsString,
+                    suppressedDominantEmotionTransitions > 0
+                        ? " (" + suppressedDominantEmotionTransitions + " rapid transitions suppressed)" : "");
+                lastDominantEmotionLogTime = now;
+                suppressedDominantEmotionTransitions = 0;
+            } else {
+                suppressedDominantEmotionTransitions++;
+            }
             lastDominantEmotionName = dominantEmotion.name();
         }
 

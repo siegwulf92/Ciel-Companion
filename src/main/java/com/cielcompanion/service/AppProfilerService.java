@@ -17,7 +17,7 @@ public class AppProfilerService {
 
     private static final Map<String, AppProfile> profiles = new HashMap<>();
     
-    // NEW: Caches dynamically identified apps to prevent log flooding during active gaming
+    // Caches dynamically identified apps to prevent log flooding during active gaming
     private static final Map<String, AppProfile> dynamicCache = new ConcurrentHashMap<>();
 
     public static void initialize() {
@@ -87,7 +87,10 @@ public class AppProfilerService {
 
         // 1. Direct Process Match
         if (profiles.containsKey(lowerProc)) {
-            return profiles.get(lowerProc);
+            AppProfile p = profiles.get(lowerProc);
+            if (!p.isLauncher()) { // Do not identify launchers as the active game
+                return p;
+            }
         }
 
         // 2. Window Title Regex Match (Context Awareness)
@@ -99,6 +102,11 @@ public class AppProfilerService {
                     if ("Game".equalsIgnoreCase(p.category()) && 
                         (lowerProc.contains("chrome") || lowerProc.contains("firefox") || 
                          lowerProc.contains("edge") || lowerProc.contains("opera") || lowerProc.contains("brave"))) {
+                        continue;
+                    }
+
+                    // SAFETY GUARD: Do not identify launchers based on title
+                    if (p.isLauncher()) {
                         continue;
                     }
                     

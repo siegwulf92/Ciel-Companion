@@ -73,9 +73,10 @@ public class CielGui {
     public void setVisualState(EmotionalState.VisualState state) { if (panel != null) panel.setCurrentVisualState(state); }
     
     private static class CielPanel extends JPanel {
-        private GuiState currentState = GuiState.IDLE;
-        private EmotionalState.VisualState currentVisualState;
+        private volatile GuiState currentState = GuiState.IDLE;
+        private volatile EmotionalState.VisualState currentVisualState;
         private float animationTick = 0;
+        private long lastAnimationNanos = System.nanoTime();
         private final Random random = new Random();
         private final Particle[] particles = new Particle[50];
         
@@ -87,8 +88,12 @@ public class CielGui {
             setOpaque(false);
             for (int i = 0; i < particles.length; i++) particles[i] = new Particle();
             
-            new Timer(16, e -> {
-                animationTick += 0.01f;
+            // Thirty frames per second keeps the glow fluid while cutting paint/GPU
+            // work roughly in half compared with the old 60 fps repaint loop.
+            new Timer(33, e -> {
+                long now = System.nanoTime();
+                animationTick += (now - lastAnimationNanos) / 1_000_000_000f * 0.6f;
+                lastAnimationNanos = now;
                 for (Particle p : particles) p.update();
                 repaint();
             }).start();
@@ -183,7 +188,7 @@ public class CielGui {
             float height = getHeight();
             Point2D.Float center = new Point2D.Float(width / 2f, height / 2f);
             
-            Color baseColor = currentVisualState.color();
+            Color baseColor = cycleEmotionColor(currentVisualState.color(), currentVisualState.animation());
             float brightness = (float) currentVisualState.brightness();
             float maxRadius = (width / 2f) - 10f;
             
@@ -271,6 +276,18 @@ public class CielGui {
             }
             
             g2d.dispose();
+        }
+
+        private Color cycleEmotionColor(Color emotionalColor, MoodConfig.AnimationStyle style) {
+            float[] hsb = Color.RGBtoHSB(emotionalColor.getRed(), emotionalColor.getGreen(), emotionalColor.getBlue(), null);
+            double seconds = System.nanoTime() / 1_000_000_000.0;
+            if (style == MoodConfig.AnimationStyle.RAINBOW_CYCLE) {
+                hsb[0] = (float) ((hsb[0] + (seconds / 10.0)) % 1.0); // One calm rainbow cycle every 10 seconds.
+            } else {
+                // Keep each emotion recognizable, with a small ambient color drift around its tint.
+                hsb[0] = (float) ((hsb[0] + Math.sin(seconds * (2.0 * Math.PI / 12.0)) * 0.035 + 1.0) % 1.0);
+            }
+            return Color.getHSBColor(hsb[0], hsb[1], hsb[2]);
         }
     }
 }

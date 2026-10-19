@@ -1,5 +1,7 @@
 package com.cielcompanion.ai;
 
+import com.cielcompanion.util.ProjectPaths;
+
 import com.cielcompanion.CielState;
 import com.cielcompanion.service.SpeechService;
 import com.google.gson.JsonObject;
@@ -22,7 +24,10 @@ import java.util.stream.Collectors;
  */
 public class SkillManager {
 
-    private static final Path SKILLS_DIR = Paths.get(System.getProperty("user.dir"), "skills");
+    // Ciel's runtime skill catalog lives alongside the finance/media data under Ciel/skills.
+    // The old project-root /skills path was empty, so native catalog/evolution code
+    // silently reported that Ciel had no skills and could repeatedly invent duplicates.
+    private static final Path SKILLS_DIR = ProjectPaths.ciel().resolve("skills");
 
     static {
         try {
@@ -93,8 +98,9 @@ public class SkillManager {
                 try {
                     JsonObject meta = JsonParser.parseString(Files.readString(file.toPath())).getAsJsonObject();
                     String name = meta.has("skill_name") ? meta.get("skill_name").getAsString() : file.getName().replace(".json", "");
+                    String displayName = meta.has("display_name") ? meta.get("display_name").getAsString() : name.replace('_', ' ');
                     String desc = meta.has("description") ? meta.get("description").getAsString() : "No description";
-                    skills.add(name + " (" + desc + ")");
+                    skills.add(displayName + " [" + name + "] (" + desc + ")");
                 } catch (Exception ignored) {}
             }
             if (!skills.isEmpty()) return String.join(", ", skills);

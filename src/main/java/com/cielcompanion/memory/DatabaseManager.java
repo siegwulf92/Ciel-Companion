@@ -20,7 +20,7 @@ public class DatabaseManager {
             Files.createDirectories(dbPath.getParent());
             connectionUrl = "jdbc:sqlite:" + dbPath;
             
-            try (Connection conn = DriverManager.getConnection(connectionUrl)) {
+            try (Connection conn = getConnection()) {
                 System.out.println("Ciel Debug: Database connection to SQLite has been established for initialization.");
                 initializeTables(conn);
             }
@@ -34,7 +34,14 @@ public class DatabaseManager {
         if (connectionUrl == null) {
             throw new SQLException("DatabaseManager has not been initialized.");
         }
-        return DriverManager.getConnection(connectionUrl);
+        Connection conn = DriverManager.getConnection(connectionUrl);
+        try (Statement statement = conn.createStatement()) {
+            statement.execute("PRAGMA busy_timeout=10000");
+        } catch (SQLException failure) {
+            conn.close();
+            throw failure;
+        }
+        return conn;
     }
 
     private static void initializeTables(Connection conn) {
@@ -68,6 +75,15 @@ public class DatabaseManager {
         );
         """;
 
+        String conversationHistoryTableSql = """
+        CREATE TABLE IF NOT EXISTS conversation_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL
+        );
+        """;
+
         String loreNotesTableSql = """
         CREATE TABLE IF NOT EXISTS lore_notes (
             key TEXT PRIMARY KEY NOT NULL,
@@ -90,6 +106,8 @@ public class DatabaseManager {
             stmt.execute(eventsTableSql);
             stmt.execute(factsTableSql);
             stmt.execute(speechHistoryTableSql);
+            stmt.execute(conversationHistoryTableSql);
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_conversation_history_created ON conversation_history(created_at_ms DESC)");
             stmt.execute(loreNotesTableSql);
             stmt.execute(loreLinksTableSql);
             System.out.println("Ciel Debug: Database tables checked/initialized successfully.");

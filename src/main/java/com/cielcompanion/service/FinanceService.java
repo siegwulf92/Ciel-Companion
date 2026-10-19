@@ -1,8 +1,6 @@
 package com.cielcompanion.service;
 
 import com.cielcompanion.ai.AIEngine;
-import com.cielcompanion.memory.Fact;
-import com.cielcompanion.memory.MemoryService;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -14,25 +12,65 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class FinanceService {
     private static ScheduledExecutorService scheduler;
-    private static String latestPortfolioSummary = "No recent portfolio updates.";
-    private static String latestMarketScan = "No recent market scans available.";
+    private static volatile String latestPortfolioSummary = "No recent portfolio updates.";
+    private static volatile String latestMarketScan = "No recent market scans available.";
+    private static volatile String latestRecommendations = "No recommendations generated yet.";
+    private static volatile String latestPortfolioDataStatus = "No portfolio refresh has completed yet.";
+    private static final ExecutorService financeExecutor = Executors.newFixedThreadPool(3);
+    private static final AtomicBoolean analysisRunning = new AtomicBoolean(false);
+
+    public static boolean isAnalysisRunning() {
+        return analysisRunning.get();
+    }
     
     private static final Path SYNC_FILE = Paths.get(System.getenv("LOCALAPPDATA"), "CielCompanion", "market_sync.dat");
     private static final Path ATTEMPT_FILE = Paths.get(System.getenv("LOCALAPPDATA"), "CielCompanion", "market_attempt.dat");
     
     private static long localSyncTimeMs = 0L;
     private static long localAttemptTimeMs = 0L;
+    private static final Path SCHEDULE_STATE = Paths.get(System.getProperty("user.dir"), ".local", "finance-schedule.properties");
+
+    private static synchronized java.util.Properties scheduleState() {
+        java.util.Properties state = new java.util.Properties();
+        try (var in = Files.newInputStream(SCHEDULE_STATE)) { state.load(in); }
+        catch (java.io.IOException ignored) { }
+        return state;
+    }
+    private static synchronized void recordSchedule(FinanceSchedulePolicy.Job job, Boolean succeeded) {
+        var state = scheduleState();
+        String key = job.name() + ".";
+        long now = System.currentTimeMillis();
+        if (succeeded == null) state.setProperty(key + "attempt", Long.toString(now));
+        else if (succeeded) {
+            state.setProperty(key + "success", Long.toString(now));
+            state.setProperty(key + "failures", "0");
+        } else {
+            int failures = Integer.parseInt(state.getProperty(key + "failures", "0")) + 1;
+            state.setProperty(key + "failures", Integer.toString(failures));
+            System.out.println("[Finance Schedule] " + job + " incomplete; retry eligible after " + FinanceSchedulePolicy.retryMinutes(failures) + " minutes in its next active window.");
+        }
+        try {
+            Files.createDirectories(SCHEDULE_STATE.getParent());
+            Path stage = SCHEDULE_STATE.resolveSibling("finance-schedule.properties.tmp");
+            try (var out = Files.newOutputStream(stage)) { state.store(out, "Device-local finance schedule"); }
+            Files.move(stage, SCHEDULE_STATE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (java.io.IOException e) { System.err.println("[Finance Schedule] State save failed: " + e.getClass().getSimpleName()); }
+    }
 
     public static void initialize() {
         scheduler = Executors.newSingleThreadScheduledExecutor();
-        scheduler.scheduleAtFixedRate(FinanceService::evaluateMarketSchedule, 5 * 60, 15 * 60, TimeUnit.SECONDS);
-        System.out.println("Ciel Debug: FinanceService initialized. Smart Market Schedule and Holiday Awareness active.");
+        // CRITICAL FIX: Delay the very first execution by 15 full minutes.
+        // This ensures the OpenJarvis Swarm has finished all auto-repairing tasks and is fully idle.
+        scheduler.scheduleAtFixedRate(FinanceService::evaluateMarketSchedule, 15 * 60, 15 * 60, TimeUnit.SECONDS);
+        System.out.println("Ciel Debug: FinanceService initialized. Weekend plans 09:00-22:00 ET; weekday news 08:00-20:00 ET; persistent retries 15/30/60/120/240 minutes (15m Boot Delay).");
     }
 
     private static void evaluateMarketSchedule() {
@@ -40,88 +78,185 @@ public class FinanceService {
             ZoneId estZone = ZoneId.of("America/New_York");
             ZonedDateTime now = ZonedDateTime.now(estZone);
             
-            long lastFetchMs = loadTimestamp(SYNC_FILE, localSyncTimeMs);
-            long lastAttemptMs = loadTimestamp(ATTEMPT_FILE, localAttemptTimeMs);
-            
-            ZonedDateTime lastFetch = Instant.ofEpochMilli(lastFetchMs).atZone(estZone);
-
-            boolean marketOpen = isMarketOpen(now);
-            
-            long timeSinceLastAttempt = System.currentTimeMillis() - lastAttemptMs;
-            if (timeSinceLastAttempt < TimeUnit.MINUTES.toMillis(5)) {
-                return;
+            var job = FinanceSchedulePolicy.jobAt(now);
+            if (job == null) return;
+            var state = scheduleState();
+            String key = job.name() + ".";
+            long success = Long.parseLong(state.getProperty(key + "success", "0"));
+            if (job == FinanceSchedulePolicy.Job.WEEKEND_PLAN) {
+                Path profile = Paths.get(System.getProperty("user.dir"), "Ciel", "finance", "investor_profile.json");
+                if (Files.exists(profile) && Files.getLastModifiedTime(profile).toMillis() > success) success = 0;
             }
+            if (!FinanceSchedulePolicy.due(now, job,
+                    success,
+                    Long.parseLong(state.getProperty(key + "attempt", "0")),
+                    Integer.parseInt(state.getProperty(key + "failures", "0")))) return;
+            if (job == FinanceSchedulePolicy.Job.WEEKEND_PLAN) executeSilentMarketCheck();
+            else executeWeekdayNewsCheck();
 
-            if (marketOpen) {
-                if (Duration.between(lastFetch, now).toHours() >= 4) {
-                    System.out.println("Ciel Debug: Market Live. Interval threshold reached. Initiating local analysis...");
-                    executeSilentMarketCheck();
-                }
-            } else {
-                ZonedDateTime lastClose = getMostRecentMarketClose(now);
-                ZonedDateTime safeSettleTime = lastClose.plusMinutes(30);
-
-                if (lastFetch.isBefore(lastClose) && (now.isAfter(safeSettleTime) || now.isEqual(safeSettleTime))) {
-                    System.out.println("Ciel Debug: Market Closed. Executing final daily sync for settled data.");
-                    executeSilentMarketCheck();
-                } else if (lastFetchMs == 0L) {
-                    executeSilentMarketCheck();
-                } else if (Duration.between(lastFetch, now).toHours() >= 8) {
-                    System.out.println("Ciel Debug: Off-hours 8-hour sync threshold reached. Executing routine portfolio scan...");
-                    executeSilentMarketCheck();
-                }
-            }
         } catch (Exception e) {
             System.err.println("Ciel Error: Failed to evaluate the Smart Market Schedule.");
         }
     }
 
     private static void executeSilentMarketCheck() {
+        if (!isFinanceRouterReady()) {
+            System.out.println("[Raphael â€” Financial Analysis] Deferred: local AI router is not ready; existing briefing and retry timestamps preserved.");
+            return;
+        }
+        if (CodexAgentService.isMaintenanceActive()) {
+            System.out.println("[Raphael â€” Financial Analysis] Deferred while the daily health review is active.");
+            return;
+        }
+        if (!analysisRunning.compareAndSet(false, true)) {
+            System.out.println("[Raphael â€” Financial Analysis] A finance run is already active; skipping this schedule tick.");
+            return;
+        }
+        // Close the race where daily maintenance claims its window after the first check.
+        if (CodexAgentService.isMaintenanceActive()) {
+            analysisRunning.set(false);
+            System.out.println("[Raphael â€” Financial Analysis] Deferred while the daily health review is active.");
+            return;
+        }
+        recordSchedule(FinanceSchedulePolicy.Job.WEEKEND_PLAN, null);
         localAttemptTimeMs = System.currentTimeMillis();
         saveTimestamp(ATTEMPT_FILE, localAttemptTimeMs);
-        
-        CompletableFuture.runAsync(() -> {
-            System.out.println("Ciel Debug: Commanding Swarm to execute silent background market and portfolio analysis from local CSVs...");
-            
-            String marketPrompt = "[FINANCE_MARKET_SCAN]";
-            String portfolioPrompt = "[FINANCE_PORTFOLIO_UPDATE]";
-            String recoPrompt = "[FINANCE_RECOMMENDATIONS]";
 
-            String marketResult = null;
-            String portfolioResult = null;
-            String recoResult = null;
+        latestPortfolioSummary = "Portfolio update in progress.";
+        latestMarketScan = "Market scan in progress.";
+        latestRecommendations = "Recommendations pending portfolio update.";
+        latestPortfolioDataStatus = "Portfolio refresh in progress.";
+        writeFiles(); // Publish a fresh report immediately, even if a model stalls.
 
-            System.out.println("Ciel Debug: Step 1/3 - Executing Market Scan...");
-            try { 
-                marketResult = AIEngine.generateSilentLogic(marketPrompt, "Fetch macro market data.").get(15, TimeUnit.MINUTES); 
-            } catch (Exception e) { 
-                System.err.println("Ciel Error: Market scan failed - " + e.getMessage()); 
-            }
-            
-            latestMarketScan = (marketResult != null && !marketResult.isBlank()) ? marketResult : "Market scan failed or timed out.";
+        System.out.println("[Raphael â€” Financial Analysis] Starting parallel market scan and portfolio refresh.");
+        CompletableFuture<String> rawMarketTask = runFinanceTask(
+                "Market scan", "[FINANCE_MARKET_SCAN]", "Fetch macro market data.");
+        CompletableFuture<String> portfolioTask = runFinanceTask(
+                "Portfolio update", "[FINANCE_PORTFOLIO_UPDATE]", "Update portfolio CSV data.");
 
-            System.out.println("Ciel Debug: Step 2/3 - Executing Portfolio Update...");
-            try { 
-                portfolioResult = AIEngine.generateSilentLogic(portfolioPrompt, "Update portfolio CSV data.").get(15, TimeUnit.MINUTES); 
-            } catch (Exception e) { 
-                System.err.println("Ciel Error: Portfolio update failed - " + e.getMessage()); 
-            }
-            
-            latestPortfolioSummary = (portfolioResult != null && !portfolioResult.isBlank()) ? portfolioResult : "Portfolio analysis failed or timed out.";
-
-            System.out.println("Ciel Debug: Step 3/3 - Executing Strategic Recommendations...");
-            try { 
-                recoResult = AIEngine.generateSilentLogic(recoPrompt, "Generate strategic advice.").get(15, TimeUnit.MINUTES); 
-            } catch (Exception e) { 
-                System.err.println("Ciel Error: Recommendations failed - " + e.getMessage()); 
-            }
-            
-            writeFiles(recoResult);
-            
-            localSyncTimeMs = System.currentTimeMillis();
-            saveTimestamp(SYNC_FILE, localSyncTimeMs);
-            System.out.println("Ciel Debug: Background finance analysis complete. Success flag updated.");
+        CompletableFuture<String> marketTask = rawMarketTask.thenApply(result -> {
+            latestMarketScan = result;
+            writeFiles();
+            return result;
         });
+
+        CompletableFuture<String> recommendationsTask = portfolioTask.thenCompose(result -> {
+            latestPortfolioSummary = result;
+            latestPortfolioDataStatus = isFinanceFailure(result)
+                    ? "Portfolio refresh failed: " + result
+                    : result;
+            writeFiles();
+            latestRecommendations = "Recommendations in progress.";
+            writeFiles();
+            return runFinanceTask("Strategic recommendations",
+                    "[FINANCE_RECOMMENDATIONS] Generate stock recommendations.",
+                    "Generate strategic advice.");
+        }).thenApply(result -> {
+            latestRecommendations = result;
+            writeFiles();
+            System.out.println("[Raphael â€” Financial Analysis] Recommendation narrative saved (" + result.length() + " chars).");
+            return result;
+        });
+
+        CompletableFuture.allOf(marketTask, portfolioTask, recommendationsTask)
+                .whenComplete((ignored, error) -> {
+                    if (error != null) {
+                        System.err.println("[Raphael â€” Financial Analysis] Pipeline failed: " + error);
+                        latestRecommendations = "Finance pipeline failed: " + error;
+                    }
+                    writeFiles();
+                    boolean runSucceeded = error == null
+                            && !isFinanceFailure(marketTask.getNow(null))
+                            && !isFinanceFailure(portfolioTask.getNow(null))
+                            && !isFinanceFailure(recommendationsTask.getNow(null));
+                    recordSchedule(FinanceSchedulePolicy.Job.WEEKEND_PLAN, runSucceeded);
+                    if (runSucceeded) {
+                        localSyncTimeMs = System.currentTimeMillis();
+                        saveTimestamp(SYNC_FILE, localSyncTimeMs);
+                    } else {
+                        System.err.println("[Raphael â€” Financial Analysis] Run incomplete; sync timestamp unchanged so failed stages can retry.");
+                    }
+                    analysisRunning.set(false);
+            System.out.println("[Raphael â€” Financial Analysis] Background run complete.");
+                });
+    }
+
+    private static void executeWeekdayNewsCheck() {
+        if (!isFinanceRouterReady() || CodexAgentService.isMaintenanceActive()) {
+            System.out.println("[Finance Schedule] Weekday news deferred; router unavailable or maintenance active. Rechecking next schedule tick.");
+            return;
+        }
+        if (!analysisRunning.compareAndSet(false, true)) return;
+        recordSchedule(FinanceSchedulePolicy.Job.WEEKDAY_NEWS, null);
+        runFinanceTask("Weekday news watch", "[FINANCE_NEWS_WATCH]", "Check material news for my holdings; preserve the weekend plan.")
+            .whenComplete((result, error) -> {
+                boolean success = error == null && !isFinanceFailure(result);
+                try {
+                    Path directory = Paths.get(System.getProperty("user.dir"), "Ciel", "finance");
+                    Files.createDirectories(directory);
+                    Path target = directory.resolve(success ? "Latest_Weekday_News_Watch.md" : "Weekday_News_Last_Attempt.md");
+                    Files.writeString(target, result == null ? "Weekday news watch unavailable: " + error : result);
+                    if (success && (result.contains(": REVIEW_BUY") || result.contains(": REVIEW_SELL"))) {
+                        SpeechService.speakPreformatted("[Focused] I found new portfolio news worth reviewing. Please check the weekday news watch before making any trade.", "finance.news.review", false, false);
+                    }
+                    System.out.println("[Finance Schedule] Weekday news " + (success ? "completed" : "incomplete") + "; weekend briefing preserved.");
+                } catch (java.io.IOException e) { success = false; }
+                finally {
+                    recordSchedule(FinanceSchedulePolicy.Job.WEEKDAY_NEWS, success);
+                    analysisRunning.set(false);
+                }
+            });
+    }
+
+    private static boolean isFinanceFailure(String result) {
+        if (result == null) return true;
+        String normalized = result.trim().toLowerCase(java.util.Locale.ROOT);
+        // Ordinary prose may discuss unavailable quotes or past timeouts.
+        // Only explicit stage/error markers establish a failed stage.
+        return normalized.isEmpty() || normalized.startsWith("error:")
+                || normalized.startsWith("portfolio update error:") || normalized.startsWith("market scan error:")
+                || normalized.startsWith("portfolio refresh partial:") || normalized.startsWith("portfolio update failed:")
+                || normalized.startsWith("portfolio file not found") || normalized.startsWith("portfolio file is empty")
+                || normalized.startsWith("[ai error") || normalized.equals("timeout_exception")
+                || normalized.startsWith("market data unavailable")
+                || normalized.startsWith("finance module error:")
+                || normalized.startsWith("weekday news watch unavailable:")
+                || normalized.startsWith("master, the recommendation models did not return prose this cycle")
+                || normalized.startsWith("### market scan status\nthe narrative model was unavailable")
+                || normalized.matches("(?s)^(market scan|strategic recommendations|portfolio update|finance pipeline) (failed:|returned no result|timed out|unavailable).*" );
+    }
+
+    private static boolean isFinanceRouterReady() {
+        java.net.HttpURLConnection connection = null;
+        try {
+            connection = (java.net.HttpURLConnection) new java.net.URL("http://127.0.0.1:8000/docs").openConnection();
+            connection.setConnectTimeout(1000);
+            connection.setReadTimeout(1500);
+            return connection.getResponseCode() == 200;
+        } catch (java.io.IOException e) {
+            return false;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    private static CompletableFuture<String> runFinanceTask(String label, String prompt, String context) {
+        return CompletableFuture.supplyAsync(() -> {
+            System.out.println("[Raphael â€” Financial Analysis] Starting stage: " + label);
+            try {
+                String result = AIEngine.generateSilentLogic(prompt, context, "Financial Report Generation").get(10, TimeUnit.MINUTES);
+                if (result == null || result.isBlank()) {
+                    System.err.println("[Raphael â€” Financial Analysis] Stage '" + label + "' returned an empty result.");
+                    return label + " returned no result.";
+                }
+                System.out.println("[Raphael â€” Financial Analysis] Stage '" + label + "' completed (" + result.length() + " chars).");
+                return result;
+            } catch (Exception e) {
+                String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                System.err.println("[Raphael â€” Financial Analysis] Stage '" + label + "' failed: " + message);
+                return label + " failed: " + message;
+            }
+        }, financeExecutor);
     }
 
     private static boolean isMarketOpen(ZonedDateTime now) {
@@ -149,26 +284,50 @@ public class FinanceService {
         return close;
     }
 
-    private static void writeFiles(String recoResult) {
+    private static synchronized void writeFiles() {
         try {
-            String dateStr = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+            ZoneId estZone = ZoneId.of("America/New_York");
+            ZonedDateTime now = ZonedDateTime.now(estZone);
+            String yearStr = String.format("%04d", now.getYear());
+            String monthStr = String.format("%02d", now.getMonthValue());
+            String dayStr = String.format("%02d", now.getDayOfMonth());
             
-            String portfolioSection = (recoResult != null && !recoResult.contains("[AI Error"))
-                ? recoResult 
-                : recoResult + "\n\n### Native Portfolio Readout\n" + latestPortfolioSummary;
+            // Build dynamic folders
+            Path financeDir = Paths.get(System.getProperty("user.dir"), "Ciel", "finance").toAbsolutePath().normalize();
+            Path reportsDir = financeDir.resolve(Paths.get("reports", yearStr, monthStr, dayStr));
+            Files.createDirectories(reportsDir);
 
-            String content = "# Ciel's Financial Briefing (" + dateStr + ")\n\n" +
-                             "## Portfolio Analysis\n" + 
-                             portfolioSection + "\n\n" +
-                             "## Macro Market Scan\n" + 
-                             latestMarketScan;
+            String dateStr = now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+            String fireProgress = "";
+            Path fireFile = financeDir.resolve("Latest_FIRE_Progress.md");
+            if (Files.exists(fireFile)) {
+                fireProgress = "\n\n## Deterministic FIRE Scenario Progress\n\n" + Files.readString(fireFile);
+            }
             
-            Path briefingPath = Paths.get("C:\\Ciel Companion\\ciel\\finance", "Latest_Financial_Briefing.md");
-            Files.createDirectories(briefingPath.getParent());
+            // Never insert the raw CSV math here!
+            String content = "# Ciel's Weekend Portfolio Plan (" + dateStr + ")\n\n" +
+                             "## Portfolio Data Status\n" +
+                             latestPortfolioDataStatus + "\n\n" +
+                             "## Ciel's Portfolio Analysis and Recommendations\n" +
+                             "Planning for Monday: " + now.toLocalDate().with(java.time.temporal.TemporalAdjusters.next(java.time.DayOfWeek.MONDAY)) + "\n\n" + latestRecommendations + "\n\n" +
+                             "## Macro Market Scan\n" + 
+                             latestMarketScan + fireProgress;
+            
+            String filename = "Briefing_" + now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy_MM_dd")) + ".md";
+            Path dailyReport = reportsDir.resolve(filename);
+            
+            Files.writeString(dailyReport, content);
+
+            // Copy to root
+            Path briefingPath = financeDir.resolve("Latest_Financial_Briefing.md");
             Files.writeString(briefingPath, content);
+            System.out.println("[Raphael â€” Financial Analysis] Markdown written: daily=" + dailyReport.toAbsolutePath()
+                    + " (" + Files.size(dailyReport) + " bytes), latest=" + briefingPath.toAbsolutePath()
+                    + " (" + Files.size(briefingPath) + " bytes).");
 
         } catch (Exception e) {
-            System.err.println("Ciel Error: Failed to write briefing files to disk: " + e.getMessage());
+            System.err.println("Ciel Error: Failed to write briefing files to disk: " + e);
+            e.printStackTrace();
         }
     }
 
@@ -232,6 +391,13 @@ public class FinanceService {
     public static String getDailyFinanceReport() {
         String holiday = getUpcomingHolidayContext();
         String context = holiday.isEmpty() ? "" : "[HOLIDAY ALERT]: " + holiday + "\n\n";
-        return context + "PORTFOLIO UPDATE:\n" + latestPortfolioSummary + "\n\nMACRO MARKET Scan:\n" + latestMarketScan;
+        String watch = "";
+        try {
+            Path file = Paths.get(System.getProperty("user.dir"), "Ciel", "finance", "Latest_Weekday_News_Watch.md");
+            if (Files.exists(file)) watch = "\n\nLATEST WEEKDAY NEWS WATCH (check its source timestamps):\n" + Files.readString(file);
+        } catch (java.io.IOException ignored) { }
+        return context + "PORTFOLIO DATA STATUS:\n" + latestPortfolioDataStatus
+                + "\n\nCIEL'S PORTFOLIO ANALYSIS AND RECOMMENDATIONS:\n" + latestRecommendations
+                + "\n\nMACRO MARKET SCAN:\n" + latestMarketScan + watch;
     }
 }

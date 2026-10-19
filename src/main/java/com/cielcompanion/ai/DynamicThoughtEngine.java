@@ -30,7 +30,7 @@ public class DynamicThoughtEngine {
             "CRITICAL: Output strictly valid JSON in this format: { \"new_thought\": \"[Emotion] Your new English text here\" }. " +
             "Valid emotion tags inside the brackets are [Focused], [Observing], [Curious], [Excited], [Happy].";
 
-        AIEngine.generateSilentLogic("Generate a new Phase " + phase + " thought.", systemPrompt).thenAccept(response -> {
+        AIEngine.generateSilentLogic("Generate a new Phase " + phase + " thought.", systemPrompt, "Idle Dialogue Thought Generation").thenAccept(response -> {
             if (response == null || response.isBlank()) return;
 
             try {
