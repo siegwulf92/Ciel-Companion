@@ -68,7 +68,7 @@ public class SpeechService {
         return isActivelySpeaking.get();
     }
 
-    private static void enqueueSpeech() {
+    private static boolean enqueueSpeech() {
         synchronized (pauseLock) {
             if (speechQueueCount.getAndIncrement() == 0) {
                 SystemMonitor.SystemMetrics metrics = SystemMonitor.getSystemMetrics();
@@ -102,6 +102,7 @@ public class SpeechService {
                     } catch (AWTException | InterruptedException ignored) {}
                 }
             }
+            return mediaWasPausedForSpeech;
         }
     }
 
@@ -185,8 +186,20 @@ public class SpeechService {
     public static void speakChunk(String text) { speakPreformatted(text, null, false, false); }
 
     public static void speakPreformatted(String text, String key, boolean isRare, boolean flushQueue) {
+        queuePreformatted(text, key, isRare, flushQueue, null);
+    }
+
+    public static void speakMediaCommentary(String text, java.util.function.Consumer<Boolean> onComplete) {
+        queuePreformatted(text, "media_commentary", false, false, onComplete);
+    }
+
+    private static void queuePreformatted(String text, String key, boolean isRare, boolean flushQueue,
+                                          java.util.function.Consumer<Boolean> onComplete) {
         try {
-            if (text == null || text.isBlank()) return;
+            if (text == null || text.isBlank()) {
+                if (onComplete != null) onComplete.accept(false);
+                return;
+            }
 
             boolean isGreeting = key != null && (key.startsWith("boot_greeting") || key.startsWith("login_greeting") || key.startsWith("warm_login"));
 
@@ -196,6 +209,7 @@ public class SpeechService {
                 
                 if (!isGameLaunch && !isPhase3Or4) {
                     System.out.println("Ciel Debug: Suppressing non-critical speech (" + key + ") due to active Gaming Mode.");
+                    if (onComplete != null) onComplete.accept(false);
                     return;
                 }
             }
@@ -262,6 +276,7 @@ public class SpeechService {
             currentSpeechTask = speechExecutor.submit(() -> {
                 if (taskGeneration != speechGeneration.get()) return;
                 boolean hasEnqueued = false;
+                boolean completed = false;
                 try {
                     String textToSpeak = finalCleanText;
 
@@ -292,8 +307,12 @@ public class SpeechService {
                     }
 
                     if (!hasEnqueued) {
-                        enqueueSpeech();
+                        boolean ownsMediaPause = enqueueSpeech();
                         hasEnqueued = true;
+                        if (onComplete != null && !ownsMediaPause) {
+                            System.out.println("[Media Transport] Commentary deferred: playback pause was not confirmed.");
+                            return;
+                        }
                         try { Thread.sleep(600); } catch (Exception ignored) {}
                     }
 
@@ -303,17 +322,20 @@ public class SpeechService {
 
                     if (taskGeneration != speechGeneration.get() || Thread.currentThread().isInterrupted()) return;
 
-                    executeSpeechBlocking(textToSpeak, speechKey, Settings.getTtsRate(),
+                    boolean audible = executeSpeechBlocking(textToSpeak, speechKey, Settings.getTtsRate(),
                             finalStyle, finalPitch, langCode, taskGeneration);
+                    completed = audible && taskGeneration == speechGeneration.get() && !Thread.currentThread().isInterrupted();
                 } finally {
                     if (hasEnqueued) {
                         dequeueSpeech();
                     }
+                    if (onComplete != null) onComplete.accept(completed);
                 }
             });
         } catch (Throwable t) {
             System.err.println("Ciel FATAL Error: Exception caught during speakPreformatted initialization:");
             t.printStackTrace();
+            if (onComplete != null) onComplete.accept(false);
         }
     }
 
@@ -433,9 +455,9 @@ public class SpeechService {
         });
     }
 
-    private static void executeSpeechBlocking(String text, String key, int rate, String style, String pitch,
+    private static boolean executeSpeechBlocking(String text, String key, int rate, String style, String pitch,
                                               String langCode, long taskGeneration) {
-        if (Thread.currentThread().isInterrupted() || taskGeneration != speechGeneration.get()) return;
+        if (Thread.currentThread().isInterrupted() || taskGeneration != speechGeneration.get()) return false;
 
         try {
             if (voiceListener != null) voiceListener.setInternalMute(true);
@@ -455,6 +477,7 @@ public class SpeechService {
                 }
             }
 
+            boolean sapiSuccess = false;
             if (!azureSuccess && !AzureSpeechService.isIntentionalCancellation
                     && taskGeneration == speechGeneration.get() && !Thread.currentThread().isInterrupted()) {
                 System.out.println("Ciel Debug: SAPI Speaking (Clean Fallback): \"" + text + "\"");
@@ -476,12 +499,15 @@ public class SpeechService {
                 try {
                     Process p = pb.start();
                     activeProcess.set(p);
-                    p.waitFor(15, TimeUnit.SECONDS);
+                    long sapiTimeoutSeconds = Math.max(15, Math.min(90, (estimateSpeechDuration(text) / 1000) + 10));
+                    if (p.waitFor(sapiTimeoutSeconds, TimeUnit.SECONDS)) sapiSuccess = p.exitValue() == 0;
+                    else p.destroyForcibly();
                 } catch (Exception ignored) {
                 } finally {
                     activeProcess.set(null);
                 }
             }
+            return azureSuccess || sapiSuccess;
         } finally {
             isActivelySpeaking.set(false);
             if (voiceListener != null) voiceListener.setInternalMute(false);

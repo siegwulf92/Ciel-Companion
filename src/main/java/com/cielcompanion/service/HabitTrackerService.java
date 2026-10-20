@@ -8,6 +8,7 @@ import com.cielcompanion.memory.stwm.ShortTermMemory;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
 import com.cielcompanion.mood.Emotion;
 import com.cielcompanion.mood.MoodConfig;
+import com.cielcompanion.ui.CielGui;
 import com.cielcompanion.service.SystemMonitor.SystemMetrics;
 import com.cielcompanion.util.CielTools;
 import com.cielcompanion.util.ProjectPaths;
@@ -630,8 +631,8 @@ public class HabitTrackerService {
     private static boolean mediaTransport(String action,boolean requireChanged) {
         Process process=null;
         try {
-            java.nio.file.Path root=java.nio.file.Paths.get(System.getProperty("user.dir"));
-            process=new ProcessBuilder(root.resolve(".venv/Scripts/python.exe").toString(),
+            java.nio.file.Path root=ProjectPaths.root();
+            process=new ProcessBuilder(ProjectPaths.pythonExecutable(),
                 root.resolve("Ciel/skills/ciel_media_transport.py").toString(),action)
                 .directory(root.toFile()).redirectError(ProcessBuilder.Redirect.DISCARD).start();
             final Process running=process;
@@ -639,13 +640,16 @@ public class HabitTrackerService {
                 try {return new String(running.getInputStream().readNBytes(16384),StandardCharsets.UTF_8);}
                 catch(Exception e){return "";}
             });
-            if(!process.waitFor(8,TimeUnit.SECONDS))throw new IOException("Transport timeout");
+            if(!process.waitFor(25,TimeUnit.SECONDS))throw new IOException("Transport timeout");
             JsonObject result=JsonParser.parseString(output.get(1,TimeUnit.SECONDS)).getAsJsonObject();
             boolean confirmed=result.has("confirmed")&&result.get("confirmed").getAsBoolean();
             boolean changed=result.has("changed")&&result.get("changed").getAsBoolean();
             System.out.println("[Media Transport] action="+action+" exit="+process.exitValue()+" confirmed="+confirmed+" changed="+changed
+                +" state="+(result.has("state")?result.get("state").getAsString():"unknown")
+                +" method="+(result.has("method")?result.get("method").getAsString():"unknown")
+                +" target="+(result.has("target")?result.get("target").getAsString():"unknown")
                 +" reason="+(result.has("reason")?result.get("reason").getAsString():"state verified"));
-            return confirmed&&(!requireChanged||changed);
+            return process.exitValue()==0 && confirmed && (!requireChanged||changed);
         } catch(Exception error) {
             System.err.println("[Media Transport] "+action+" failed: "+error.getClass().getSimpleName());return false;
         } finally {if(process!=null)process.destroyForcibly();}
@@ -864,21 +868,10 @@ public class HabitTrackerService {
                             + ", metadata=" + hasAcquiredEpisodeMetadata + ", duration=" + cachedDurationMinutes + "m, playback=" + cachedCurrentTimeSec + "s)");
                 }
                 if (isEpisode) updateSeriesIfHigher(series, ep);
-            } else if (!verifiedMetadata && !hasAcquiredEpisodeMetadata
-                    && "EPISODE".equalsIgnoreCase(mediaKind == null ? "" : mediaKind.trim())
-                    && isStremioProc
-                    && series != null && !invalidSeries && ep != null && !ep.isBlank()
-                    && currentEpisodeHash.equals(series.trim() + "_" + ep.trim())) {
-                // Keep plot-specific commentary behind the two-source verification gate, but
-                // don't stay silent for an entire episode when only the synopsis lookup fails.
-                int targetSec = MediaObservation.commentaryTargetSeconds(false, cachedDurationMinutes);
-                long retryAfter = mediaCommentaryRetryAfter.getOrDefault(currentEpisodeHash, 0L);
-                boolean reached = MediaObservation.commentaryTimeReached(cachedCurrentTimeSec, 0, targetSec, cachedDurationMinutes);
-                if (playbackFresh && reached && !loggedMediaToday.contains(currentEpisodeHash)
-                        && !mediaCommentaryInFlight.contains(currentEpisodeHash)
-                        && System.currentTimeMillis() >= retryAfter) {
-                    triggerSpoilerSafeTitleCommentary(series.trim(), ep.trim(), currentEpisodeHash);
-                }
+            } else if (!verifiedMetadata && "EPISODE".equalsIgnoreCase(mediaKind == null ? "" : mediaKind.trim())
+                    && isStremioProc && series != null && !invalidSeries && ep != null && !ep.isBlank()) {
+                System.out.println("[HabitTracker] Plot commentary deferred for '" + series.trim() + " - " + ep.trim()
+                        + "': episode synopsis remains unverified; metadata retry stays eligible.");
             }
         } else if (activeProcess.contains("code") || activeProcess.contains("idea") || activeProcess.contains("obsidian") || activeProcess.contains("word") || activeProcess.contains("notepad")) {
             currentCategory = "Productivity";
@@ -985,6 +978,7 @@ public class HabitTrackerService {
     
     private static void triggerSequentialMediaCommentary(String cleanTitle, String fullWindowTitle, String activeUrl, String datText, String hashToLog) {
         if (!mediaCommentaryInFlight.add(hashToLog)) return;
+        CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
         System.out.println("[HabitTracker] Threshold met for " + cleanTitle + ". Requesting commentary (runtime=" + cachedDurationMinutes
                 + "m, playback=" + cachedCurrentTimeSec + "s, hash=" + hashToLog + ")...");
         
@@ -1004,6 +998,7 @@ public class HabitTrackerService {
         try {
             AIEngine.generateSilentLogicWithModel(prompt, "You are Manas: Ciel.", CielTools.getBackgroundModel(), 0.7, "Media Persona Commentary")
                 .whenComplete((response, error) -> {
+                    boolean handedToSpeech = false;
                     try {
                         if (error != null) {
                             mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(15));
@@ -1017,36 +1012,35 @@ public class HabitTrackerService {
                                 System.out.println("[HabitTracker] Commentary completed after playback ended/changed; suppressing stale response.");
                                 return;
                             }
-                            loggedMediaToday.add(hashToLog);
-                            mediaCommentaryRetryAfter.remove(hashToLog);
                             System.out.println("[HabitTracker] Commentary generated; passing response to SpeechService for '" + cleanTitle + "'.");
-                            recentMediaHistory.add(cleanTitle);
-                            currentBingeCount++;
-                            if (recentMediaHistory.size() > 5) recentMediaHistory.removeFirst();
-                            SpeechService.speakPreformatted(response, "media_commentary", false, false);
+                            SpeechService.speakMediaCommentary(response, spoken -> {
+                                if (spoken) {
+                                    loggedMediaToday.add(hashToLog);
+                                    mediaCommentaryRetryAfter.remove(hashToLog);
+                                    recentMediaHistory.add(cleanTitle);
+                                    currentBingeCount++;
+                                    if (recentMediaHistory.size() > 5) recentMediaHistory.removeFirst();
+                                } else {
+                                    mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(3));
+                                    System.out.println("[HabitTracker] Commentary not spoken; retry scheduled for '" + cleanTitle + "'.");
+                                }
+                                mediaCommentaryInFlight.remove(hashToLog);
+                            });
+                            handedToSpeech = true;
+                            return;
                         }
                     } finally {
-                        mediaCommentaryInFlight.remove(hashToLog);
+                        if (!handedToSpeech) {
+                            mediaCommentaryInFlight.remove(hashToLog);
+                            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
+                        }
                     }
                 });
         } catch (Exception e) {
             mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(15));
             mediaCommentaryInFlight.remove(hashToLog);
+            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
             System.err.println("[HabitTracker] Could not start media commentary for '" + cleanTitle + "': " + e.getMessage());
-        }
-    }
-
-    private static void triggerSpoilerSafeTitleCommentary(String series, String episode, String hashToLog) {
-        if (hashToLog == null || hashToLog.isBlank() || !mediaCommentaryInFlight.add(hashToLog)) return;
-        loggedMediaToday.add(hashToLog);
-        String response = "That title, \"" + episode
-                + "\", already sounds like a formidable challenge, Master. I will keep plot details spoiler-safe until I can verify the synopsis.";
-        System.out.println("[HabitTracker] Episode synopsis is still unverified; speaking title-only spoiler-safe commentary for '"
-                + series + " - " + episode + "'.");
-        try {
-            SpeechService.speakPreformatted(response, "media_commentary", false, false);
-        } finally {
-            mediaCommentaryInFlight.remove(hashToLog);
         }
     }
 
