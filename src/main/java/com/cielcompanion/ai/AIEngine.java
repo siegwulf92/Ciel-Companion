@@ -251,8 +251,9 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout("Media Persona Commentary".equals(taskIntent)
-                        ? Duration.ofMinutes(3) : Duration.ofMinutes(45))
+                .timeout("Media Persona Commentary".equals(taskIntent) ? Duration.ofMinutes(3)
+                        : "Game Launch Commentary".equals(taskIntent) ? Duration.ofSeconds(30)
+                        : Duration.ofMinutes(45))
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 

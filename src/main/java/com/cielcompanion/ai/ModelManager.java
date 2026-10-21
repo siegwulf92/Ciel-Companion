@@ -62,11 +62,11 @@ public class ModelManager {
         
         // CRITICAL FIX: Dynamically apply GPU offloading to ALL tiers (including the Evaluator)
         // unless a heavy game is running, preventing CPU choke timeouts.
-        String gameCmd = getHeavyGameRunning();
-        if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
-            options.addProperty("num_gpu", 99); 
-        } else if (gameCmd != null) {
+        boolean gameRunning = com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().isInGamingSession();
+        if (gameRunning) {
             options.addProperty("num_gpu", 0);  
+        } else if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT) {
+            options.addProperty("num_gpu", 99); 
         } else {
             options.addProperty("num_gpu", 99); 
         }
@@ -112,74 +112,4 @@ public class ModelManager {
         }
     }
 
-    public static String getHeavyGameRunning() {
-        for (ProcessHandle p : ProcessHandle.allProcesses().toList()) {
-            String cmd = p.info().command().orElse("").toLowerCase();
-            if (cmd.isBlank()) continue;
-
-            String exeName = cmd;
-            if (cmd.contains("\\")) {
-                exeName = cmd.substring(cmd.lastIndexOf("\\") + 1);
-            }
-            
-            boolean inGameDir = cmd.contains("steamapps\\common") || 
-                                cmd.contains("epic games") || 
-                                cmd.contains("xboxgames") ||
-                                cmd.contains(".minecraft") || 
-                                cmd.contains("curseforge") ||
-                                cmd.contains("prismlauncher");
-                                
-            boolean isKnownGameExe = cmd.endsWith("helldivers2.exe") || 
-                                     cmd.endsWith("eldenring.exe") ||
-                                     cmd.endsWith("minecraft.windows.exe") ||
-                                     cmd.contains("r5apex") || 
-                                     cmd.endsWith("rocketleague.exe") ||
-                                     cmd.endsWith("brutallegend.exe"); 
-
-            boolean isAiClassifiedGame = "Gaming".equals(com.cielcompanion.service.HabitTrackerService.getProcessCategory(exeName));
-
-            if (!inGameDir && !isKnownGameExe && !isAiClassifiedGame) {
-                continue;
-            }
-
-            if (cmd.contains("voiceattack") || 
-                cmd.contains("wallpaper") || 
-                cmd.contains("soundpad") || 
-                cmd.contains("epicgameslauncher") || 
-                cmd.contains("epiconlineservices") || 
-                cmd.contains("epicwebhelper") ||     
-                cmd.contains("epic games\\launcher") || 
-                cmd.contains("unrealcefsubprocess") ||
-                cmd.contains("gamingservices") ||
-                cmd.contains("steamwebhelper") ||
-                cmd.contains("steam.exe") ||
-                cmd.contains("steamclient") ||
-                cmd.contains("steamservice") ||        
-                cmd.contains("steamerrorreporter") || 
-                cmd.contains("steamworks shared") ||   
-                cmd.contains("overlay") || 
-                cmd.contains("eadesktop") ||
-                cmd.contains("eabackgroundservice") ||
-                cmd.contains("battle.net") ||
-                cmd.contains("agent.exe") ||         
-                cmd.contains("gog galaxy") ||
-                cmd.contains("galaxyclient") ||        
-                cmd.contains("crashreporter") ||
-                cmd.contains("cefsubprocess") ||
-                cmd.contains("vcredist") ||
-                cmd.contains("\\redist\\") ||
-                cmd.contains("dxsetup") ||
-                cmd.contains("dxwebsetup") ||
-                cmd.contains("install") ||
-                cmd.contains("setup.exe") ||
-                cmd.contains("physx") ||
-                cmd.contains("dotnet") ||
-                cmd.contains("easetup")) {
-                continue; 
-            }
-
-            return cmd;
-        }
-        return null;
-    }
 }
