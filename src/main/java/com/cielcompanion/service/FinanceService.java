@@ -171,6 +171,7 @@ public class FinanceService {
                             && !isFinanceFailure(recommendationsTask.getNow(null));
                     recordSchedule(FinanceSchedulePolicy.Job.WEEKEND_PLAN, runSucceeded);
                     if (runSucceeded) {
+                        CielController.noteMajorBackgroundActivity("I completed the weekend portfolio plan");
                         localSyncTimeMs = System.currentTimeMillis();
                         saveTimestamp(SYNC_FILE, localSyncTimeMs);
                     } else {
@@ -195,8 +196,9 @@ public class FinanceService {
                     Path directory = Paths.get(System.getProperty("user.dir"), "Ciel", "finance");
                     Files.createDirectories(directory);
                     Path target = directory.resolve(success ? "Latest_Weekday_News_Watch.md" : "Weekday_News_Last_Attempt.md");
-                    Files.writeString(target, result == null ? "Weekday news watch unavailable: " + error : result);
+                    writeAtomically(target, result == null ? "Weekday news watch unavailable: " + error : result);
                     if (success && (result.contains(": REVIEW_BUY") || result.contains(": REVIEW_SELL"))) {
+                        CielController.noteMajorBackgroundActivity("I found portfolio news that warrants review");
                         SpeechService.speakPreformatted("[Focused] I found new portfolio news worth reviewing. Please check the weekday news watch before making any trade.", "finance.news.review", false, false);
                     }
                     System.out.println("[Finance Schedule] Weekday news " + (success ? "completed" : "incomplete") + "; weekend briefing preserved.");
@@ -316,11 +318,11 @@ public class FinanceService {
             String filename = "Briefing_" + now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy_MM_dd")) + ".md";
             Path dailyReport = reportsDir.resolve(filename);
             
-            Files.writeString(dailyReport, content);
+            writeAtomically(dailyReport, content);
 
             // Copy to root
             Path briefingPath = financeDir.resolve("Latest_Financial_Briefing.md");
-            Files.writeString(briefingPath, content);
+            writeAtomically(briefingPath, content);
             System.out.println("[Raphael â€” Financial Analysis] Markdown written: daily=" + dailyReport.toAbsolutePath()
                     + " (" + Files.size(dailyReport) + " bytes), latest=" + briefingPath.toAbsolutePath()
                     + " (" + Files.size(briefingPath) + " bytes).");
@@ -328,6 +330,22 @@ public class FinanceService {
         } catch (Exception e) {
             System.err.println("Ciel Error: Failed to write briefing files to disk: " + e);
             e.printStackTrace();
+        }
+    }
+
+    private static void writeAtomically(Path target, String content) throws java.io.IOException {
+        Files.createDirectories(target.getParent());
+        Path stage = Files.createTempFile(target.getParent(), ".ciel-finance-", ".tmp");
+        try {
+            Files.writeString(stage, content);
+            try {
+                Files.move(stage, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                Files.move(stage, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(stage);
         }
     }
 

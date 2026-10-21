@@ -200,6 +200,10 @@ public class SpeechService {
                 if (onComplete != null) onComplete.accept(false);
                 return;
             }
+            if (WindowsApiService.isSessionLocked()) {
+                if (onComplete != null) onComplete.accept(false);
+                return;
+            }
 
             boolean isGreeting = key != null && (key.startsWith("boot_greeting") || key.startsWith("login_greeting") || key.startsWith("warm_login"));
 
@@ -340,6 +344,10 @@ public class SpeechService {
     }
 
     public static void speakSequentially(List<DialogueLine> lines, long delayMs, boolean preformatted, Runnable onComplete) {
+        if (WindowsApiService.isSessionLocked()) {
+            if (onComplete != null) onComplete.run();
+            return;
+        }
         if (lines == null || lines.isEmpty()) {
             if (onComplete != null) onComplete.run();
             return;
@@ -356,7 +364,7 @@ public class SpeechService {
                 String sequencePitch = applyHumanVariance(sequenceMood.pitch());
                 for (int i = 0; i < lines.size(); i++) {
                     
-                    if (sequenceCancelled || Thread.currentThread().isInterrupted()
+                    if (WindowsApiService.isSessionLocked() || sequenceCancelled || Thread.currentThread().isInterrupted()
                             || taskGeneration != speechGeneration.get()) {
                         System.out.println("Ciel Debug: Sequential speech loop explicitly broken via flag.");
                         break;
@@ -457,7 +465,8 @@ public class SpeechService {
 
     private static boolean executeSpeechBlocking(String text, String key, int rate, String style, String pitch,
                                               String langCode, long taskGeneration) {
-        if (Thread.currentThread().isInterrupted() || taskGeneration != speechGeneration.get()) return false;
+        if (WindowsApiService.isSessionLocked() || Thread.currentThread().isInterrupted()
+                || taskGeneration != speechGeneration.get()) return false;
 
         try {
             if (voiceListener != null) voiceListener.setInternalMute(true);

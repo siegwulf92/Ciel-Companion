@@ -56,12 +56,65 @@ public class CielController {
     private static boolean loggedWaitingFor5s = false;
     private static boolean loggedWaitingFor2m = false;
     private static long lastAudioIdleDiagnostic;
+    private static boolean sessionWasLocked;
+    private static boolean laptopLockRequested;
+    private static final java.util.concurrent.ConcurrentLinkedQueue<String> majorAwayEvents =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    public static void noteMajorBackgroundActivity(String event) {
+        if (event != null && !event.isBlank() && (sessionWasLocked || WindowsApiService.isSessionLocked())
+                && majorAwayEvents.size() < 8) majorAwayEvents.add(event);
+    }
 
     public static void checkAndSpeak() {
         try {
+            if (WindowsApiService.isSessionLocked()) {
+                if (!sessionWasLocked) {
+                    sessionWasLocked = true;
+                    majorAwayEvents.clear();
+                    CielState.setBootGreetingPlayed(true);
+                    CielState.setLoginGreetingPlayed(true);
+                    idleReportGeneration.incrementAndGet();
+                    SpeechService.cancelSequentialSpeech();
+                    SpeechService.stopCurrentPlayback();
+                    System.out.println("[Session] Windows locked; Ciel remains active and silent.");
+                }
+                return;
+            }
+            if (sessionWasLocked) {
+                sessionWasLocked = false;
+                laptopLockRequested = false;
+                SystemMonitor.resetVirtualIdle();
+                ShortTermMemoryService.getMemory().setCurrentPhase(0);
+                ShortTermMemoryService.getMemory().setInPhase4Monologue(false);
+                CielState.setFinalPlayed(false);
+                CielState.setNextSpeakAt(System.currentTimeMillis() + 60_000);
+                System.out.println("[Session] Windows unlocked; background monitoring resumed without an idle-return greeting.");
+                if (!majorAwayEvents.isEmpty()) {
+                    String summary = String.join("; ", majorAwayEvents);
+                    majorAwayEvents.clear();
+                    SpeechService.speakPreformatted("[Focused] Master, while you were away: " + summary + ".",
+                            "session_return", false, false);
+                }
+                return;
+            }
             long currentTime = System.currentTimeMillis();
             ShortTermMemory memory = ShortTermMemoryService.getMemory();
             SystemMetrics metrics = SystemMonitor.getSystemMetrics();
+            if (metrics.idleTimeMinutes() < 2) laptopLockRequested = false;
+            if (!laptopLockRequested && metrics.idleTimeMinutes() >= Settings.getPhase2ThresholdMin()
+                    && !metrics.isPlayingMedia() && !"Media".equalsIgnoreCase(HabitTrackerService.getCurrentCategory())
+                    && !memory.isInGamingSession()
+                    && "laptop".equalsIgnoreCase(DeviceProfileService.getSnapshot().has("form_factor")
+                        ? DeviceProfileService.getSnapshot().get("form_factor").getAsString() : "")) {
+                laptopLockRequested = true;
+                if (WindowsApiService.INSTANCE.LockWorkStation().booleanValue()) {
+                    System.out.println("[Session] Laptop idle threshold reached; Windows locked without signing out.");
+                    return;
+                }
+                laptopLockRequested = false;
+                System.err.println("[Session] Windows refused laptop lock request; retry on next tick.");
+            }
             
             // --- Safely wrapped Background AI Emotion Polling ---
             try {
@@ -424,13 +477,13 @@ public class CielController {
     private static void executeLogoutSequence() {
         if (!ShortTermMemoryService.getMemory().isInPhase4Monologue()) return;
 
-        System.out.println("Ciel Debug: Initiating fast idle-logout sequence. Bypassing active tasks.");
+        System.out.println("Ciel Debug: Initiating idle session lock. Background tasks remain active.");
 
         SpeechService.speakPreformatted("[Focused] Idle limits exceeded. Securing memory core before environment termination.", "logout_init", false, true);
 
         CompletableFuture.runAsync(() -> {
             System.out.println("Ciel Debug: Writing final diary entry for idle logout...");
-            VaultService.generateSystemDiaryEntryBlocking("Master was idle for an extended period. Executing graceful OS logout to secure the environment.", false);
+            VaultService.generateSystemDiaryEntryBlocking("Master was idle for an extended period. Locking the Windows session while Ciel continues background monitoring.", false);
             
             if (!ShortTermMemoryService.getMemory().isInPhase4Monologue()) {
                 System.out.println("Ciel Debug: Logout interrupted during diary generation. Aborting.");
@@ -440,7 +493,7 @@ public class CielController {
 
             DialogueLine logoutLine = LineManager.getLogoutWarningLine();
             if (logoutLine == null || logoutLine.text() == null || logoutLine.text().isBlank()) {
-                logoutLine = new DialogueLine("fallback_logout", "[Proud] メモリー コア セキュアード。 トリガリング オーエス ログアウト イン サーティー セカンズ。");
+                logoutLine = new DialogueLine("fallback_logout", "[Focused] Securing your session now, Master.");
             }
             
             SpeechService.speakPreformatted(logoutLine.text(), logoutLine.key(), false, false);
@@ -450,14 +503,8 @@ public class CielController {
 
             logoutScheduler.schedule(() -> {
                 if (SystemMonitor.getSystemMetrics().idleTimeMinutes() >= Settings.getPhase4ThresholdMin() && ShortTermMemoryService.getMemory().isInPhase4Monologue()) {
-                    System.out.println("Ciel Debug: 30s mark. Gracefully stopping OpenJarvis before OS logout.");
-                    try {
-                        CielCompanion.killJarvisAndWait(5);
-                        new ProcessBuilder("powershell.exe", "-NoProfile", "-Command",
-                                "Start-Sleep -Seconds 15; shutdown.exe -l").start();
-                        System.out.println("Ciel Debug: Logout scheduled after Java cleanup; local model servers will be left to Windows.");
-                    } catch (IOException e) { e.printStackTrace(); }
-                    System.exit(0);
+                    System.out.println("Ciel Debug: 30s mark. Locking Windows while keeping Ciel alive.");
+                    WindowsApiService.INSTANCE.LockWorkStation();
                 } else {
                     System.out.println("Ciel Debug: 30s mark reached, but Phase 4 was interrupted. Aborting logout.");
                 }
