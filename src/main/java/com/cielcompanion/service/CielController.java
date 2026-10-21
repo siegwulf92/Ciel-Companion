@@ -41,8 +41,6 @@ import java.util.stream.Collectors;
 public class CielController {
 
     private static final Random random = new Random();
-    private static final int GAME_SESSION_GRACE_PERIOD_MS = 10000;
-    private static final Set<String> GAME_AWARENESS_EXCLUSIONS = Set.of("steamwebhelper", "copilot", "steam");
     private static final int HIGH_CPU_THRESHOLD = 90;
     private static final long CPU_ALERT_COOLDOWN_MS = 60000;
     private static final int REQUIRED_ACTIVE_TICKS_FOR_RETURN = 1;
@@ -76,7 +74,6 @@ public class CielController {
             
             logStatus(metrics);
             
-            handleApplicationAwareness(metrics);
 
             int oldPhase = memory.getCurrentPhase();
             int newPhase = determinePhase(metrics.idleTimeMinutes(), memory.isInGamingSession());
@@ -291,63 +288,6 @@ public class CielController {
         }
     }
 
-    private static boolean handleApplicationAwareness(SystemMetrics metrics) {
-        ShortTermMemory memory = ShortTermMemoryService.getMemory();
-        String currentlyTrackedGame = memory.getCurrentlyTrackedGameProcess();
-
-        AppProfile profile = AppProfilerService.identifyActiveApp(metrics.activeProcessName(), metrics.activeWindowTitle());
-
-        // CRITICAL FIX: If we detect a launcher, and we are ALREADY in a gaming session, IGNORE THE LAUNCHER ENTIRELY.
-        // This prevents the infinite grace period loop when launchers (like Witcher 3) pop in and out of the background.
-        if (profile != null && profile.isLauncher() && memory.isInGamingSession()) {
-            return true;
-        }
-
-        // Handle process disappearance (Game Closed)
-        if (currentlyTrackedGame != null && !metrics.runningProcesses().contains(currentlyTrackedGame)) {
-            if (memory.getGameSessionGracePeriodEnd() == 0) {
-                System.out.println("Ciel Debug: Tracked game '" + currentlyTrackedGame + "' process disappeared. Starting grace period.");
-                memory.setGameSessionGracePeriodEnd(System.currentTimeMillis() + GAME_SESSION_GRACE_PERIOD_MS);
-            } else if (System.currentTimeMillis() > memory.getGameSessionGracePeriodEnd()) {
-                System.out.println("Ciel Debug: Grace period ended for '" + currentlyTrackedGame + "'. Ending session.");
-                memory.setCurrentlyTrackedGameProcess(null);
-                memory.setGameSessionGracePeriodEnd(0);
-                memory.setInGamingSession(false);
-                memory.setHighCpuAlertCountInSession(0);
-                
-                SpeechService.getVoiceListener().ifPresent(com.cielcompanion.service.VoiceListener::refresh);
-            }
-            return true; // Still in grace period, return true to suppress chatter
-        }
-        
-        // Handle new Game Launch
-        if (profile != null && "Game".equalsIgnoreCase(profile.category())) {
-            String procNameLower = profile.processName().toLowerCase();
-            
-            if (GAME_AWARENESS_EXCLUSIONS.contains(procNameLower.replace(".exe", ""))) {
-                return memory.isInGamingSession();
-            }
-            
-            // Only swap the tracked game if it's NOT a launcher. 
-            // We never want to formally track a launcher as the active game process.
-            if ((currentlyTrackedGame == null || !currentlyTrackedGame.equals(procNameLower)) && !profile.isLauncher()) {
-                System.out.println("Ciel Debug: New game session detected: " + profile.displayName());
-                memory.setInGamingSession(true);
-                CielState.getEmotionManager().ifPresent(em -> em.triggerSpecialEvent("GAME_START"));
-                
-                String nameToUse = (profile.shortName() != null && !profile.shortName().isBlank()) ? profile.shortName() : profile.displayName();
-                DialogueLine line = LineManager.getAppAwarenessLine(profile.category());
-                if (line != null) {
-                    SpeechService.speakPreformatted(line.text().replace("{app_name}", nameToUse));
-                    CielState.setLastSpeakAt(System.currentTimeMillis());
-                }
-                memory.setCurrentlyTrackedGameProcess(procNameLower);
-            }
-            return true;
-        }
-        return memory.isInGamingSession();
-    }
-    
     private static void performPhaseChange(ShortTermMemory memory, int oldPhase, int newPhase, SystemMetrics metrics) {
         memory.setCurrentPhase(newPhase);
         CielState.setFinalPlayed(false);

@@ -695,51 +695,6 @@ public class HabitTrackerService {
         return clean.trim();
     }
 
-    private static void triggerGameStartCommentary(String gameName, String processName) {
-        if (gameName == null || gameName.isBlank()) return;
-        
-        String safeGameKey = gameName.toLowerCase().replaceAll("[^a-z0-9]", "_");
-        String countKey = "game_playcount_" + safeGameKey;
-        String dateKey = "game_lastplayed_" + safeGameKey;
-        
-        int playCount = 1;
-        String lastPlayed = "Never";
-        
-        Optional<Fact> countFact = MemoryService.getFact(countKey);
-        Optional<Fact> dateFact = MemoryService.getFact(dateKey);
-        
-        if (countFact.isPresent()) {
-            try { playCount = Integer.parseInt(countFact.get().value()) + 1; } catch (Exception e) {}
-        }
-        if (dateFact.isPresent()) {
-            lastPlayed = dateFact.get().value();
-        }
-        
-        MemoryService.addFact(new Fact(countKey, String.valueOf(playCount), System.currentTimeMillis(), "gaming_history", "habit_tracker", 1));
-        MemoryService.addFact(new Fact(dateKey, LocalDate.now().toString(), System.currentTimeMillis(), "gaming_history", "habit_tracker", 1));
-        
-        String prompt = "[LOCAL_THOUGHT] Master Taylor just booted up the game: '" + gameName + "'.\n" +
-                        "Play count: " + playCount + ". Last played: " + lastPlayed + ".\n" +
-                        "Speak STRICTLY as Manas: Ciel, a hyper-intelligent, clinical, and slightly smug cognitive core from Tensura.\n" +
-                        "CRITICAL INSTRUCTION: You are forbidden from using pop-culture catchphrases or generic gaming jokes (e.g., absolutely no 'with great power' for Spider-Man). That is beneath you. " +
-                        "Instead, analyze his action with absolute clinical precision. Calculate probabilities of his success, mock the game's inefficient mechanics, or express quiet superiority over the game's rudimentary logic. " +
-                        "Formulate a 1-2 sentence meta-commentary. Start your response with a SINGLE bracketed emotion tag (e.g., [Amused], [Curious], [Observing], [Smug]).";
-                        
-        // Fix: Use the super-fast 8B logic model for immediate game launch speech, not the slow background models
-        AIEngine.generateSilentLogicWithModel(prompt, "You are Manas: Ciel. Break cliches and be highly analytical.", com.cielcompanion.ai.ModelManager.getModelName(com.cielcompanion.ai.ModelManager.ModelTier.EVALUATOR), 0.7, "Local Reflex Dialogue")
-                .completeOnTimeout(null, 120, TimeUnit.SECONDS) // Hard 120-second killswitch if it stalls
-                .thenAccept(response -> {
-                    if (response != null && !response.isBlank()) {
-                        String cleanResponse = response.trim();
-                        if (!cleanResponse.matches("^\\[[a-zA-Z]+\\].*")) {
-                            cleanResponse = "[Observing] " + cleanResponse; 
-                        }
-                        // Fire the actual TTS
-                        SpeechService.speakPreformatted(cleanResponse, "game_launch", false, true);
-                    }
-                });
-    }
-
     private static void pollAndTrack() {
         if (!LocalDate.now().equals(currentDate)) {
             summarizeAndSaveToMemory();
@@ -768,28 +723,13 @@ public class HabitTrackerService {
         
         String cachedCategory = processCategoryCache.getOrDefault(activeProcess, "Analyzing...");
         
-        boolean isGaming = !isMedia && (
-                           "Gaming".equals(cachedCategory) ||
-                           (activeProcess.contains("game") && !activeProcess.contains("razer") && !activeProcess.contains("redragon") && !activeProcess.contains("logitech") && !activeProcess.contains("epicgameslauncher")) || 
-                           (activeProcess.contains("steam") && !activeProcess.contains("steamwebhelper") && !activeProcess.equals("steam.exe")) || 
-                           activeTitle.toLowerCase().contains("helldivers") || 
-                           activeTitle.toLowerCase().contains("elden ring")
-                           );
+        Optional<GameWindowClassifier.Game> foregroundGame = isMedia
+                ? Optional.empty() : GameWindowClassifier.identify(metrics);
+        boolean isGaming = foregroundGame.isPresent();
 
         if (isGaming) {
             currentCategory = "Gaming";
-            if (!cachedCategory.equals("Gaming") && !activeProcess.isBlank() && !IGNORED_PROCESSES.contains(activeProcess)) {
-                processCategoryCache.put(activeProcess, "Gaming");
-                saveProcessCategories();
-            }
-
-            String emulatorSafeTitle = extractGameName(activeTitle, activeProcess);
-            
-            if (!emulatorSafeTitle.equals(currentGameTitle) && !emulatorSafeTitle.isBlank() && !emulatorSafeTitle.equalsIgnoreCase("Program Manager")) {
-                currentGameTitle = emulatorSafeTitle;
-                triggerGameStartCommentary(emulatorSafeTitle, activeProcess);
-                AIEngine.setGamingMode(true);
-            }
+            currentGameTitle = foregroundGame.get().displayName();
             
             String memKey = "game_pausable_" + activeProcess;
             Optional<Fact> knownGame = MemoryService.getFact(memKey);
@@ -816,7 +756,6 @@ public class HabitTrackerService {
             currentCategory = "Media";
             currentGamePausable = false;
             currentGameTitle = "";
-            AIEngine.setGamingMode(false);
             
             String series = extractFirstMatch(cachedDomText, "(?m)^SERIES:[\\t ]*([^\\r\\n]*)");
             String ep = extractFirstMatch(cachedDomText, "(?m)^EPISODE:[\\t ]*([^\\r\\n]*)");
@@ -877,7 +816,6 @@ public class HabitTrackerService {
             currentCategory = "Productivity";
             currentGamePausable = false;
             currentGameTitle = "";
-            AIEngine.setGamingMode(false);
             if (!cachedCategory.equals("Productivity") && !activeProcess.isBlank() && !IGNORED_PROCESSES.contains(activeProcess)) {
                 processCategoryCache.put(activeProcess, "Productivity");
                 saveProcessCategories();
@@ -885,7 +823,6 @@ public class HabitTrackerService {
         } else {
             currentGamePausable = false;
             currentGameTitle = "";
-            AIEngine.setGamingMode(false);
             
             if (!activeProcess.isBlank() && !IGNORED_PROCESSES.contains(activeProcess)) {
                 if (cachedCategory.equals("Analyzing...")) {
@@ -900,7 +837,8 @@ public class HabitTrackerService {
                                 if (res.has("category") && !res.get("category").isJsonNull()) {
                                     String cat = res.get("category").getAsString();
                                     if (cat.equals("Gaming") || cat.equals("Media") || cat.equals("Productivity")) {
-                                        processCategoryCache.put(activeProcess, cat);
+                                        // Only GameMonitor's foreground PID check can grant Gaming.
+                                        processCategoryCache.put(activeProcess, cat.equals("Gaming") ? "Idle" : cat);
                                         saveProcessCategories();
                                     } else {
                                         processCategoryCache.put(activeProcess, "Idle");
@@ -915,7 +853,7 @@ public class HabitTrackerService {
                     });
                     currentCategory = "Idle"; 
                 } else {
-                    currentCategory = cachedCategory;
+                    currentCategory = "Gaming".equals(cachedCategory) ? "Idle" : cachedCategory;
                 }
             } else {
                 currentCategory = "Idle";

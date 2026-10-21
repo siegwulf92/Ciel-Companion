@@ -21,6 +21,8 @@ public class AppProfilerService {
     private static final Map<String, AppProfile> dynamicCache = new ConcurrentHashMap<>();
 
     public static void initialize() {
+        profiles.clear();
+        dynamicCache.clear();
         Properties props = new Properties();
         try (InputStream is = AppProfilerService.class.getResourceAsStream("/app_profiles.properties")) {
             if (is == null) {
@@ -81,8 +83,9 @@ public class AppProfilerService {
         String lowerProc = processName.toLowerCase();
 
         // 0. Check the fast cache first to silence log spam
-        if (dynamicCache.containsKey(lowerProc)) {
-            return dynamicCache.get(lowerProc);
+        String cacheKey = lowerProc + "\n" + (windowTitle == null ? "" : windowTitle.toLowerCase());
+        if (dynamicCache.containsKey(cacheKey)) {
+            return dynamicCache.get(cacheKey);
         }
 
         // 1. Direct Process Match
@@ -111,7 +114,7 @@ public class AppProfilerService {
                     }
                     
                     System.out.println("Ciel Debug: Identified '" + processName + "' as '" + p.displayName() + "' via Window Title match.");
-                    dynamicCache.put(lowerProc, p); // Cache it so she stops printing to the log
+                    dynamicCache.put(cacheKey, p); // A changed title must be classified afresh.
                     return p;
                 }
             }
