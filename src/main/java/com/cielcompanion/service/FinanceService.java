@@ -67,10 +67,10 @@ public class FinanceService {
 
     public static void initialize() {
         scheduler = Executors.newSingleThreadScheduledExecutor();
-        // CRITICAL FIX: Delay the very first execution by 15 full minutes.
-        // This ensures the OpenJarvis Swarm has finished all auto-repairing tasks and is fully idle.
-        scheduler.scheduleAtFixedRate(FinanceService::evaluateMarketSchedule, 15 * 60, 15 * 60, TimeUnit.SECONDS);
-        System.out.println("Ciel Debug: FinanceService initialized. Weekend plans 09:00-22:00 ET; weekday news 08:00-20:00 ET; persistent retries 15/30/60/120/240 minutes (15m Boot Delay).");
+        // Check soon after login. Readiness and persistent retry state gate the actual run.
+        // A 15-minute boot delay caused short interactive sessions to miss every check.
+        scheduler.scheduleAtFixedRate(FinanceService::evaluateMarketSchedule, 2 * 60, 15 * 60, TimeUnit.SECONDS);
+        System.out.println("Ciel Debug: FinanceService initialized. Weekend plans 09:00-22:00 ET; weekday news 08:00-20:00 ET; persistent retries 15/30/60/120/240 minutes (2m Boot Delay).");
     }
 
     private static void evaluateMarketSchedule() {
@@ -95,7 +95,7 @@ public class FinanceService {
             else executeWeekdayNewsCheck();
 
         } catch (Exception e) {
-            System.err.println("Ciel Error: Failed to evaluate the Smart Market Schedule.");
+            System.err.println("Ciel Error: Failed to evaluate the Smart Market Schedule: " + e);
         }
     }
 
