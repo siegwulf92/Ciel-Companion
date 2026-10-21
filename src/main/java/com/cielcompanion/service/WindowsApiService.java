@@ -17,9 +17,32 @@ public class WindowsApiService {
         int GetWindowTextW(WinDef.HWND hWnd, char[] lpString, int nMaxCount);
         int GetWindowTextLengthW(WinDef.HWND hWnd);
         boolean GetLastInputInfo(WinUser.LASTINPUTINFO result);
+        WinNT.HANDLE OpenInputDesktop(int flags, boolean inherit, int access);
+        boolean GetUserObjectInformationW(WinNT.HANDLE handle, int index, char[] value, int length, IntByReference needed);
+        boolean CloseDesktop(WinNT.HANDLE handle);
     }
     
     public static final MyUser32 INSTANCE = MyUser32.INSTANCE;
+    private static volatile boolean lastSessionLocked;
+    private static long lastDesktopCheckNanos;
+
+    /** The secure Winlogon desktop is visible while the user session is locked. */
+    public static synchronized boolean isSessionLocked() {
+        long now = System.nanoTime();
+        if (now - lastDesktopCheckNanos < 250_000_000L) return lastSessionLocked;
+        lastDesktopCheckNanos = now;
+        WinNT.HANDLE desktop = INSTANCE.OpenInputDesktop(0, false, 0x0001);
+        if (desktop == null) return lastSessionLocked; // Preserve state while Windows switches desktops.
+        try {
+            char[] name = new char[128];
+            if (!INSTANCE.GetUserObjectInformationW(desktop, 2, name, name.length * 2, new IntByReference()))
+                return lastSessionLocked;
+            lastSessionLocked = !"Default".equalsIgnoreCase(Native.toString(name));
+            return lastSessionLocked;
+        } finally {
+            INSTANCE.CloseDesktop(desktop);
+        }
+    }
 
     public static String getProcessName(int pid) {
         WinNT.HANDLE processHandle = Kernel32.INSTANCE.OpenProcess(

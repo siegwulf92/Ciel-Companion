@@ -26,6 +26,11 @@ public class SystemMonitor {
     private static long virtualIdleStartTime = System.currentTimeMillis();
     private static long lastHardwareIdleMs = 0;
 
+    public static void resetVirtualIdle() {
+        virtualIdleStartTime = System.currentTimeMillis();
+        lastHardwareIdleMs = WindowsInputService.getIdleTimeMillis();
+    }
+
     public record SystemMetrics(
         double cpuLoadPercent,
         double memoryUsagePercent,
