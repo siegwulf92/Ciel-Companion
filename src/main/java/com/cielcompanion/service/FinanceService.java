@@ -70,7 +70,7 @@ public class FinanceService {
         // Check soon after login. Readiness and persistent retry state gate the actual run.
         // A 15-minute boot delay caused short interactive sessions to miss every check.
         scheduler.scheduleAtFixedRate(FinanceService::evaluateMarketSchedule, 2 * 60, 15 * 60, TimeUnit.SECONDS);
-        System.out.println("Ciel Debug: FinanceService initialized. Weekend plans 09:00-22:00 ET; weekday news 08:00-20:00 ET; persistent retries 15/30/60/120/240 minutes (2m Boot Delay).");
+        System.out.println("Ciel Debug: FinanceService initialized. Daily briefing or closed-market plan; hourly news watch; persistent retries (2m boot delay).");
     }
 
     private static void evaluateMarketSchedule() {
@@ -78,28 +78,33 @@ public class FinanceService {
             ZoneId estZone = ZoneId.of("America/New_York");
             ZonedDateTime now = ZonedDateTime.now(estZone);
             
-            var job = FinanceSchedulePolicy.jobAt(now);
-            if (job == null) return;
+            var job = FinanceSchedulePolicy.briefingAt(now);
             var state = scheduleState();
             String key = job.name() + ".";
             long success = Long.parseLong(state.getProperty(key + "success", "0"));
-            if (job == FinanceSchedulePolicy.Job.WEEKEND_PLAN) {
+            if (job == FinanceSchedulePolicy.Job.CLOSED_MARKET_PLAN) {
                 Path profile = Paths.get(System.getProperty("user.dir"), "Ciel", "finance", "investor_profile.json");
                 if (Files.exists(profile) && Files.getLastModifiedTime(profile).toMillis() > success) success = 0;
             }
-            if (!FinanceSchedulePolicy.due(now, job,
+            if (FinanceSchedulePolicy.due(now, job,
                     success,
                     Long.parseLong(state.getProperty(key + "attempt", "0")),
-                    Integer.parseInt(state.getProperty(key + "failures", "0")))) return;
-            if (job == FinanceSchedulePolicy.Job.WEEKEND_PLAN) executeSilentMarketCheck();
-            else executeWeekdayNewsCheck();
+                    Integer.parseInt(state.getProperty(key + "failures", "0")))) {
+                executeSilentMarketCheck(job);
+                return;
+            }
+            String newsKey = FinanceSchedulePolicy.Job.NEWS_WATCH.name() + ".";
+            if (FinanceSchedulePolicy.due(now, FinanceSchedulePolicy.Job.NEWS_WATCH,
+                    Long.parseLong(state.getProperty(newsKey + "success", "0")),
+                    Long.parseLong(state.getProperty(newsKey + "attempt", "0")),
+                    Integer.parseInt(state.getProperty(newsKey + "failures", "0")))) executeNewsCheck();
 
         } catch (Exception e) {
             System.err.println("Ciel Error: Failed to evaluate the Smart Market Schedule: " + e);
         }
     }
 
-    private static void executeSilentMarketCheck() {
+    private static void executeSilentMarketCheck(FinanceSchedulePolicy.Job job) {
         if (!isFinanceRouterReady()) {
             System.out.println("[Raphael â€” Financial Analysis] Deferred: local AI router is not ready; existing briefing and retry timestamps preserved.");
             return;
@@ -118,7 +123,7 @@ public class FinanceService {
             System.out.println("[Raphael â€” Financial Analysis] Deferred while the daily health review is active.");
             return;
         }
-        recordSchedule(FinanceSchedulePolicy.Job.WEEKEND_PLAN, null);
+        recordSchedule(job, null);
         localAttemptTimeMs = System.currentTimeMillis();
         saveTimestamp(ATTEMPT_FILE, localAttemptTimeMs);
 
@@ -126,9 +131,8 @@ public class FinanceService {
         latestMarketScan = "Market scan in progress.";
         latestRecommendations = "Recommendations pending portfolio update.";
         latestPortfolioDataStatus = "Portfolio refresh in progress.";
-        writeFiles(); // Publish a fresh report immediately, even if a model stalls.
 
-        System.out.println("[Raphael â€” Financial Analysis] Starting parallel market scan and portfolio refresh.");
+        System.out.println("[Raphael â€” Financial Analysis] Starting " + job + " with market scan and portfolio refresh.");
         CompletableFuture<String> rawMarketTask = runFinanceTask(
                 "Market scan", "[FINANCE_MARKET_SCAN]", "Fetch macro market data.");
         CompletableFuture<String> portfolioTask = runFinanceTask(
@@ -136,7 +140,6 @@ public class FinanceService {
 
         CompletableFuture<String> marketTask = rawMarketTask.thenApply(result -> {
             latestMarketScan = result;
-            writeFiles();
             return result;
         });
 
@@ -145,15 +148,14 @@ public class FinanceService {
             latestPortfolioDataStatus = isFinanceFailure(result)
                     ? "Portfolio refresh failed: " + result
                     : result;
-            writeFiles();
             latestRecommendations = "Recommendations in progress.";
-            writeFiles();
             return runFinanceTask("Strategic recommendations",
-                    "[FINANCE_RECOMMENDATIONS] Generate stock recommendations.",
+                    (job == FinanceSchedulePolicy.Job.CLOSED_MARKET_PLAN
+                            ? "[FINANCE_CLOSED_MARKET_RECOMMENDATIONS]" : "[FINANCE_DAILY_RECOMMENDATIONS]")
+                            + " Generate stock recommendations.",
                     "Generate strategic advice.");
         }).thenApply(result -> {
             latestRecommendations = result;
-            writeFiles();
             System.out.println("[Raphael â€” Financial Analysis] Recommendation narrative saved (" + result.length() + " chars).");
             return result;
         });
@@ -164,47 +166,50 @@ public class FinanceService {
                         System.err.println("[Raphael â€” Financial Analysis] Pipeline failed: " + error);
                         latestRecommendations = "Finance pipeline failed: " + error;
                     }
-                    writeFiles();
                     boolean runSucceeded = error == null
                             && !isFinanceFailure(marketTask.getNow(null))
                             && !isFinanceFailure(portfolioTask.getNow(null))
                             && !isFinanceFailure(recommendationsTask.getNow(null));
-                    recordSchedule(FinanceSchedulePolicy.Job.WEEKEND_PLAN, runSucceeded);
+                    if (runSucceeded) runSucceeded = writeFiles();
+                    recordSchedule(job, runSucceeded);
                     if (runSucceeded) {
-                        CielController.noteMajorBackgroundActivity("I completed the weekend portfolio plan");
+                        CielController.noteMajorBackgroundActivity("I completed the "
+                                + (job == FinanceSchedulePolicy.Job.CLOSED_MARKET_PLAN ? "closed-market portfolio plan" : "daily portfolio briefing"));
                         localSyncTimeMs = System.currentTimeMillis();
                         saveTimestamp(SYNC_FILE, localSyncTimeMs);
                     } else {
-                        System.err.println("[Raphael â€” Financial Analysis] Run incomplete; sync timestamp unchanged so failed stages can retry.");
+                        System.err.println("[Raphael â€” Financial Analysis] Run incomplete; last successful briefing preserved and retry remains eligible.");
                     }
                     analysisRunning.set(false);
-            System.out.println("[Raphael â€” Financial Analysis] Background run complete.");
+                    System.out.println("[Raphael â€” Financial Analysis] Background run complete.");
+                    // A failed full briefing must not indefinitely starve the hourly news watch.
+                    evaluateMarketSchedule();
                 });
     }
 
-    private static void executeWeekdayNewsCheck() {
+    private static void executeNewsCheck() {
         if (!isFinanceRouterReady() || CodexAgentService.isMaintenanceActive()) {
-            System.out.println("[Finance Schedule] Weekday news deferred; router unavailable or maintenance active. Rechecking next schedule tick.");
+            System.out.println("[Finance Schedule] News watch deferred; router unavailable or maintenance active. Rechecking next schedule tick.");
             return;
         }
         if (!analysisRunning.compareAndSet(false, true)) return;
-        recordSchedule(FinanceSchedulePolicy.Job.WEEKDAY_NEWS, null);
-        runFinanceTask("Weekday news watch", "[FINANCE_NEWS_WATCH]", "Check material news for my holdings; preserve the weekend plan.")
+        recordSchedule(FinanceSchedulePolicy.Job.NEWS_WATCH, null);
+        runFinanceTask("Portfolio news watch", "[FINANCE_NEWS_WATCH]", "Check material news for my holdings using saved prices; do not refresh portfolio prices or the market scan.")
             .whenComplete((result, error) -> {
                 boolean success = error == null && !isFinanceFailure(result);
                 try {
                     Path directory = Paths.get(System.getProperty("user.dir"), "Ciel", "finance");
                     Files.createDirectories(directory);
-                    Path target = directory.resolve(success ? "Latest_Weekday_News_Watch.md" : "Weekday_News_Last_Attempt.md");
+                    Path target = directory.resolve(success ? "Latest_Portfolio_News_Watch.md" : "Portfolio_News_Last_Attempt.md");
                     writeAtomically(target, result == null ? "Weekday news watch unavailable: " + error : result);
                     if (success && (result.contains(": REVIEW_BUY") || result.contains(": REVIEW_SELL"))) {
                         CielController.noteMajorBackgroundActivity("I found portfolio news that warrants review");
-                        SpeechService.speakPreformatted("[Focused] I found new portfolio news worth reviewing. Please check the weekday news watch before making any trade.", "finance.news.review", false, false);
+                        SpeechService.speakPreformatted("[Focused] I found new portfolio news worth reviewing. Please check the news watch before making any trade.", "finance.news.review", false, false);
                     }
-                    System.out.println("[Finance Schedule] Weekday news " + (success ? "completed" : "incomplete") + "; weekend briefing preserved.");
+                    System.out.println("[Finance Schedule] Portfolio news " + (success ? "completed" : "incomplete") + "; full briefing preserved.");
                 } catch (java.io.IOException e) { success = false; }
                 finally {
-                    recordSchedule(FinanceSchedulePolicy.Job.WEEKDAY_NEWS, success);
+                    recordSchedule(FinanceSchedulePolicy.Job.NEWS_WATCH, success);
                     analysisRunning.set(false);
                 }
             });
@@ -223,6 +228,8 @@ public class FinanceService {
                 || normalized.startsWith("market data unavailable")
                 || normalized.startsWith("finance module error:")
                 || normalized.startsWith("weekday news watch unavailable:")
+                || normalized.startsWith("portfolio news watch unavailable:")
+                || normalized.contains("model review unavailable. these dated discovery headlines")
                 || normalized.startsWith("master, the recommendation models did not return prose this cycle")
                 || normalized.startsWith("### market scan status\nthe narrative model was unavailable")
                 || normalized.matches("(?s)^(market scan|strategic recommendations|portfolio update|finance pipeline) (failed:|returned no result|timed out|unavailable).*" );
@@ -286,7 +293,7 @@ public class FinanceService {
         return close;
     }
 
-    private static synchronized void writeFiles() {
+    private static synchronized boolean writeFiles() {
         try {
             ZoneId estZone = ZoneId.of("America/New_York");
             ZonedDateTime now = ZonedDateTime.now(estZone);
@@ -307,11 +314,12 @@ public class FinanceService {
             }
             
             // Never insert the raw CSV math here!
-            String content = "# Ciel's Weekend Portfolio Plan (" + dateStr + ")\n\n" +
+            boolean closed = FinanceSchedulePolicy.marketClosed(now.toLocalDate());
+            String content = "# Ciel's " + (closed ? "Closed-Market Portfolio Plan" : "Daily Financial Briefing") + " (" + dateStr + ")\n\n" +
                              "## Portfolio Data Status\n" +
                              latestPortfolioDataStatus + "\n\n" +
                              "## Ciel's Portfolio Analysis and Recommendations\n" +
-                             "Planning for Monday: " + now.toLocalDate().with(java.time.temporal.TemporalAdjusters.next(java.time.DayOfWeek.MONDAY)) + "\n\n" + latestRecommendations + "\n\n" +
+                             (closed ? "Planning for the next market session (verify the exchange calendar before trading).\n\n" : "Market-day review.\n\n") + latestRecommendations + "\n\n" +
                              "## Macro Market Scan\n" + 
                              latestMarketScan + fireProgress;
             
@@ -326,10 +334,12 @@ public class FinanceService {
             System.out.println("[Raphael â€” Financial Analysis] Markdown written: daily=" + dailyReport.toAbsolutePath()
                     + " (" + Files.size(dailyReport) + " bytes), latest=" + briefingPath.toAbsolutePath()
                     + " (" + Files.size(briefingPath) + " bytes).");
+            return true;
 
         } catch (Exception e) {
             System.err.println("Ciel Error: Failed to write briefing files to disk: " + e);
             e.printStackTrace();
+            return false;
         }
     }
 
@@ -354,25 +364,7 @@ public class FinanceService {
     }
 
     public static String getHolidaryName(LocalDate date) {
-        int year = date.getYear();
-        int month = date.getMonthValue();
-        int day = date.getDayOfMonth();
-        DayOfWeek dow = date.getDayOfWeek();
-
-        if (month == 1 && day == 1) return "New Year's Day";
-        if (month == 6 && day == 19) return "Juneteenth";
-        if (month == 7 && day == 4) return "Independence Day";
-        if (month == 11 && day == 11) return "Veterans Day";
-        if (month == 12 && day == 25) return "Christmas Day";
-
-        if (month == 1 && dow == DayOfWeek.MONDAY && day >= 15 && day <= 21) return "MLK Jr. Day";
-        if (month == 2 && dow == DayOfWeek.MONDAY && day >= 15 && day <= 21) return "Presidents' Day";
-        if (month == 5 && dow == DayOfWeek.MONDAY && day >= 25) return "Memorial Day";
-        if (month == 9 && dow == DayOfWeek.MONDAY && day <= 7) return "Labor Day";
-        if (month == 10 && dow == DayOfWeek.MONDAY && day >= 8 && day <= 14) return "Columbus Day";
-        if (month == 11 && dow == DayOfWeek.THURSDAY && day >= 22 && day <= 28) return "Thanksgiving";
-
-        return null;
+        return FinanceSchedulePolicy.marketClosed(date) ? "NYSE market closure" : null;
     }
 
     public static String getUpcomingHolidayContext() {
@@ -411,8 +403,8 @@ public class FinanceService {
         String context = holiday.isEmpty() ? "" : "[HOLIDAY ALERT]: " + holiday + "\n\n";
         String watch = "";
         try {
-            Path file = Paths.get(System.getProperty("user.dir"), "Ciel", "finance", "Latest_Weekday_News_Watch.md");
-            if (Files.exists(file)) watch = "\n\nLATEST WEEKDAY NEWS WATCH (check its source timestamps):\n" + Files.readString(file);
+            Path file = Paths.get(System.getProperty("user.dir"), "Ciel", "finance", "Latest_Portfolio_News_Watch.md");
+            if (Files.exists(file)) watch = "\n\nLATEST PORTFOLIO NEWS WATCH (check its source timestamps):\n" + Files.readString(file);
         } catch (java.io.IOException ignored) { }
         return context + "PORTFOLIO DATA STATUS:\n" + latestPortfolioDataStatus
                 + "\n\nCIEL'S PORTFOLIO ANALYSIS AND RECOMMENDATIONS:\n" + latestRecommendations
