@@ -65,7 +65,9 @@ public class VaultService {
     private static final List<Path> loreBatchQueue = Collections.synchronizedList(new ArrayList<>());
     private static ScheduledFuture<?> loreDebounceTask = null;
     private static final ScheduledExecutorService debounceExecutor = Executors.newSingleThreadScheduledExecutor();
-    private static final int MAX_CONCURRENT_LORE_FILES = 3;
+    // A volume already contains many model calls. Serializing volumes avoids
+    // competing requests and lets each checkpoint advance before the next one.
+    private static final int MAX_CONCURRENT_LORE_FILES = 1;
     private static final Set<Path> activeLorePaths = ConcurrentHashMap.newKeySet();
 
     private static final Random random = new Random();
