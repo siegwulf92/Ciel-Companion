@@ -24,10 +24,11 @@ final class GameWindowClassifier {
         String lowerCommand = command.toLowerCase(Locale.ROOT).replace('/', '\\');
         String lowerTitle = title.toLowerCase(Locale.ROOT);
         if (isEmptyEmulator(process, lowerTitle)) return Optional.empty();
+        String kingdomHeartsGame = kingdomHeartsGame(process);
 
         boolean gamePath = lowerCommand.contains("\\steamapps\\common\\")
                 || lowerCommand.contains("\\epic games\\") || lowerCommand.contains("\\xboxgames\\");
-        boolean knownExecutable = process.matches("(?i).*(-win64-shipping|kingdom.?hearts|khfm|eldenring|helldivers2|r5apex|rocketleague|retroarch|xemu|pcsx2(-qt)?|rpcs3|ryujinx|yuzu|cemu|citra-qt|project64|desmume|duckstation-qt|dolphin|minecraft.windows)\\.exe");
+        boolean knownExecutable = kingdomHeartsGame != null || process.matches("(?i).*(-win64-shipping|kingdom.?hearts|khfm|eldenring|helldivers2|r5apex|rocketleague|retroarch|xemu|pcsx2(-qt)?|rpcs3|ryujinx|yuzu|cemu|citra-qt|project64|desmume|duckstation-qt|dolphin|minecraft.windows)\\.exe");
         AppProfile profile = AppProfilerService.identifyActiveApp(process, title);
         boolean profiled = profile != null && "Game".equalsIgnoreCase(profile.category()) && !profile.isLauncher()
                 && (process.equalsIgnoreCase(profile.processName()) || gamePath || knownExecutable);
@@ -37,7 +38,8 @@ final class GameWindowClassifier {
                 && (process.equals("javaw.exe") || process.contains("minecraft"));
         if (!profiled && !kingdomHearts && !minecraft && !gamePath && !knownExecutable) return Optional.empty();
 
-        String name = kingdomHearts ? "Kingdom Hearts Final Mix"
+        String name = kingdomHeartsGame != null ? kingdomHeartsGame
+                : kingdomHearts ? "Kingdom Hearts Final Mix"
                 : minecraft ? "Minecraft"
                 : profiled ? profile.displayName()
                 : gamePath ? gameFolder(command)
@@ -48,9 +50,24 @@ final class GameWindowClassifier {
     static boolean excluded(String process) {
         if (process.isBlank() || process.equals("unknown")) return true;
         return process.contains("launcher") || process.contains("overlay") || process.contains("webhelper")
+                || process.equals("waittitleproject.exe")
                 || process.contains("cefsubprocess") || process.contains("crashreporter")
                 || process.contains("setup") || process.contains("installer")
                 || process.matches("(?i)(chrome|msedge|firefox|brave|opera|steam|discord|dwm|explorer|searchhost|applicationframehost|nvidia app|obs64|vortex|bg3modmanager|voiceattack|notepad|code|obsidian|chatgpt|handbrake)\\.exe");
+    }
+
+    private static String kingdomHeartsGame(String process) {
+        if (process.equals("khfm.exe") || process.contains("kingdom hearts final mix"))
+            return "Kingdom Hearts Final Mix";
+        if (process.contains("kingdom hearts ii final mix") || process.contains("kingdom hearts 2 final mix"))
+            return "Kingdom Hearts II Final Mix";
+        if (process.contains("kingdom hearts re chain of memories") || process.contains("kingdom hearts re:chain of memories"))
+            return "Kingdom Hearts Re:Chain of Memories";
+        if (process.contains("kingdom hearts birth by sleep final mix"))
+            return "Kingdom Hearts Birth by Sleep Final Mix";
+        if (process.contains("kingdom hearts 358") && process.contains("days"))
+            return "Kingdom Hearts 358/2 Days";
+        return null;
     }
 
     private static boolean isEmptyEmulator(String process, String title) {
