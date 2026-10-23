@@ -118,7 +118,7 @@ public class AIEngine {
     private static void ensureLiteLlmProvider(JsonObject payload) {
         if (payload != null && payload.has("model")) {
             String model = payload.get("model").getAsString();
-            if (!model.contains("/")) {
+            if (!model.contains("/") && !"auto".equalsIgnoreCase(model)) {
                 payload.addProperty("model", "ollama/" + model);
             }
         }
@@ -242,6 +242,10 @@ public class AIEngine {
         JsonObject payload = (forcedModel == null)
                 ? ModelManager.buildPayload(ModelManager.ModelTier.LOGIC, systemContext, userMessage, false)
                 : buildForcedPayload(systemContext, userMessage, forcedModel, temperature, taskIntent);
+
+        // The configured tier model is a legacy default, not a caller request.
+        // "auto" lets the router score local and cloud candidates and fail over.
+        if (forcedModel == null) payload.addProperty("model", "auto");
 
         payload.addProperty("task_intent", taskIntent);
         payload.addProperty("temperature", temperature);
