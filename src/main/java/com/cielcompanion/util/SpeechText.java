@@ -64,11 +64,12 @@ public final class SpeechText {
     }
 
     public static String cacheKey(String key, String source, String lang) {
-        if (key == null || !"ja-JP".equalsIgnoreCase(lang) || !Pattern.compile("[A-Za-z]").matcher(source).find()) return key;
+        if (key == null || source == null) return key;
         if (key.isBlank() || key.equals("game_launch") || key.equals("media_commentary") || key.startsWith("dynamic")) return key;
         try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(normalizeSource(source).getBytes(StandardCharsets.UTF_8));
-            return key + ".phonokana2." + HexFormat.of().formatHex(digest).substring(0, 16);
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest((lang + ":" + normalizeSource(source)).getBytes(StandardCharsets.UTF_8));
+            return key + ".speechtext3." + HexFormat.of().formatHex(digest).substring(0, 16);
         } catch (Exception e) {
             throw new IllegalStateException("Speech cache fingerprint unavailable", e);
         }

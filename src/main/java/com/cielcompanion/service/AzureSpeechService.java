@@ -34,6 +34,8 @@ public class AzureSpeechService {
     
     private static final String CACHE_DIR_PATH = "voice_cache";
     private static final String DND_CACHE_DIR_PATH = "dnd_voice_cache";
+    // Rebuild old neutral WAVs after correcting Nanami's supported style mapping.
+    private static final String VOICE_PROFILE_VERSION = "nanami_conversational_v2";
     // Wake output devices that suppress initial audio after a quiet period. The cue is
     // intentionally quiet and is followed by enough time for the endpoint to settle.
     private static final int SPEAKER_PREROLL_MILLIS = 2500;
@@ -80,18 +82,10 @@ public class AzureSpeechService {
 
     public static boolean isCached(String key, String style, String langCode) {
         if (isDynamicKey(key)) return false; // Never cache dynamic AI outputs
-        
-        String safeStyle = (style == null || style.isBlank() || style.equalsIgnoreCase("default")) ? "default" : style;
         String safeLang = (langCode == null || langCode.isBlank()) ? "ja-JP" : langCode;
-        
         boolean isDndContent = safeLang.equalsIgnoreCase("en-US");
         String targetCacheDir = isDndContent ? DND_CACHE_DIR_PATH : CACHE_DIR_PATH;
-
-        String suffix = safeLang.equalsIgnoreCase("ja-JP") ? "" : "_" + safeLang;
-        String safeFilename = key.replaceAll("[^a-zA-Z0-9._-]", "_") + "_" + safeStyle + suffix + ".wav";
-        File cachedFile = new File(targetCacheDir, safeFilename);
-
-        return cachedFile.exists();
+        return new File(targetCacheDir, cacheFilename(key, style, safeLang)).exists();
     }
     
     public static void stopAllAudio() {
@@ -130,8 +124,7 @@ public class AzureSpeechService {
         String targetCacheDir = isDndContent ? DND_CACHE_DIR_PATH : CACHE_DIR_PATH;
 
         if (!isDynamicKey(key)) {
-            String suffix = safeLang.equalsIgnoreCase("ja-JP") ? "" : "_" + safeLang;
-            String safeFilename = key.replaceAll("[^a-zA-Z0-9._-]", "_") + "_" + safeStyle + suffix + ".wav";
+            String safeFilename = cacheFilename(key, safeStyle, safeLang);
             File cachedFile = new File(targetCacheDir, safeFilename);
 
             if (cachedFile.exists()) {
@@ -139,22 +132,35 @@ public class AzureSpeechService {
                 return playWav(cachedFile, key);
             }
 
-            long estimatedSeconds = (SpeechService.estimateSpeechDuration(text) / 1000) + 1;
-            if (!AzureUsageTracker.canSpeak(estimatedSeconds)) {
-                System.out.println("[Azure TTS] Quota exceeded. Cannot generate new static file.");
-                return false;
-            }
-
             return generateAndPlayFile(text, safeStyle, safePitch, safeLang, cachedFile, key);
             
         } else {
-            long estimatedSeconds = (SpeechService.estimateSpeechDuration(text) / 1000) + 1;
-            if (!AzureUsageTracker.canSpeak(estimatedSeconds)) {
-                return false;
-            }
-            
             return generateAndPlayDynamicFile(text, safeStyle, safePitch, safeLang, key);
         }
+    }
+
+    private static String cacheFilename(String key, String style, String lang) {
+        String voice = voiceForLanguage(lang);
+        String resolvedStyle = styleForVoice(style, voice);
+        String profile = VOICE_PROFILE_VERSION + "_" + voice + "_" + resolvedStyle + "_" + lang;
+        return (key + "_" + profile).replaceAll("[^a-zA-Z0-9._-]", "_") + ".wav";
+    }
+
+    private static String voiceForLanguage(String lang) {
+        String voice = CielVoiceManager.getActiveVoiceName();
+        if ("en-US".equalsIgnoreCase(lang) && voice.contains("Nanami")) return "en-US-JennyNeural";
+        return voice;
+    }
+
+    private static String styleForVoice(String style, String voice) {
+        String requested = style == null ? "default" : style.toLowerCase(java.util.Locale.ROOT);
+        if ("ja-JP-NanamiNeural".equalsIgnoreCase(voice)) {
+            // Azure supports chat, cheerful and customerservice for standard Nanami.
+            if ("cheerful".equals(requested)) return "cheerful";
+            if ("customerservice".equals(requested) || "professional".equals(requested)) return "customerservice";
+            return "chat";
+        }
+        return requested.isBlank() ? "default" : requested;
     }
 
     /**
@@ -188,18 +194,24 @@ public class AzureSpeechService {
 
     private static boolean generateAndPlayFile(String text, String style, String pitch, String lang, File destination, String key) {
         AudioConfig fileOutput = null;
+        String reservation = null;
+        boolean synthesisCompleted = false;
         try {
+            String ssml = buildSsml(text, style, pitch, lang, false);
+            long estimatedSeconds = (SpeechService.estimateSpeechDuration(text) / 1000) + 1;
+            reservation = AzureUsageTracker.reserve(estimatedSeconds, voiceForLanguage(lang),
+                    text.codePointCount(0, text.length()), conservativeBillableCharacters(ssml));
+            if (reservation == null) return false;
             System.out.println("[Azure TTS] Generating WAV for playback: " + destination.getName());
             
             fileOutput = AudioConfig.fromWavFileOutput(destination.getAbsolutePath());
             activeSynthesizer = new SpeechSynthesizer(config, fileOutput);
-
-            String ssml = buildSsml(text, style, pitch, lang, false);
             SpeechSynthesisResult result = activeSynthesizer.SpeakSsml(ssml);
 
             if (result.getReason() == ResultReason.SynthesizingAudioCompleted) {
                 long durationSeconds = Math.max(1, result.getAudioData().length / 32000);
-                AzureUsageTracker.addUsage(durationSeconds);
+                AzureUsageTracker.finish(reservation, durationSeconds, true);
+                synthesisCompleted = true;
                 result.close();
                 activeSynthesizer.close();
                 fileOutput.close(); 
@@ -215,8 +227,11 @@ public class AzureSpeechService {
             }
             result.close();
         } catch (Exception e) {
+            System.err.println("[Azure TTS] Synthesis failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             if (destination.exists()) destination.delete();
         } finally {
+            if (!synthesisCompleted) AzureUsageTracker.finish(reservation, 0, false);
+            if (fileOutput != null && !synthesisCompleted) fileOutput.close();
             if (activeSynthesizer != null) {
                 activeSynthesizer.close();
                 activeSynthesizer = null;
@@ -226,12 +241,18 @@ public class AzureSpeechService {
     }
 
     private static boolean streamDirectly(String text, String style, String pitch, String lang, String key) {
+        String reservation = null;
+        boolean synthesisCompleted = false;
         try {
             System.out.println("[Azure TTS] Streaming dynamic content: \"" + text + "\"");
             
             AudioConfig audioConfig = AudioConfig.fromDefaultSpeakerOutput();
             activeSynthesizer = new SpeechSynthesizer(config, audioConfig);
             String ssml = buildSsml(text, style, pitch, lang, true);
+            reservation = AzureUsageTracker.reserve((SpeechService.estimateSpeechDuration(text) / 1000) + 1,
+                    voiceForLanguage(lang), text.codePointCount(0, text.length()),
+                    conservativeBillableCharacters(ssml));
+            if (reservation == null) return false;
             
             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
             
@@ -239,7 +260,8 @@ public class AzureSpeechService {
 
             if (result.getReason() == ResultReason.SynthesizingAudioCompleted) {
                 long durationSeconds = Math.max(1, result.getAudioData().length / 32000);
-                AzureUsageTracker.addUsage(durationSeconds);
+                AzureUsageTracker.finish(reservation, durationSeconds, true);
+                synthesisCompleted = true;
                 result.close();
                 return true;
             } else if (result.getReason() == ResultReason.Canceled) {
@@ -288,6 +310,7 @@ public class AzureSpeechService {
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
+            if (!synthesisCompleted) AzureUsageTracker.finish(reservation, 0, false);
             if (activeSynthesizer != null) {
                 activeSynthesizer.close();
                 activeSynthesizer = null;
@@ -303,10 +326,8 @@ public class AzureSpeechService {
                 text = com.cielcompanion.util.SpeechText.localKatakana(text);
             }
         }
-        String currentVoiceName = CielVoiceManager.getActiveVoiceName();
-        if (lang.equals("en-US") && currentVoiceName.contains("Nanami")) {
-             currentVoiceName = "en-US-JennyNeural";
-        }
+        String currentVoiceName = voiceForLanguage(lang);
+        String resolvedStyle = styleForVoice(style, currentVoiceName);
 
         // CRITICAL FIX: Escape XML special characters so AI syntax doesn't break Azure's parser
         String safeText = text.replace("&", "&amp;")
@@ -319,8 +340,10 @@ public class AzureSpeechService {
         ssml.append("<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" xmlns:mstts=\"https://www.w3.org/2001/mstts\" xml:lang=\"").append(lang).append("\">");
         ssml.append("<voice name=\"").append(currentVoiceName).append("\">");
         
-        boolean useStyle = !style.equals("default");
-        if (useStyle) ssml.append("<mstts:express-as style=\"").append(style).append("\">");
+        boolean useStyle = !resolvedStyle.equals("default");
+        if (useStyle) ssml.append("<mstts:express-as style=\"").append(resolvedStyle)
+                .append("\" styledegree=\"").append("cheerful".equals(resolvedStyle) ? "1.15" : "1.05")
+                .append("\">");
         
         ssml.append("<prosody pitch=\"").append(pitch).append("\">");
         if (warmSpeakerOutput) ssml.append("<break time=\"").append(SPEAKER_PREROLL_MILLIS).append("ms\"/>");
@@ -329,6 +352,17 @@ public class AzureSpeechService {
         if (useStyle) ssml.append("</mstts:express-as>");
         ssml.append("</voice></speak>");
         return ssml.toString();
+    }
+
+    /** Count the entire SSML (including exempt tags) and double Han code points for a safe upper bound. */
+    private static int conservativeBillableCharacters(String ssml) {
+        int count = ssml.codePointCount(0, ssml.length());
+        for (int offset = 0; offset < ssml.length();) {
+            int point = ssml.codePointAt(offset);
+            if (Character.UnicodeScript.of(point) == Character.UnicodeScript.HAN) count++;
+            offset += Character.charCount(point);
+        }
+        return count;
     }
 
     public static String buildFallbackSsml(String text, String lang) {
