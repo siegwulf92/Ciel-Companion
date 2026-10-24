@@ -60,6 +60,7 @@ public class Settings {
     private static String AZURE_SPEECH_REGION;
     private static String AZURE_VOICE_NAME;
     private static long AZURE_MONTHLY_LIMIT_HOURS; 
+    private static long AZURE_MONTHLY_LIMIT_CHARACTERS;
 
     // --- NEW: AI ORCHESTRATION SETTINGS ---
     private static String LLM_PERSONALITY_URL; 
@@ -155,8 +156,10 @@ public class Settings {
             AZURE_SPEECH_REGION = props.getProperty("azure.speech.region", "");
             AZURE_VOICE_NAME = props.getProperty("azure.speech.voiceName", "ja-JP-NanamiNeural");
             AZURE_MONTHLY_LIMIT_HOURS = Long.parseLong(props.getProperty("azure.speech.limitHours", "5"));
+            AZURE_MONTHLY_LIMIT_CHARACTERS = Long.parseLong(props.getProperty("azure.speech.limitCharacters", "450000"));
 
             AzureUsageTracker.setLimit(AZURE_MONTHLY_LIMIT_HOURS * 3600);
+            AzureUsageTracker.setCharacterLimit(AZURE_MONTHLY_LIMIT_CHARACTERS);
 
             // --- AI ORCHESTRATION ---
             LLM_PERSONALITY_URL = props.getProperty("ciel.ai.personalityUrl", "http://localhost:11434/v1"); 
