@@ -59,6 +59,7 @@ public class HabitTrackerService {
     
     private static final Map<String, Integer> episodeExposureMinutes = new ConcurrentHashMap<>();
     private static final Set<String> loggedMediaToday = ConcurrentHashMap.newKeySet();
+    private static final Set<String> unverifiedMediaAcknowledgedToday = ConcurrentHashMap.newKeySet();
     private static final Set<String> mediaCommentaryInFlight = ConcurrentHashMap.newKeySet();
     private static final Map<String, Long> mediaCommentaryRetryAfter = new ConcurrentHashMap<>();
 
@@ -700,6 +701,7 @@ public class HabitTrackerService {
             summarizeAndSaveToMemory();
             dailyHabits.clear();
             loggedMediaToday.clear();
+            unverifiedMediaAcknowledgedToday.clear();
             episodeExposureMinutes.clear();
             recentMediaHistory.clear();
             mediaThresholds.clear();
@@ -809,8 +811,46 @@ public class HabitTrackerService {
                 if (isEpisode) updateSeriesIfHigher(series, ep);
             } else if (!verifiedMetadata && "EPISODE".equalsIgnoreCase(mediaKind == null ? "" : mediaKind.trim())
                     && isStremioProc && series != null && !invalidSeries && ep != null && !ep.isBlank()) {
-                System.out.println("[HabitTracker] Plot commentary deferred for '" + series.trim() + " - " + ep.trim()
-                        + "': episode synopsis remains unverified; metadata retry stays eligible.");
+                String episodeKey = series.trim() + "_" + ep.trim();
+                String episodeTitle = series.trim() + " - " + ep.trim();
+                int exposure = playbackFresh ? episodeExposureMinutes.merge(episodeTitle, 1, Integer::sum)
+                        : episodeExposureMinutes.getOrDefault(episodeTitle, 0);
+                if (!unverifiedMediaAcknowledgedToday.contains(episodeKey)) {
+                    System.out.println("[HabitTracker] Plot commentary deferred for '" + series.trim() + " - " + ep.trim()
+                            + "': episode synopsis remains unverified; metadata retry stays eligible.");
+                }
+                if (playbackFresh
+                        && episodeKey.equals(currentEpisodeHash)
+                        && !unverifiedMediaAcknowledgedToday.contains(episodeKey)
+                        && !loggedMediaToday.contains(episodeKey)
+                        && !mediaCommentaryInFlight.contains(episodeKey)
+                        && System.currentTimeMillis() >= mediaCommentaryRetryAfter.getOrDefault(episodeKey, 0L)
+                        && MediaObservation.commentaryTimeReached(cachedCurrentTimeSec, exposure,
+                                MediaObservation.commentaryTargetSeconds(false, cachedDurationMinutes), cachedDurationMinutes)
+                        && mediaCommentaryInFlight.add(episodeKey)) {
+                    String safeSeries = series.trim().replaceAll("[\\r\\n\\t]", " ")
+                            .replace("[", "").replace("]", "");
+                    if (safeSeries.length() > 90) safeSeries = safeSeries.substring(0, 90).trim();
+                    String line = "[Curious] Master, I see you're watching " + safeSeries
+                            + ". I'll stay with this episode and leave its surprises for you to discover.";
+                    System.out.println("[HabitTracker] Speaking spoiler-safe series acknowledgment; synopsis verification remains pending.");
+                    try {
+                        SpeechService.speakMediaCommentary(line, spoken -> {
+                            if (spoken) {
+                                unverifiedMediaAcknowledgedToday.add(episodeKey);
+                                mediaCommentaryRetryAfter.put(episodeKey, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(10));
+                            } else {
+                                mediaCommentaryRetryAfter.put(episodeKey, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(3));
+                            }
+                            mediaCommentaryInFlight.remove(episodeKey);
+                        });
+                    } catch (RuntimeException error) {
+                        mediaCommentaryRetryAfter.put(episodeKey, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(3));
+                        mediaCommentaryInFlight.remove(episodeKey);
+                        System.err.println("[HabitTracker] Could not queue spoiler-safe series acknowledgment: "
+                                + error.getClass().getSimpleName());
+                    }
+                }
             }
         } else if (activeProcess.contains("code") || activeProcess.contains("idea") || activeProcess.contains("obsidian") || activeProcess.contains("word") || activeProcess.contains("notepad")) {
             currentCategory = "Productivity";
