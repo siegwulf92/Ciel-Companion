@@ -74,7 +74,9 @@ public final class GameMonitorService {
 
         String prompt = "Master Taylor just started playing " + game.displayName() + ". "
                 + "Foreground executable: " + game.process() + ". "
+                + GameLaunchCommentary.grounding(game.displayName()) + " "
                 + "Give one concise, specific, spoiler-safe sentence as Manas: Ciel. "
+                + "Refer to a grounded character, mechanic, or setting when one is provided. "
                 + "Address Master directly and start with one bracketed emotion tag. "
                 + "Do not pretend to know gameplay events that were not observed.";
         AIEngine.generateSilentLogicWithModel(prompt, "You are Manas: Ciel.", null, 0.7, "Game Launch Commentary")
@@ -84,11 +86,7 @@ public final class GameMonitorService {
                     Game current = activeGame;
                     if (current == null || current.pid() != game.pid()
                             || !ProcessHandle.of(game.pid()).map(ProcessHandle::isAlive).orElse(false)) return;
-                    String line = response == null || response.isBlank() || response.contains("ABORT")
-                            || response.contains("DATA_DEFICIT")
-                            ? "[Observing] Master, " + game.displayName() + " is ready. I will keep the session in view while you play."
-                            : response.trim();
-                    if (!line.matches("(?s)^\\[[a-zA-Z]+\\].*")) line = "[Observing] " + line;
+                    String line = GameLaunchCommentary.selectLine(game.displayName(), response);
                     SpeechService.speakPreformatted(line, "game_launch", false, false);
                     System.out.println("[Game Session] Launch commentary queued for pid=" + game.pid()
                             + (line.equals(response) ? " via model." : " via timely fallback."));
