@@ -22,6 +22,8 @@ public class SystemMonitor {
     private static final OperatingSystem os = systemInfo.getOperatingSystem();
     
     private static long[] prevLoadTicks = new long[CentralProcessor.TickType.values().length];
+    private static volatile boolean cpuMetricsUnavailable = false;
+    private static volatile boolean processInventoryUnavailable = false;
 
     private static long virtualIdleStartTime = System.currentTimeMillis();
     private static long lastHardwareIdleMs = 0;
@@ -49,8 +51,17 @@ public class SystemMonitor {
     public record ProcessInfo(String name, double usage, int pid) {}
 
     public static SystemMetrics getSystemMetrics() {
-        double cpuLoad = processor.getSystemCpuLoadBetweenTicks(prevLoadTicks) * 100;
-        prevLoadTicks = processor.getSystemCpuLoadTicks();
+        double cpuLoad = 0.0;
+        if (!cpuMetricsUnavailable) {
+            try {
+                cpuLoad = processor.getSystemCpuLoadBetweenTicks(prevLoadTicks) * 100;
+                prevLoadTicks = processor.getSystemCpuLoadTicks();
+            } catch (RuntimeException unavailable) {
+                cpuMetricsUnavailable = true;
+                System.err.println("Ciel Warning: CPU metrics unavailable; using 0% fallback for this session: "
+                        + unavailable.getMessage());
+            }
+        }
 
         long availableMem = memory.getAvailable();
         long totalMem = memory.getTotal();
@@ -77,9 +88,24 @@ public class SystemMonitor {
         String activeProcName = activePid > 0 ? WindowsApiService.getProcessName(activePid) : "Unknown";
         String activeTitle = WindowsApiService.getActiveWindowTitle(WindowsApiService.INSTANCE.GetForegroundWindow());
 
-        Set<String> processes = os.getProcesses().stream()
-            .map(p -> p.getName().toLowerCase())
-            .collect(Collectors.toSet());
+        Set<String> processes;
+        if (processInventoryUnavailable) {
+            processes = Set.of();
+        } else try {
+            processes = os.getProcesses().stream()
+                .map(p -> p.getName().toLowerCase())
+                .collect(Collectors.toSet());
+        } catch (RuntimeException unavailable) {
+            // OSHI's Windows process-performance provider can be inaccessible
+            // to a non-elevated logon task (WMI/CIM denial or missing counters).
+            // Process inventory is advisory; it must never stop the main loop
+            // or flood the log until the JVM is killed.  Foreground-window and
+            // hardware metrics remain usable, and the next refresh retries.
+            processInventoryUnavailable = true;
+            System.err.println("Ciel Warning: Process inventory unavailable; using an empty process list for this session: "
+                    + unavailable.getMessage());
+            processes = Set.of();
+        }
 
         boolean isBrowser = activeProcName.matches(Settings.getBrowserProcessesRegex());
         boolean isFullScreen = WindowsApiService.isWindowFullscreen(WindowsApiService.INSTANCE.GetForegroundWindow());
