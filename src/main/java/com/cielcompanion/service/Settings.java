@@ -189,7 +189,7 @@ public class Settings {
                             props.getProperty("BREEZE_API_KEY", "")));
             BREEZE_VOICE_ID = firstNonBlank(System.getenv("BREEZE_VOICE_ID"),
                     props.getProperty("breeze.tts.voiceId", ""));
-            BREEZE_MODEL = props.getProperty("breeze.tts.model", "breeze-tts-2-multilingual");
+            BREEZE_MODEL = props.getProperty("breeze.tts.model", "breeze-tts-2");
             BREEZE_LANGUAGE_CODE = props.getProperty("breeze.tts.languageCode", "en");
             BREEZE_ENABLED = Boolean.parseBoolean(props.getProperty("breeze.tts.enabled", "true"));
             BREEZE_PREFER_ALL = Boolean.parseBoolean(props.getProperty("breeze.tts.preferAll", "true"));

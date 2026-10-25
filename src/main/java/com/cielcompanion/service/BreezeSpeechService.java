@@ -91,7 +91,10 @@ public final class BreezeSpeechService {
             body.addProperty("language_code", Settings.getBreezeLanguageCode());
             body.addProperty("instructions", instructions(style, pitch));
             JsonObject settings = new JsonObject();
-            settings.addProperty("speed", 1.0);
+            // Breeze's hosted API uses guidance_scale for instruction
+            // adherence; an unsupported speed field is silently ignored by
+            // some versions and rejected by others.
+            settings.addProperty("guidance_scale", 4.0);
             body.add("voice_settings", settings);
             byte[] request = body.toString().getBytes(StandardCharsets.UTF_8);
             try (OutputStream out = connection.getOutputStream()) { out.write(request); }
