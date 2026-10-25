@@ -74,6 +74,7 @@ public class Settings {
     private static boolean BREEZE_ENABLED;
     private static boolean BREEZE_PREFER_ALL;
     private static boolean BREEZE_CACHE_ENABLED;
+    private static boolean BREEZE_PRIME_OUTPUT;
     private static long BREEZE_DAILY_CREDIT_LIMIT;
 
     // --- NEW: AI ORCHESTRATION SETTINGS ---
@@ -194,6 +195,7 @@ public class Settings {
             BREEZE_ENABLED = Boolean.parseBoolean(props.getProperty("breeze.tts.enabled", "true"));
             BREEZE_PREFER_ALL = Boolean.parseBoolean(props.getProperty("breeze.tts.preferAll", "true"));
             BREEZE_CACHE_ENABLED = Boolean.parseBoolean(props.getProperty("breeze.tts.cache", "true"));
+            BREEZE_PRIME_OUTPUT = Boolean.parseBoolean(props.getProperty("breeze.tts.primeOutput", "false"));
             BREEZE_DAILY_CREDIT_LIMIT = Long.parseLong(props.getProperty("breeze.tts.dailyCreditLimit", "400"));
 
             AzureUsageTracker.setLimit(AZURE_MONTHLY_LIMIT_HOURS * 3600);
@@ -274,6 +276,7 @@ public class Settings {
     public static boolean isBreezeEnabled() { return BREEZE_ENABLED; }
     public static boolean isBreezePreferAll() { return BREEZE_PREFER_ALL; }
     public static boolean isBreezeCacheEnabled() { return BREEZE_CACHE_ENABLED; }
+    public static boolean isBreezePrimeOutput() { return BREEZE_PRIME_OUTPUT; }
     public static long getBreezeDailyCreditLimit() { return BREEZE_DAILY_CREDIT_LIMIT; }
 
     public static String getLlmPersonalityUrl() { return LLM_PERSONALITY_URL; }

@@ -460,6 +460,11 @@ public class AzureSpeechService {
         return file != null && file.isFile() && playWav(file, key, false);
     }
 
+    /** Play provider audio with an explicitly requested hardware warm-up. */
+    public static boolean playProviderWavFile(File file, String key, boolean primeOutput) {
+        return file != null && file.isFile() && playWav(file, key, primeOutput);
+    }
+
     /**
      * Put two low-level tone bursts in the pre-roll. A silent pre-roll does not wake
      * some powered speakers, so these sacrificial samples exercise the endpoint before
