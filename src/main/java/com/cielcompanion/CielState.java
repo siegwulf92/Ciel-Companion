@@ -48,9 +48,15 @@ public class CielState {
     private static boolean systemUpdateInProgress = false;
 
     public static void initialize(boolean warmBoot) {
+        initialize(warmBoot, false);
+    }
+
+    public static void initialize(boolean warmBoot, boolean updateBoot) {
         appStartTime = System.currentTimeMillis();
         isWarmBoot = warmBoot;
+        systemUpdateInProgress = updateBoot;
         System.out.println("Ciel Debug: CielState initialized. App start time recorded. Warm Boot: " + isWarmBoot);
+        if (updateBoot) System.out.println("Ciel Debug: Update boot detected; login greetings will be replaced by update status.");
 
         if (emotionManager != null) {
             emotionManager.triggerEmotion("Focused", 1.0, "Initialization");

@@ -571,6 +571,17 @@ public class CielController {
         long bootDelayMs = Settings.getFirstGreetingDelaySeconds() * 1000L;
         long loginDelayMs = Settings.getLoginGreetingDelaySeconds() * 1000L;
 
+        if (CielState.isSystemUpdateInProgress()) {
+            if (!CielState.isBootGreetingPlayed()) {
+                System.out.println("Ciel Debug: Update status announcement; suppressing boot and login greetings.");
+                SpeechService.speakPreformatted("Update applied, Master. I saved my work and resumed monitoring.",
+                        "paired_update_boot", false, true);
+                CielState.setBootGreetingPlayed(true);
+                CielState.setLoginGreetingPlayed(true);
+            }
+            return;
+        }
+
         if (CielState.isWarmBoot()) {
             if (!CielState.isBootGreetingPlayed()) {
                 System.out.println("Ciel Debug: Executing Warm Boot Greeting.");
