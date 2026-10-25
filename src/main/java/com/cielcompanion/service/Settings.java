@@ -3,6 +3,8 @@ package com.cielcompanion.service;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
@@ -62,6 +64,17 @@ public class Settings {
     private static long AZURE_MONTHLY_LIMIT_HOURS; 
     private static long AZURE_MONTHLY_LIMIT_CHARACTERS;
 
+    // BreezeBlue is deliberately environment-first: API keys must not be
+    // committed to ciel_secrets.properties or copied into paired releases.
+    private static String BREEZE_API_KEY;
+    private static String BREEZE_VOICE_ID;
+    private static String BREEZE_MODEL;
+    private static String BREEZE_LANGUAGE_CODE;
+    private static boolean BREEZE_ENABLED;
+    private static boolean BREEZE_PREFER_ALL;
+    private static boolean BREEZE_CACHE_ENABLED;
+    private static long BREEZE_DAILY_CREDIT_LIMIT;
+
     // --- NEW: AI ORCHESTRATION SETTINGS ---
     private static String LLM_PERSONALITY_URL; 
     private static String LLM_PERSONALITY_MODEL; 
@@ -90,17 +103,25 @@ public class Settings {
             throw new RuntimeException(e);
         }
 
-        try (InputStream isSecrets = Settings.class.getResourceAsStream("/ciel_secrets.properties")) {
-            if (isSecrets != null) {
-                try (InputStreamReader isrSecrets = new InputStreamReader(isSecrets, StandardCharsets.UTF_8)) {
-                    props.load(isrSecrets); 
-                    System.out.println("Ciel Debug: Secrets file loaded successfully.");
+        // Secrets are external to the application/release tree. An explicit
+        // CIEL_SECRETS_PATH may be supplied for paired machines; otherwise
+        // use the per-user location protected by Windows ACLs.
+        String configuredSecrets = System.getenv("CIEL_SECRETS_PATH");
+        Path externalSecrets = configuredSecrets != null && !configuredSecrets.isBlank()
+                ? Path.of(configuredSecrets)
+                : Path.of(System.getProperty("user.home"), ".cielcompanion", "secrets.properties");
+        try {
+            if (Files.isRegularFile(externalSecrets)) {
+                try (InputStream isSecrets = Files.newInputStream(externalSecrets);
+                     InputStreamReader isrSecrets = new InputStreamReader(isSecrets, StandardCharsets.UTF_8)) {
+                    props.load(isrSecrets);
+                    System.out.println("Ciel Debug: External secrets file loaded (path withheld).");
                 }
             } else {
-                System.out.println("Ciel Warning: ciel_secrets.properties not found. API features may be disabled.");
+                System.out.println("Ciel Warning: External secrets file unavailable; API features may be disabled.");
             }
         } catch (Exception e) {
-            System.err.println("Ciel Warning: Failed to load secrets file.");
+            System.err.println("Ciel Warning: Failed to load external secrets file; API features may be disabled.");
         }
 
         try {
@@ -157,6 +178,20 @@ public class Settings {
             AZURE_VOICE_NAME = props.getProperty("azure.speech.voiceName", "ja-JP-NanamiNeural");
             AZURE_MONTHLY_LIMIT_HOURS = Long.parseLong(props.getProperty("azure.speech.limitHours", "5"));
             AZURE_MONTHLY_LIMIT_CHARACTERS = Long.parseLong(props.getProperty("azure.speech.limitCharacters", "450000"));
+
+            // Accept both the documented lowercase property and the
+            // conventional uppercase secret-file name. Environment wins.
+            BREEZE_API_KEY = firstNonBlank(System.getenv("BREEZE_API_KEY"),
+                    firstNonBlank(props.getProperty("breeze.api.key", ""),
+                            props.getProperty("BREEZE_API_KEY", "")));
+            BREEZE_VOICE_ID = firstNonBlank(System.getenv("BREEZE_VOICE_ID"),
+                    props.getProperty("breeze.tts.voiceId", ""));
+            BREEZE_MODEL = props.getProperty("breeze.tts.model", "breeze-tts-2-multilingual");
+            BREEZE_LANGUAGE_CODE = props.getProperty("breeze.tts.languageCode", "en");
+            BREEZE_ENABLED = Boolean.parseBoolean(props.getProperty("breeze.tts.enabled", "true"));
+            BREEZE_PREFER_ALL = Boolean.parseBoolean(props.getProperty("breeze.tts.preferAll", "true"));
+            BREEZE_CACHE_ENABLED = Boolean.parseBoolean(props.getProperty("breeze.tts.cache", "true"));
+            BREEZE_DAILY_CREDIT_LIMIT = Long.parseLong(props.getProperty("breeze.tts.dailyCreditLimit", "400"));
 
             AzureUsageTracker.setLimit(AZURE_MONTHLY_LIMIT_HOURS * 3600);
             AzureUsageTracker.setCharacterLimit(AZURE_MONTHLY_LIMIT_CHARACTERS);
@@ -228,6 +263,14 @@ public class Settings {
     public static String getAzureSpeechKey() { return AZURE_SPEECH_KEY; }
     public static String getAzureSpeechRegion() { return AZURE_SPEECH_REGION; }
     public static String getAzureVoiceName() { return AZURE_VOICE_NAME; }
+    public static String getBreezeApiKey() { return BREEZE_API_KEY; }
+    public static String getBreezeVoiceId() { return BREEZE_VOICE_ID; }
+    public static String getBreezeModel() { return BREEZE_MODEL; }
+    public static String getBreezeLanguageCode() { return BREEZE_LANGUAGE_CODE; }
+    public static boolean isBreezeEnabled() { return BREEZE_ENABLED; }
+    public static boolean isBreezePreferAll() { return BREEZE_PREFER_ALL; }
+    public static boolean isBreezeCacheEnabled() { return BREEZE_CACHE_ENABLED; }
+    public static long getBreezeDailyCreditLimit() { return BREEZE_DAILY_CREDIT_LIMIT; }
 
     public static String getLlmPersonalityUrl() { return LLM_PERSONALITY_URL; }
     public static String getLlmPersonalityModel() { return LLM_PERSONALITY_MODEL; }
@@ -242,4 +285,8 @@ public class Settings {
     public static String getLlmOnlineFallbackUrl() { return LLM_ONLINE_FALLBACK_URL; }
     public static String getLlmOnlineFallbackKey() { return LLM_ONLINE_FALLBACK_KEY; }
     public static boolean isAiObserverEnabled() { return AI_OBSERVER_ENABLED; }
+
+    private static String firstNonBlank(String preferred, String fallback) {
+        return preferred != null && !preferred.isBlank() ? preferred : fallback;
+    }
 }

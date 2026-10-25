@@ -441,6 +441,15 @@ public class AzureSpeechService {
     }
 
     /**
+     * Plays a provider-generated WAV through the same guarded output path as
+     * Azure.  This is intentionally provider-neutral so Breeze can fall back
+     * without duplicating Ciel's pause/GUI/audio cleanup behavior.
+     */
+    public static boolean playWavFile(File file, String key) {
+        return file != null && file.isFile() && playWav(file, key);
+    }
+
+    /**
      * Put two low-level tone bursts in the pre-roll. A silent pre-roll does not wake
      * some powered speakers, so these sacrificial samples exercise the endpoint before
      * speech begins. The second burst is near the end of the settling window so the

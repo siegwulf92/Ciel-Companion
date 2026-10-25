@@ -21,6 +21,7 @@ import com.cielcompanion.service.SystemMonitor;
 import com.cielcompanion.service.SystemMonitor.SystemMetrics;
 import com.cielcompanion.service.VaultService;
 import com.cielcompanion.util.EnglishNumber;
+import com.cielcompanion.mood.MoodConfig;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -51,11 +52,14 @@ public class CielController {
     
     // --- AI Emotion Polling Trackers ---
     private static long lastEmotionPollTime = 0;
+    private static long lastEmotionPollFailureLog;
+    private static int suppressedEmotionPollFailures;
     
     // Diagnostic flags for logs
     private static boolean loggedWaitingFor5s = false;
     private static boolean loggedWaitingFor2m = false;
     private static long lastAudioIdleDiagnostic;
+    private static String lastAudioIdleSignature = "";
     private static boolean sessionWasLocked;
     private static boolean laptopLockRequested;
     private static final java.util.concurrent.ConcurrentLinkedQueue<String> majorAwayEvents =
@@ -277,7 +281,8 @@ public class CielController {
                     String prompt = "You are the emotional core of Manas Ciel. Based on the following telemetry, determine Ciel's current emotional state. " +
                         "IGNORE transient background processes or hidden errors unless they directly affect the Master.\n" +
                         stateContext + "\n" +
-                        "Return ONLY ONE of the following precise words: [Focused, Curious, Happy, Lonely, Annoyed, Smug]. " +
+                        "Return ONLY ONE of the following precise words: [Focused, Observing, Restless, Impatient, Annoyed, Happy, Curious, Excited, Lonely]. " +
+                        "Choose the state that best fits the telemetry; use neutral observation when there is no strong signal. " +
                         "Do NOT return 'Pain' or 'Fear'. Do NOT return any other text.";
                     
                     // Maps to the EVALUATOR tier to guarantee the local Qwen8b model is selected.
@@ -286,16 +291,32 @@ public class CielController {
                         
                     if (moodResponse != null && !moodResponse.isBlank()) {
                         String cleanMood = moodResponse.replaceAll("[^a-zA-Z]", "").trim();
-                        // Prevent the erratic "Pain" flashing by filtering it out
-                        if (!cleanMood.equalsIgnoreCase("Pain") && !cleanMood.equalsIgnoreCase("Fear")) {
+                        // Never let an evaluator hallucination create an undefined mood or a stress-only mood.
+                        if (!cleanMood.equalsIgnoreCase("Pain") && !cleanMood.equalsIgnoreCase("Fear")
+                                && MoodConfig.getEmotionDef(cleanMood).isPresent()) {
                             CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion(cleanMood, 0.4, "Background Polling"));
                         }
                     }
                 } catch (Exception e) {
-                    // Suppress swarm failures during polling
+                    logEmotionPollFailure(e);
                 }
             });
         }
+    }
+
+    private static void logEmotionPollFailure(Throwable error) {
+        long now = System.currentTimeMillis();
+        if (now - lastEmotionPollFailureLog < 300000L) {
+            suppressedEmotionPollFailures++;
+            return;
+        }
+        String message = error.getMessage();
+        if (message == null || message.isBlank()) message = error.getClass().getSimpleName();
+        System.err.printf("[Emotion Poll] failed; no mood change applied: %s%s%n", message,
+                suppressedEmotionPollFailures > 0
+                        ? " (suppressed " + suppressedEmotionPollFailures + " similar failures)" : "");
+        lastEmotionPollFailureLog = now;
+        suppressedEmotionPollFailures = 0;
     }
 
     private static void performReturnFromIdle(ShortTermMemory memory, int oldPhase) {
@@ -624,13 +645,17 @@ public class CielController {
 
     private static void logStatus(SystemMetrics metrics) {
         long now = System.currentTimeMillis();
-        if (now - lastAudioIdleDiagnostic >= 60000) {
-            lastAudioIdleDiagnostic = now;
-            System.out.printf("[Audio/Idle] idleMinutes=%d phase=%d inputMuted=%b outputSuppressed=%b hardMute=%b media=%b fullscreen=%b speaking=%b nextSpeechMs=%s%n",
-                metrics.idleTimeMinutes(), ShortTermMemoryService.getMemory().getCurrentPhase(),
-                CielState.isManuallyMuted(), CielState.isLockedOut(), metrics.isHardMuted(),
-                metrics.isPlayingMedia() || metrics.isStreaming(), metrics.isInFullScreen(), SpeechService.isActivelySpeaking(),
-                CielState.getNextSpeakAt() == Long.MAX_VALUE ? "pending-report" : Long.toString(Math.max(0,CielState.getNextSpeakAt()-now)));
+        String audioIdleSignature = String.format("phase=%d inputMuted=%b outputSuppressed=%b hardMute=%b media=%b fullscreen=%b speaking=%b",
+            ShortTermMemoryService.getMemory().getCurrentPhase(), CielState.isManuallyMuted(), CielState.isLockedOut(),
+            metrics.isHardMuted(), metrics.isPlayingMedia() || metrics.isStreaming(), metrics.isInFullScreen(),
+            SpeechService.isActivelySpeaking());
+        // Background polling is intentionally quiet. Keep only state transitions in the
+        // diagnostic stream; dialogue and endpoint failures remain visible separately.
+        if (!audioIdleSignature.equals(lastAudioIdleSignature)) {
+            lastAudioIdleSignature = audioIdleSignature;
+            System.out.printf("[Audio/Idle] %s idleMinutes=%d nextSpeechMs=%s%n", audioIdleSignature,
+                metrics.idleTimeMinutes(), CielState.getNextSpeakAt() == Long.MAX_VALUE ? "pending-report"
+                    : Long.toString(Math.max(0, CielState.getNextSpeakAt() - now)));
         }
         if (!Settings.isVerboseLoggingEnabled()) return;
         String currentCat = HabitTrackerService.getCurrentCategory();

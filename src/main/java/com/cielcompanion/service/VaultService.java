@@ -543,8 +543,13 @@ public class VaultService {
         AIEngine.generateSilentLogicWithModel(prompt, system, null, 0.2, "Campaign Analysis")
                 .whenComplete((suggestions, error) -> {
                     if (error != null || suggestions == null || suggestions.isBlank() || isErrorResponse(suggestions)) {
+                        Throwable cause = error;
+                        while (cause != null && cause.getCause() != null) cause = cause.getCause();
+                        String reason = error != null
+                                ? "error=" + cause.getClass().getSimpleName() + ":" + (cause.getMessage() == null ? "no message" : cause.getMessage())
+                                : (suggestions == null || suggestions.isBlank() ? "empty response" : "provider returned an error response");
                         System.err.println("Ciel Campaign Suggestions: failed; request remains queued: "
-                                + requestPath.getFileName() + (error == null ? "" : " type=" + error.getClass().getSimpleName()));
+                                + requestPath.getFileName() + " " + reason);
                         return;
                     }
                     saveFileAndArchive(requestPath, suggestions, suggestionsDir, requestsArchiveDir,

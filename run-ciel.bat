@@ -12,7 +12,9 @@ set "PROJECT_DIR=%~dp0"
 echo [DEBUG] Project Directory set to: %PROJECT_DIR%
 
 REM Set the path to the JAR file
-set "JAR_PATH=%PROJECT_DIR%target\ciel-idle-companion-1.0-SNAPSHOT.jar"
+set "JAR_PATH=%PROJECT_DIR%target\ciel-idle-companion-1.0-SNAPSHOT-breeze.jar"
+if not exist "%JAR_PATH%" set "JAR_PATH=%PROJECT_DIR%target\ciel-idle-companion-1.0-SNAPSHOT.jar"
+if not exist "%JAR_PATH%" set "JAR_PATH=%PROJECT_DIR%target\ciel-idle-companion-1.0-SNAPSHOT-codex.jar"
 echo [DEBUG] JAR Path set to: %JAR_PATH%
 
 REM Check if the JAR file exists before trying to run it

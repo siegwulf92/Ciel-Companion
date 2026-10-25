@@ -57,6 +57,7 @@ public class SpeechService {
     public static void initialize(VoiceListener listener) {
         voiceListener = listener;
         AzureSpeechService.initialize();
+        BreezeSpeechService.initialize();
         System.out.println("Ciel Debug: SpeechService initialized.");
     }
 
@@ -262,7 +263,7 @@ public class SpeechService {
                             .collect(Collectors.toList());
 
                     if (!activeEmotions.isEmpty()) {
-                        Emotion dominant = activeEmotions.get(0);
+                        Emotion dominant = CielState.getEmotionManager().get().getSpeechEmotion().orElse(activeEmotions.get(0));
                         Optional<MoodConfig.EmotionDefinition> domDef = MoodConfig.getEmotionDef(dominant.name());
                         if (domDef.isPresent()) {
                             pitch = domDef.get().pitch();
@@ -276,6 +277,13 @@ public class SpeechService {
             final String finalStyle = style;
             final String finalPitch = pitch;
             final String finalCleanText = cleanText;
+            String deliverySource = attitude;
+            if ("Professional".equals(attitude)) {
+                deliverySource = CielState.getEmotionManager().flatMap(com.cielcompanion.mood.EmotionManager::getSpeechEmotion)
+                        .map(Emotion::name).orElse("Professional");
+            }
+            System.out.printf("Ciel Debug (Voice): delivery emotion=%s style=%s pitch=%s%n",
+                    deliverySource, finalStyle, finalPitch);
 
             currentSpeechTask = speechExecutor.submit(() -> {
                 if (taskGeneration != speechGeneration.get()) return;
@@ -327,7 +335,8 @@ public class SpeechService {
                     if (taskGeneration != speechGeneration.get() || Thread.currentThread().isInterrupted()) return;
 
                     boolean audible = executeSpeechBlocking(textToSpeak, speechKey, Settings.getTtsRate(),
-                            finalStyle, finalPitch, langCode, taskGeneration);
+                            finalStyle, finalPitch, langCode, taskGeneration,
+                            shouldUseBreeze(key, isAlreadyCached));
                     completed = audible && taskGeneration == speechGeneration.get() && !Thread.currentThread().isInterrupted();
                 } finally {
                     if (hasEnqueued) {
@@ -433,7 +442,8 @@ public class SpeechService {
                         }
 
                         if (taskGeneration != speechGeneration.get() || Thread.currentThread().isInterrupted()) break;
-                        executeSpeechBlocking(textToSpeak, speechKey, Settings.getTtsRate(), style, pitch, langCode, taskGeneration);
+                        executeSpeechBlocking(textToSpeak, speechKey, Settings.getTtsRate(), style, pitch, langCode, taskGeneration,
+                                shouldUseBreeze(line.key(), isAlreadyCached));
 
                         if (sequenceCancelled || Thread.currentThread().isInterrupted()
                                 || taskGeneration != speechGeneration.get()) {
@@ -464,7 +474,7 @@ public class SpeechService {
     }
 
     private static boolean executeSpeechBlocking(String text, String key, int rate, String style, String pitch,
-                                              String langCode, long taskGeneration) {
+                                              String langCode, long taskGeneration, boolean breezeEligible) {
         if (WindowsApiService.isSessionLocked() || Thread.currentThread().isInterrupted()
                 || taskGeneration != speechGeneration.get()) return false;
 
@@ -475,9 +485,21 @@ public class SpeechService {
 
             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
 
-            boolean azureSuccess = false;
+            boolean breezeSuccess = false;
+            // Breeze is the configured primary provider. Its own cache and
+            // daily credit guard prevent repetitive lines from consuming the
+            // daily grant; Azure remains the immediate fallback for any
+            // Breeze/API/playback failure or exhausted quota.
+            if (BreezeSpeechService.isAvailable() && breezeEligible) {
+                breezeSuccess = BreezeSpeechService.speak(text, key, style, pitch, langCode);
+                if (breezeSuccess) {
+                    System.out.println("Ciel Debug: Breeze Speech successful (dynamic dialogue).");
+                }
+            }
 
-            if (AzureSpeechService.isAvailable()) {
+            boolean azureSuccess = breezeSuccess;
+
+            if (!azureSuccess && AzureSpeechService.isAvailable()) {
                 azureSuccess = AzureSpeechService.speak(text, key, style, pitch, langCode);
                 if (azureSuccess) {
                     System.out.println("Ciel Debug: Azure Speech successful (Key: " + (key != null ? key : "Dynamic") + ", Style: " + style + ")");
@@ -536,6 +558,15 @@ public class SpeechService {
         }
     }
 
+    private static boolean shouldUseBreeze(String originalKey, boolean alreadyCached) {
+        if (Settings.isBreezePreferAll()) return true;
+        if (alreadyCached) return false;
+        if (originalKey == null || originalKey.isBlank()) return true;
+        String normalized = originalKey.toLowerCase(java.util.Locale.ROOT);
+        return normalized.startsWith("media_") || normalized.startsWith("game_")
+                || normalized.contains("dynamic") || normalized.contains("commentary");
+    }
+
     private static String applyHumanVariance(String basePitch) {
         if (basePitch.equals("default")) return "+0%";
         try {
@@ -571,8 +602,7 @@ public class SpeechService {
                 }
             }
 
-            return manager.getEmotionalState().getActiveEmotions().values().stream()
-                    .max(Comparator.comparingDouble(Emotion::intensity))
+            return manager.getSpeechEmotion()
                     .map(emotion -> MoodConfig.getEmotionDef(emotion.name())
                             .map(definition -> new SpeechMood(emotion.name(),
                                     normalizeSpeechStyle(definition.ssmlStyle()),

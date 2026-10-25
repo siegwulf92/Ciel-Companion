@@ -139,7 +139,7 @@ public class AIEngine {
             }
 
             String localFallback = localKatakanaFallback(englishText);
-            System.err.println("[Speech Phonetics] Formatter endpoint unavailable; using the offline phoneme converter.");
+            System.err.println("[Speech Phonetics] Formatter endpoint unavailable or returned unusable output; using the offline phoneme converter.");
             return localFallback;
         }, translationExecutor);
     }
@@ -208,7 +208,10 @@ public class AIEngine {
                         System.err.println("[Raphael — Japanese Speech Formatting] Transliteration endpoint returned HTTP " + response.statusCode() + ".");
                     }
             } catch (Exception e) {
-                System.err.println("[Raphael — Japanese Speech Formatting] Transliteration request failed: " + e.getMessage());
+            String detail = e.getMessage();
+            if (detail == null || detail.isBlank()) detail = e.getClass().getSimpleName();
+            System.err.println("[Raphael — Japanese Speech Formatting] Transliteration request failed at " + url
+                    + ": " + detail);
             }
         } finally {
             activeSwarmTasks.decrementAndGet();

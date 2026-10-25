@@ -20,6 +20,15 @@ public class EmotionalState {
         MoodConfig.EmotionDefinition def = MoodConfig.getEmotionDef(name).orElse(null);
         if (def == null) return;
 
+        // Keep contradictory delivery from leaking into one spoken line. Sadness,
+        // pain, and anger may coexist; bright/joyful states do not coexist with
+        // anger because that produces an incoherent voice and GUI blend.
+        if (isAngry(name)) {
+            activeEmotions.keySet().removeIf(EmotionalState::isJoyful);
+        } else if (isJoyful(name)) {
+            activeEmotions.keySet().removeIf(EmotionalState::isAngry);
+        }
+
         String ssmlStyle = def.ssmlStyle();
         String pitch = def.pitch();
 
@@ -31,6 +40,14 @@ public class EmotionalState {
         } else {
             activeEmotions.put(name, new Emotion(name, newIntensity, cause, System.currentTimeMillis(), ssmlStyle, pitch));
         }
+    }
+
+    private static boolean isAngry(String name) {
+        return "Annoyed".equalsIgnoreCase(name) || "Impatient".equalsIgnoreCase(name);
+    }
+
+    private static boolean isJoyful(String name) {
+        return "Happy".equalsIgnoreCase(name) || "Excited".equalsIgnoreCase(name);
     }
 
     public void applyDecay(long deltaTimeMillis) {

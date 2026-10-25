@@ -3,6 +3,8 @@ package com.cielcompanion.mood;
 import com.cielcompanion.CielState;
 import com.cielcompanion.service.SystemMonitor;
 import com.cielcompanion.service.SystemMonitor.SystemMetrics; 
+import java.util.Comparator;
+import java.util.Optional;
 
 public class EmotionManager {
     private final EmotionalState emotionalState = new EmotionalState();
@@ -84,5 +86,21 @@ public class EmotionManager {
 
     public EmotionalState getEmotionalState() {
         return emotionalState;
+    }
+
+    /**
+     * Select the emotion that should drive voice delivery. Transient system
+     * overload is retained for the GUI, but should not drown out a conversational
+     * mood when another usable emotion is active.
+     */
+    public Optional<Emotion> getSpeechEmotion() {
+        Comparator<Emotion> stableStrength = Comparator.comparingDouble(Emotion::intensity)
+                .thenComparing(Emotion::name);
+        Optional<Emotion> conversational = emotionalState.getActiveEmotions().values().stream()
+                .filter(emotion -> !"Pain".equalsIgnoreCase(emotion.name()))
+                .max(stableStrength);
+        return conversational.isPresent()
+                ? conversational
+                : emotionalState.getActiveEmotions().values().stream().max(stableStrength);
     }
 }
