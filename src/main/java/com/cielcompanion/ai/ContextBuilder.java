@@ -1,6 +1,7 @@
 package com.cielcompanion.ai;
 
 import com.cielcompanion.CielState;
+import com.cielcompanion.service.LoreDocumentStore;
 import com.cielcompanion.dnd.LoreService;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
@@ -85,7 +86,7 @@ public class ContextBuilder {
             sb.append("--- SWARM AUTONOMY TOOLS ---\n");
             sb.append("You possess autonomous Swarm Agents. If you are asked for real-world, real-time, or factual information (like crypto prices, weather, news), you MUST use a tool. To use a tool, your ENTIRE output must be exactly the tool command.\n");
             sb.append("- To search the live internet: [WEB_SEARCH] your search query\n");
-            sb.append("- To search your deep long-term Markdown Vault (for past conversations, preferences, or Tensura Lore/D&D notes): [MEMORY_SEARCH] your search query\n");
+            sb.append("- Tensura source passages are retrieved locally when the Master asks about them; cite their volume and excerpt when supplied.\n");
             sb.append("If you use a tool, DO NOT output any emotion tags or conversational text. The system will intercept the tool, fetch the data, and prompt you again with the new information so you can speak.\n\n");
 
             // 5. INJECT CURRENT PC CONTEXT (NEW SCREEN AWARENESS)
@@ -97,7 +98,12 @@ public class ContextBuilder {
                 sb.append("You may use this live context to make organic, highly personalized observations about what the Master is currently looking at, watching, or playing. Do NOT bring it up unless relevant or prompted.\n\n");
             }
 
-            // Removed TensuraKnowledgeService injection - Ciel will now use [MEMORY_SEARCH] to access the dynamic Obsidian Vault instead!
+            if (CielState.getCurrentMode() != OperatingMode.DND_ASSISTANT && userMessage != null
+                    && userMessage.toLowerCase().matches("(?s).*(tensura|rimuru|veldora|diablo|shion|milim|raphael|beelzebuth|light novel|ln volume|tempest).*")) {
+                String sourcedLore = LoreDocumentStore.search(userMessage);
+                if (!sourcedLore.isBlank()) sb.append("\n--- LOCAL TENSURA SOURCE RETRIEVAL ---\n")
+                        .append(sourcedLore).append("\n");
+            }
         }
         
         return sb.toString();

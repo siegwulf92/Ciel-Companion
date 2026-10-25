@@ -61,7 +61,8 @@ public class VaultService {
     private static final Map<Path, Long> processingCache = new ConcurrentHashMap<>();
     private static final AtomicBoolean hasWrittenFinalLog = new AtomicBoolean(false);
     
-    private static final long LORE_COOLDOWN_MS = 30 * 60 * 1000L; 
+    // One novel start per three hours, even after a failed checkpoint or JVM restart.
+    private static final long LORE_COOLDOWN_MS = 3 * 60 * 60 * 1000L;
     private static final List<Path> loreBatchQueue = Collections.synchronizedList(new ArrayList<>());
     private static ScheduledFuture<?> loreDebounceTask = null;
     private static final ScheduledExecutorService debounceExecutor = Executors.newSingleThreadScheduledExecutor();
@@ -117,7 +118,26 @@ public class VaultService {
             Files.createDirectories(vaultRoot.resolve("lore").resolve("Events"));
             Files.createDirectories(vaultRoot.resolve("lore").resolve("Indexes"));
 
+            // Older runs archived some volumes without ever producing a transcript.
+            // Put those source texts back in the ordered queue without removing the archive.
+            for (int volume = 1; volume <= LoreDocumentStore.MAX_LN_VOLUME; volume++) {
+                String name = "LN Volume " + volume;
+                Path request = requestsDir.resolve(name + ".md");
+                Path archived = requestsArchiveDir.resolve(name + ".md");
+                Path transcript = vaultRoot.resolve("lore").resolve("Transcripts")
+                        .resolve(name + "_Cleaned.md");
+                if (!Files.exists(request) && Files.isRegularFile(archived) && !Files.exists(transcript)) {
+                    Files.copy(archived, request);
+                    System.out.println("Ciel Lore Recovery: restored unprocessed " + name + " to queue.");
+                }
+            }
+
             System.out.println("Ciel Debug: VaultService initialized at " + vaultRoot);
+
+            taskExecutor.submit(VaultService::refreshLoreLibrary);
+            debounceExecutor.scheduleWithFixedDelay(
+                    () -> taskExecutor.submit(VaultService::refreshLoreLibrary),
+                    15, 15, TimeUnit.MINUTES);
             
             startWatcher();
             
@@ -208,14 +228,14 @@ public class VaultService {
         try (var states = Files.list(pipelineStateDir)) {
             states.filter(p -> p.getFileName().toString().endsWith(".json")).forEach(p -> {
                 PipelineState state = loadState(p);
-                if (state == null) return;
+                if (state == null || state.fileName.isBlank() || state.taskId.isBlank()) return;
                 if (MemoryService.getFact("pipeline_completed_" + state.taskId).isPresent()) {
                     deleteState(state.fileName);
                     return;
                 }
                 Path source = requestsDir.resolve(state.fileName);
                 Path archived = requestsArchiveDir.resolve(state.fileName);
-                if (Files.exists(archived)) {
+                if (Files.exists(archived) && !Files.exists(source)) {
                     // The source was archived, so restore deterministic post-run indexing before cleanup.
                     String name = state.fileName.replaceFirst("(?i)\\.(md|txt)$", "");
                     Path transcript = vaultRoot.resolve("lore").resolve("Transcripts").resolve(name + "_Cleaned.md");
@@ -237,6 +257,12 @@ public class VaultService {
     private static void moveAtomically(Path source, Path target) throws IOException {
         try { Files.move(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE); }
         catch (AtomicMoveNotSupportedException e) { Files.move(source, target, StandardCopyOption.REPLACE_EXISTING); }
+    }
+
+    private static void refreshLoreLibrary() {
+        String campaign = Settings.getDndCampaignPath();
+        Path campaignRoot = campaign == null || campaign.isBlank() ? null : Paths.get(campaign);
+        LoreDocumentStore.initialize(vaultRoot, campaignRoot);
     }
 
     private static void writeAtomically(Path path, String content) throws IOException {
@@ -566,6 +592,36 @@ public class VaultService {
         }
     }
 
+    private static long lastLoreStartMillis() {
+        Path schedule = pipelineStateDir.resolve("lore_schedule.json");
+        if (!Files.isRegularFile(schedule)) return 0;
+        try {
+            JsonObject state = JsonParser.parseString(Files.readString(schedule, StandardCharsets.UTF_8))
+                    .getAsJsonObject();
+            return Math.max(0, state.get("lastVolumeStartedEpochMs").getAsLong());
+        } catch (Exception e) {
+            // A damaged throttle record must not unleash the entire backlog.
+            System.err.println("Ciel Lore Schedule: unreadable throttle record; holding the queue until repaired.");
+            return System.currentTimeMillis() - LORE_COOLDOWN_MS + TimeUnit.HOURS.toMillis(2);
+        }
+    }
+
+    private static void recordLoreStart(Path file) throws IOException {
+        JsonObject state = new JsonObject();
+        state.addProperty("lastVolumeStartedEpochMs", System.currentTimeMillis());
+        state.addProperty("fileName", file.getFileName().toString());
+        writeAtomically(pipelineStateDir.resolve("lore_schedule.json"), state.toString());
+    }
+
+    private static Path earliestPendingNovel() throws IOException {
+        try (var pending = Files.list(requestsDir)) {
+            return pending.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().matches("(?i)LN Volume ([1-9]|1[0-9]|2[0-3])\\.md"))
+                    .min(Comparator.comparingInt(VaultService::extractSortNumber))
+                    .orElse(null);
+        }
+    }
+
     private static boolean isErrorResponse(String response) {
         if (response == null || response.isBlank()) return true;
         String l = response.toLowerCase();
@@ -575,10 +631,48 @@ public class VaultService {
     private static void startLoreBatch() {
         Path targetFile = null;
         synchronized(loreBatchQueue) {
+            loreDebounceTask = null;
             if (activeLorePaths.size() >= MAX_CONCURRENT_LORE_FILES || loreBatchQueue.isEmpty()) return;
+            long wait = LORE_COOLDOWN_MS - (System.currentTimeMillis() - lastLoreStartMillis());
+            if (wait > 0) {
+                loreDebounceTask = debounceExecutor.schedule(VaultService::startLoreBatch, wait,
+                        TimeUnit.MILLISECONDS);
+                System.out.println("Ciel Lore Schedule: next volume deferred for "
+                        + TimeUnit.MILLISECONDS.toMinutes(wait) + " minutes; queued=" + loreBatchQueue.size());
+                return;
+            }
+            try {
+                Path earliest = earliestPendingNovel();
+                if (earliest != null && !loreBatchQueue.contains(earliest)) {
+                    loreDebounceTask = debounceExecutor.schedule(VaultService::startLoreBatch, 1,
+                            TimeUnit.MINUTES);
+                    System.out.println("Ciel Lore Schedule: waiting for earlier volume "
+                            + earliest.getFileName() + " to enter the queue.");
+                    return;
+                }
+                if (earliest != null) {
+                    loreBatchQueue.remove(earliest);
+                    loreBatchQueue.add(0, earliest);
+                }
+            } catch (IOException e) {
+                loreDebounceTask = debounceExecutor.schedule(VaultService::startLoreBatch, 1,
+                        TimeUnit.MINUTES);
+                System.err.println("Ciel Lore Schedule: cannot verify volume order; holding queue: " + e.getMessage());
+                return;
+            }
             for (Iterator<Path> it = loreBatchQueue.iterator(); it.hasNext();) {
                 Path candidate = it.next();
                 if (activeLorePaths.add(candidate)) {
+                    try {
+                        recordLoreStart(candidate);
+                    } catch (IOException e) {
+                        activeLorePaths.remove(candidate);
+                        loreDebounceTask = debounceExecutor.schedule(VaultService::startLoreBatch, 1,
+                                TimeUnit.MINUTES);
+                        System.err.println("Ciel Lore Schedule: could not persist throttle; volume held: "
+                                + e.getMessage());
+                        return;
+                    }
                     targetFile = candidate;
                     it.remove();
                     break;
@@ -746,6 +840,7 @@ public class VaultService {
                     Files.move(processingFile, archivePath, StandardCopyOption.REPLACE_EXISTING);
 
                     createGroundedLoreIndex(outputPath, originalName);
+                    taskExecutor.submit(VaultService::refreshLoreLibrary);
                     MemoryService.addFact(new Fact("pipeline_completed_" + state.taskId, "true", System.currentTimeMillis(), "system_state", "system", 1));
                     deleteState(state.fileName);
 
@@ -821,6 +916,7 @@ public class VaultService {
             StringBuilder index = new StringBuilder("---\nstatus: review-required\nseries: \"That Time I Got Reincarnated as a Slime\"\n---\n\n")
                     .append("# ").append(originalName).append(" — Lore Index\n\n")
                     .append("Source transcript: [[../Transcripts/").append(transcriptPath.getFileName().toString().replace(".md", ""))
+                    .append("]]\nRaw novel source: [[../Raw/").append(originalName)
                     .append("]]\n\nAI-extracted facts below are evidence-checked candidates. Review them for accuracy and spoiler placement before approving.\n");
             if (Files.isDirectory(volumeReview)) {
                 try (var notes = Files.walk(volumeReview)) {
