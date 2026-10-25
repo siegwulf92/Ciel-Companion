@@ -72,6 +72,11 @@ public class CielController {
 
     public static void checkAndSpeak() {
         try {
+            // Profile and secret changes are picked up on the next safe loop
+            // without restarting the companion. Reload is throttled inside
+            // Settings and reinitializes the selected TTS provider only when
+            // the external files actually changed.
+            Settings.reloadIfChanged();
             if (WindowsApiService.isSessionLocked()) {
                 if (!sessionWasLocked) {
                     sessionWasLocked = true;

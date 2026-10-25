@@ -8,8 +8,19 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
+import java.util.Locale;
 
 public class Settings {
+
+    private static final Object SETTINGS_LOCK = new Object();
+    private static volatile long profileLastModified = Long.MIN_VALUE;
+    private static volatile long secretsLastModified = Long.MIN_VALUE;
+    private static volatile long lastReloadCheck;
+    private static String COMPANION_NAME;
+    private static String COMPANION_PERSONA;
+    private static String TTS_PRIMARY_PROVIDER;
+    private static String TTS_FALLBACK_PROVIDER;
+    private static String TTS_INSTRUCTIONS;
 
     private static String VOICE_NAME_HINT;
     private static String VOICE_LANGUAGE_CODE;
@@ -74,6 +85,9 @@ public class Settings {
     private static boolean BREEZE_ENABLED;
     private static boolean BREEZE_PREFER_ALL;
     private static boolean BREEZE_CACHE_ENABLED;
+    private static boolean BREEZE_PREFETCH_ENABLED;
+    private static boolean BREEZE_DYNAMIC_PRIMARY;
+    private static long BREEZE_WARMUP_MIN_ENTRIES;
     private static boolean BREEZE_PRIME_OUTPUT;
     private static long BREEZE_DAILY_CREDIT_LIMIT;
 
@@ -93,6 +107,12 @@ public class Settings {
     private static boolean AI_OBSERVER_ENABLED;
 
     public static void initialize() {
+        synchronized (SETTINGS_LOCK) {
+            loadSettings();
+        }
+    }
+
+    private static void loadSettings() {
         Properties props = new Properties();
         
         try (InputStream is = Settings.class.getResourceAsStream("/ciel_settings.properties")) {
@@ -126,7 +146,34 @@ public class Settings {
             System.err.println("Ciel Warning: Failed to load external secrets file; API features may be disabled.");
         }
 
+        // Non-secret user overrides live outside the JAR so a profile can be
+        // customized per person/device. Secret-looking keys are rejected from
+        // this layer and remain restricted to the protected secrets file.
+        Path profile = resolveProfilePath();
         try {
+            if (Files.isRegularFile(profile)) {
+                Properties overrides = new Properties();
+                try (InputStream input = Files.newInputStream(profile);
+                     InputStreamReader reader = new InputStreamReader(input, StandardCharsets.UTF_8)) {
+                    overrides.load(reader);
+                }
+                for (String key : overrides.stringPropertyNames()) {
+                    if (!isSensitiveProperty(key)) props.setProperty(key, overrides.getProperty(key));
+                }
+                System.out.println("Ciel Debug: External companion profile loaded.");
+            }
+        } catch (Exception e) {
+            System.err.println("Ciel Warning: Failed to load companion profile; using prior settings: "
+                    + e.getClass().getSimpleName());
+        }
+
+        try {
+            COMPANION_NAME = props.getProperty("ciel.companion.name", "Ciel");
+            COMPANION_PERSONA = props.getProperty("ciel.companion.persona",
+                    "warm, attentive, expressive personal AI companion");
+            TTS_PRIMARY_PROVIDER = props.getProperty("ciel.tts.primaryProvider", "breeze");
+            TTS_FALLBACK_PROVIDER = props.getProperty("ciel.tts.fallbackProvider", "azure");
+            TTS_INSTRUCTIONS = props.getProperty("ciel.tts.instructions", "");
             VOICE_NAME_HINT = props.getProperty("ciel.voiceNameHint", "Microsoft Haruka Desktop");
             VOICE_LANGUAGE_CODE = props.getProperty("ciel.voice.LanguageCode", "ja-JP");
             TTS_RATE = Integer.parseInt(props.getProperty("ciel.ttsRate", "0"));
@@ -195,6 +242,9 @@ public class Settings {
             BREEZE_ENABLED = Boolean.parseBoolean(props.getProperty("breeze.tts.enabled", "true"));
             BREEZE_PREFER_ALL = Boolean.parseBoolean(props.getProperty("breeze.tts.preferAll", "true"));
             BREEZE_CACHE_ENABLED = Boolean.parseBoolean(props.getProperty("breeze.tts.cache", "true"));
+            BREEZE_PREFETCH_ENABLED = Boolean.parseBoolean(props.getProperty("breeze.tts.prefetch", "false"));
+            BREEZE_DYNAMIC_PRIMARY = Boolean.parseBoolean(props.getProperty("breeze.tts.dynamicPrimary", "false"));
+            BREEZE_WARMUP_MIN_ENTRIES = Long.parseLong(props.getProperty("breeze.tts.warmupMinEntries", "50"));
             BREEZE_PRIME_OUTPUT = Boolean.parseBoolean(props.getProperty("breeze.tts.primeOutput", "false"));
             BREEZE_DAILY_CREDIT_LIMIT = Long.parseLong(props.getProperty("breeze.tts.dailyCreditLimit", "400"));
 
@@ -220,13 +270,63 @@ public class Settings {
 
             System.out.println("Ciel Debug: Settings loaded successfully.");
 
+            profileLastModified = lastModified(resolveProfilePath());
+            secretsLastModified = lastModified(externalSecrets);
+
         } catch (Exception e) {
             System.err.println("Ciel FATAL ERROR: Failed to parse settings.");
             throw new RuntimeException(e);
         }
     }
 
+    /** Reload external profile/secrets changes without restarting the JVM. */
+    public static boolean reloadIfChanged() {
+        long now = System.currentTimeMillis();
+        if (now - lastReloadCheck < 1000) return false;
+        lastReloadCheck = now;
+        Path profile = resolveProfilePath();
+        Path secrets = resolveSecretsPath();
+        long profileStamp = lastModified(profile);
+        long secretsStamp = lastModified(secrets);
+        if (profileStamp == profileLastModified && secretsStamp == secretsLastModified) return false;
+        initialize();
+        BreezeSpeechService.reloadConfiguration();
+        System.out.println("Ciel Debug: External settings changed; live configuration reloaded.");
+        return true;
+    }
+
+    private static Path resolveSecretsPath() {
+        String configured = System.getenv("CIEL_SECRETS_PATH");
+        return configured != null && !configured.isBlank() ? Path.of(configured)
+                : Path.of(System.getProperty("user.home"), ".cielcompanion", "secrets.properties");
+    }
+
+    private static Path resolveProfilePath() {
+        String configured = System.getenv("CIEL_PROFILE_PATH");
+        if (configured != null && !configured.isBlank()) return Path.of(configured);
+        Path perUser = Path.of(System.getProperty("user.home"), ".cielcompanion", "profile.properties");
+        if (Files.isRegularFile(perUser)) return perUser;
+        return Path.of("config", "companion.profile.properties");
+    }
+
+    private static long lastModified(Path path) {
+        try { return Files.isRegularFile(path) ? Files.getLastModifiedTime(path).toMillis() : 0L; }
+        catch (Exception ignored) { return -1L; }
+    }
+
+    private static boolean isSensitiveProperty(String key) {
+        String lower = key == null ? "" : key.toLowerCase(Locale.ROOT);
+        return lower.contains("secret") || lower.contains("password") || lower.contains("pass")
+                || lower.endsWith(".key") || lower.contains("apikey") || lower.contains("api_key")
+                || lower.contains("token");
+    }
+
     public static String getVoiceNameHint() { return VOICE_NAME_HINT; }
+    public static String getCompanionName() { return COMPANION_NAME; }
+    public static String getCompanionPersona() { return COMPANION_PERSONA; }
+    public static String getTtsPrimaryProvider() { return TTS_PRIMARY_PROVIDER; }
+    public static String getTtsFallbackProvider() { return TTS_FALLBACK_PROVIDER; }
+    public static String getTtsInstructions() { return TTS_INSTRUCTIONS; }
     public static String getVoiceLanguageCode() { return VOICE_LANGUAGE_CODE; }
     public static int getTtsRate() { return TTS_RATE; }
     public static int getTtsRateAnnoyed() { return TTS_RATE_ANNOYED; }
@@ -276,6 +376,9 @@ public class Settings {
     public static boolean isBreezeEnabled() { return BREEZE_ENABLED; }
     public static boolean isBreezePreferAll() { return BREEZE_PREFER_ALL; }
     public static boolean isBreezeCacheEnabled() { return BREEZE_CACHE_ENABLED; }
+    public static boolean isBreezePrefetchEnabled() { return BREEZE_PREFETCH_ENABLED; }
+    public static boolean isBreezeDynamicPrimary() { return BREEZE_DYNAMIC_PRIMARY; }
+    public static long getBreezeWarmupMinEntries() { return BREEZE_WARMUP_MIN_ENTRIES; }
     public static boolean isBreezePrimeOutput() { return BREEZE_PRIME_OUTPUT; }
     public static long getBreezeDailyCreditLimit() { return BREEZE_DAILY_CREDIT_LIMIT; }
 

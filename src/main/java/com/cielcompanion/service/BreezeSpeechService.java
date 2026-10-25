@@ -60,17 +60,75 @@ public final class BreezeSpeechService {
         }
     }
 
+    /**
+     * Re-read the selected voice and provider settings after an external
+     * profile edit. The next utterance uses the new voice; cached audio remains
+     * safely namespaced by voice ID and settings.
+     */
+    public static void reloadConfiguration() {
+        synchronized (INIT_LOCK) {
+            initialized = false;
+            available = false;
+            apiKey = null;
+            voiceId = null;
+        }
+        initialize();
+    }
+
     public static boolean isAvailable() {
         return available;
     }
 
     public static boolean speak(String text, String key, String style, String pitch, String languageCode) {
+        return speak(text, key, style, pitch, languageCode, true);
+    }
+
+    /** Generate/cache Breeze audio without playing it. Used to build a bounded
+     * local Breeze library while Azure remains the audible primary provider. */
+    public static boolean prefetch(String text, String key, String style, String pitch, String languageCode) {
+        if (!Settings.isBreezePrefetchEnabled() || !Settings.isBreezeCacheEnabled()
+                || key == null || key.isBlank()) return false;
+        return speak(text, key, style, pitch, languageCode, false);
+    }
+
+    public static boolean isCached(String text, String key, String style, String pitch, String languageCode) {
+        if (!Settings.isBreezeCacheEnabled() || text == null || text.isBlank()) return false;
+        Path current = cachePath(key, text, style, pitch, languageCode);
+        return Files.isRegularFile(current) || Files.isRegularFile(legacyCachePath(text, style, pitch, languageCode));
+    }
+
+    /** True once enough local Breeze WAVs exist to enable dynamic-speech mode. */
+    public static boolean isWarmupComplete() {
+        long target = Settings.getBreezeWarmupMinEntries();
+        if (target <= 0) return true;
+        try (java.util.stream.Stream<Path> files = Files.list(CACHE_DIR)) {
+            String prefix = ("breeze_" + safeToken(Settings.getBreezeModel()) + "_"
+                    + safeToken(voiceId) + "_").toLowerCase(Locale.ROOT);
+            return files.filter(path -> {
+                        String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+                        return name.startsWith(prefix) && name.endsWith(".wav");
+                    })
+                    .limit(target).count() >= target;
+        } catch (Exception ignored) { return false; }
+    }
+
+    private static boolean speak(String text, String key, String style, String pitch, String languageCode,
+                                 boolean playAudio) {
         if (!available || text == null || text.isBlank()) return false;
-        Path cached = cachePath(text, style, pitch, languageCode);
+        Path cached = cachePath(key, text, style, pitch, languageCode);
         if (Settings.isBreezeCacheEnabled() && Files.isRegularFile(cached)) {
+            if (!playAudio) return true;
             boolean played = AzureSpeechService.playProviderWavFile(cached.toFile(), key == null ? "BreezeCached" : key,
                     Settings.isBreezePrimeOutput());
             if (played) System.out.println("[Breeze TTS] Cache hit; no credits consumed.");
+            return played;
+        }
+        Path legacy = legacyCachePath(text, style, pitch, languageCode);
+        if (Settings.isBreezeCacheEnabled() && Files.isRegularFile(legacy)) {
+            if (!playAudio) return true;
+            boolean played = AzureSpeechService.playProviderWavFile(legacy.toFile(), key == null ? "BreezeLegacyCached" : key,
+                    Settings.isBreezePrimeOutput());
+            if (played) System.out.println("[Breeze TTS] Legacy cache hit; no credits consumed.");
             return played;
         }
         if (!BreezeUsageTracker.reserve(text)) return false;
@@ -120,6 +178,8 @@ public final class BreezeSpeechService {
                 Files.move(temp, cached, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
                 temp = null;
             }
+            recordCache(cached, key, text, languageCode);
+            if (!playAudio) return true;
             Path playable = Settings.isBreezeCacheEnabled() ? cached : temp;
             boolean played = AzureSpeechService.playProviderWavFile(playable.toFile(), key == null ? "BreezeDynamic" : key,
                     Settings.isBreezePrimeOutput());
@@ -136,8 +196,8 @@ public final class BreezeSpeechService {
         }
     }
 
-    private static Path cachePath(String text, String style, String pitch, String languageCode) {
-        String material = voiceId + "\n" + Settings.getBreezeModel() + "\n"
+    private static Path cachePath(String key, String text, String style, String pitch, String languageCode) {
+        String material = key + "\n" + voiceId + "\n" + Settings.getBreezeModel() + "\n"
                 + Settings.getBreezeLanguageCode() + "\n" + languageCode + "\n"
                 + style + "\n" + pitch + "\n" + text;
         try {
@@ -145,9 +205,53 @@ public final class BreezeSpeechService {
                     .digest(material.getBytes(StandardCharsets.UTF_8));
             StringBuilder hex = new StringBuilder();
             for (byte b : digest) hex.append(String.format("%02x", b));
+            String prefix = "breeze_" + safeToken(Settings.getBreezeModel()) + "_"
+                    + safeToken(voiceId) + "_" + safeToken(key);
+            return CACHE_DIR.resolve(prefix + "_" + hex + ".wav");
+        } catch (Exception e) {
+            return CACHE_DIR.resolve("breeze_" + safeToken(Settings.getBreezeModel()) + "_"
+                    + safeToken(voiceId) + "_" + Integer.toHexString(material.hashCode()) + ".wav");
+        }
+    }
+
+    private static Path legacyCachePath(String text, String style, String pitch, String languageCode) {
+        String material = voiceId + "\n" + Settings.getBreezeModel() + "\n"
+                + Settings.getBreezeLanguageCode() + "\n" + languageCode + "\n"
+                + style + "\n" + pitch + "\n" + text;
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(material.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder();
+            for (byte b : digest) hex.append(String.format("%02x", b));
             return CACHE_DIR.resolve(hex + ".wav");
         } catch (Exception e) {
             return CACHE_DIR.resolve(Integer.toHexString(material.hashCode()) + ".wav");
+        }
+    }
+
+    private static String safeToken(String value) {
+        if (value == null || value.isBlank()) return "default";
+        return value.replaceAll("[^a-zA-Z0-9._-]", "_");
+    }
+
+    private static void recordCache(Path file, String key, String text, String languageCode) {
+        try {
+            Files.createDirectories(CACHE_DIR);
+            Path index = CACHE_DIR.resolve("index.jsonl");
+            JsonObject row = new JsonObject();
+            row.addProperty("provider", "breeze");
+            row.addProperty("model", Settings.getBreezeModel());
+            row.addProperty("voice_id", voiceId);
+            row.addProperty("key", key == null ? "" : key);
+            row.addProperty("language_code", languageCode == null ? "" : languageCode);
+            row.addProperty("file", file.toString());
+            row.addProperty("characters", text == null ? 0 : text.length());
+            row.addProperty("created_at_ms", System.currentTimeMillis());
+            synchronized (CACHE_DIR.toString().intern()) {
+                Files.writeString(index, row + System.lineSeparator(), StandardCharsets.UTF_8,
+                        java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+            }
+        } catch (Exception ignored) {
+            // Cache metadata is advisory; never turn successful speech into a failure.
         }
     }
 
@@ -197,7 +301,13 @@ public final class BreezeSpeechService {
     private static String instructions(String style, String pitch) {
         String safeStyle = style == null || style.isBlank() ? "warm and conversational" : style;
         String safePitch = pitch == null || pitch.isBlank() ? "natural pitch" : pitch;
-        return "Speak as Ciel, a warm female companion with a subtle Japanese accent. "
+        String persona = Settings.getCompanionPersona();
+        String name = Settings.getCompanionName();
+        String custom = Settings.getTtsInstructions();
+        String base = custom == null || custom.isBlank()
+                ? "Speak as " + name + ", a " + persona + " with a subtle Japanese accent. "
+                : custom.trim() + " ";
+        return base
                 + "Use natural human timing and breath, with a " + safeStyle + " delivery at " + safePitch
                 + ". Preserve the supplied phonokana wording exactly; do not translate it or add a Japanese paragraph.";
     }
