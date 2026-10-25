@@ -74,7 +74,16 @@ public class CielCompanion {
 
         try {
             boolean isWarmBoot = Files.exists(SHUTDOWN_FLAG_PATH);
+            long offlineDurationSeconds = -1;
             if (isWarmBoot) {
+                try {
+                    String stamp = Files.readString(SHUTDOWN_FLAG_PATH, StandardCharsets.UTF_8).trim();
+                    long shutdownAt = Long.parseLong(stamp);
+                    offlineDurationSeconds = Math.max(0, (System.currentTimeMillis() - shutdownAt) / 1000L);
+                } catch (Exception ignored) {
+                    try { offlineDurationSeconds = Math.max(0, (System.currentTimeMillis() - Files.getLastModifiedTime(SHUTDOWN_FLAG_PATH).toMillis()) / 1000L); }
+                    catch (IOException ignoredToo) { }
+                }
                 try { Files.delete(SHUTDOWN_FLAG_PATH); } catch (IOException ignored) {}
             }
 
@@ -87,7 +96,7 @@ public class CielCompanion {
             
             EmotionManager emotionManager = new EmotionManager();
             CielState.setEmotionManager(emotionManager);
-            CielState.initialize(isWarmBoot, updateBoot); 
+            CielState.initialize(isWarmBoot, updateBoot, offlineDurationSeconds); 
 
             cielGui = new CielGui();
             SwingUtilities.invokeLater(cielGui::initialize);
@@ -172,7 +181,7 @@ public class CielCompanion {
             if (isReboot) {
                 try {
                     Files.createDirectories(SHUTDOWN_FLAG_PATH.getParent());
-                    Files.createFile(SHUTDOWN_FLAG_PATH);
+                    Files.writeString(SHUTDOWN_FLAG_PATH, Long.toString(System.currentTimeMillis()), StandardCharsets.UTF_8);
                 } catch (IOException ignored) {}
             }
             

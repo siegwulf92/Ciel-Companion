@@ -127,7 +127,7 @@ public class CielController {
                 System.err.println("Ciel Error: Background emotion polling failed gracefully: " + t.getMessage());
             }
 
-            handleGreetings();
+            handleGreetings(metrics, memory);
             
             logStatus(metrics);
             
@@ -586,27 +586,47 @@ public class CielController {
         return "";
     }
 
-    private static void handleGreetings() {
+    private static void handleGreetings(SystemMetrics metrics, ShortTermMemory memory) {
         long now = System.currentTimeMillis();
         long startTime = CielState.getAppStartTime();
         long bootDelayMs = Settings.getFirstGreetingDelaySeconds() * 1000L;
         long loginDelayMs = Settings.getLoginGreetingDelaySeconds() * 1000L;
 
         if (CielState.isSystemUpdateInProgress()) {
-            if (!CielState.isBootGreetingPlayed()) {
-                System.out.println("Ciel Debug: Update status announcement; suppressing boot and login greetings.");
-                SpeechService.speakPreformatted("Update applied, Master. I saved my work and resumed monitoring.",
+            // A code update is an operational event, not a new relationship
+            // session. Never replay boot/login greetings. After a short
+            // readiness window, offer one status line only when the user is
+            // not actively gaming, watching, speaking, or muted.
+            if (CielState.isBootGreetingPlayed()) return;
+            if (now < startTime + Settings.getUpdateStatusDelaySeconds() * 1000L) return;
+            boolean busy = memory.isInGamingSession()
+                    || metrics.isPlayingMedia() || metrics.isStreaming()
+                    || metrics.isInFullScreen() || CielState.isManuallyMuted()
+                    || SpeechService.isActivelySpeaking();
+            if (busy) {
+                System.out.println("Ciel Debug: Paired update completed silently because the user is busy.");
+            } else {
+                System.out.println("Ciel Debug: Paired update completed; user is free for one brief status line.");
+                SpeechService.speakPreformatted("Update applied. I saved my work and resumed monitoring.",
                         "paired_update_boot", false, true);
-                CielState.setBootGreetingPlayed(true);
-                CielState.setLoginGreetingPlayed(true);
             }
+            CielState.setBootGreetingPlayed(true);
+            CielState.setLoginGreetingPlayed(true);
+            CielState.setSystemUpdateInProgress(false);
             return;
         }
 
         if (CielState.isWarmBoot()) {
             if (!CielState.isBootGreetingPlayed()) {
                 System.out.println("Ciel Debug: Executing Warm Boot Greeting.");
-                speakRandomLine(LineManager.getWarmLoginGreetingLines(), null, 1, false, true);
+                long offlineSeconds = CielState.getOfflineDurationSeconds();
+                if (offlineSeconds >= 60) {
+                    long minutes = offlineSeconds / 60;
+                    SpeechService.speakPreformatted("Welcome back, Master. I was offline for " + minutes
+                            + (minutes == 1 ? " minute." : " minutes."), "warm_boot_return", false, true);
+                } else {
+                    speakRandomLine(LineManager.getWarmLoginGreetingLines(), null, 1, false, true);
+                }
                 CielState.setBootGreetingPlayed(true);
                 CielState.setLoginGreetingPlayed(true);
             }

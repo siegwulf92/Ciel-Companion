@@ -19,6 +19,7 @@ public class Settings {
     private static boolean LOGGING_SHOW_VERBOSE_STATUS;
     private static long FIRST_GREETING_DELAY_SECONDS;
     private static long LOGIN_GREETING_DELAY_SECONDS;
+    private static long UPDATE_STATUS_DELAY_SECONDS;
     private static int MIN_GLOBAL_GAP_SEC;
     
     private static int PHASE1_THRESHOLD_MIN;
@@ -133,6 +134,8 @@ public class Settings {
             LOGGING_SHOW_VERBOSE_STATUS = Boolean.parseBoolean(props.getProperty("ciel.logging.showVerboseStatus", "false"));
             FIRST_GREETING_DELAY_SECONDS = Long.parseLong(props.getProperty("ciel.firstGreetingDelaySeconds", "5"));
             LOGIN_GREETING_DELAY_SECONDS = Long.parseLong(props.getProperty("ciel.loginGreetingDelaySeconds", "120"));
+            UPDATE_STATUS_DELAY_SECONDS = Math.max(5, Math.min(10,
+                    Long.parseLong(props.getProperty("ciel.updateStatusDelaySeconds", "7"))));
             MIN_GLOBAL_GAP_SEC = Integer.parseInt(props.getProperty("ciel.minGlobalGapSec", "5"));
 
             PHASE1_THRESHOLD_MIN = Integer.parseInt(props.getProperty("ciel.phase1ThresholdMin", "5"));
@@ -229,6 +232,7 @@ public class Settings {
     public static boolean isVerboseLoggingEnabled() { return LOGGING_SHOW_VERBOSE_STATUS; }
     public static long getFirstGreetingDelaySeconds() { return FIRST_GREETING_DELAY_SECONDS; }
     public static long getLoginGreetingDelaySeconds() { return LOGIN_GREETING_DELAY_SECONDS; }
+    public static long getUpdateStatusDelaySeconds() { return UPDATE_STATUS_DELAY_SECONDS; }
     public static int getMinGlobalGapSec() { return MIN_GLOBAL_GAP_SEC; }
     public static int getPhase1ThresholdMin() { return PHASE1_THRESHOLD_MIN; }
     public static int getPhase2ThresholdMin() { return PHASE2_THRESHOLD_MIN; }

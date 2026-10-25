@@ -46,15 +46,21 @@ public class CielState {
 
     // NEW: System Update State
     private static boolean systemUpdateInProgress = false;
+    private static long offlineDurationSeconds = -1;
 
     public static void initialize(boolean warmBoot) {
         initialize(warmBoot, false);
     }
 
     public static void initialize(boolean warmBoot, boolean updateBoot) {
+        initialize(warmBoot, updateBoot, -1);
+    }
+
+    public static void initialize(boolean warmBoot, boolean updateBoot, long offlineSeconds) {
         appStartTime = System.currentTimeMillis();
         isWarmBoot = warmBoot;
         systemUpdateInProgress = updateBoot;
+        offlineDurationSeconds = offlineSeconds;
         System.out.println("Ciel Debug: CielState initialized. App start time recorded. Warm Boot: " + isWarmBoot);
         if (updateBoot) System.out.println("Ciel Debug: Update boot detected; login greetings will be replaced by update status.");
 
@@ -86,6 +92,7 @@ public class CielState {
     public static double getPatience() { return patience; }
     public static boolean isDiaryWrittenThisSession() { return diaryWrittenThisSession; }
     public static boolean isSystemUpdateInProgress() { return systemUpdateInProgress; }
+    public static long getOfflineDurationSeconds() { return offlineDurationSeconds; }
 
     // --- Setters ---
     public static void setNextSpeakAt(long timestamp) { nextSpeakAt = timestamp; }
