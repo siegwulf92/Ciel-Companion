@@ -63,7 +63,7 @@ public class CielCompanion {
 
         FileLogger.initialize();
         System.out.println("Ciel Companion starting... (Clean Lock Acquired)");
-        reportUpdaterStatus();
+        boolean updateBoot = reportUpdaterStatus();
         
         try {
             Class.forName("org.sqlite.JDBC");
@@ -87,7 +87,7 @@ public class CielCompanion {
             
             EmotionManager emotionManager = new EmotionManager();
             CielState.setEmotionManager(emotionManager);
-            CielState.initialize(isWarmBoot); 
+            CielState.initialize(isWarmBoot, updateBoot); 
 
             cielGui = new CielGui();
             SwingUtilities.invokeLater(cielGui::initialize);
@@ -459,19 +459,23 @@ public class CielCompanion {
         }
     }
 
-    private static void reportUpdaterStatus() {
+    private static boolean reportUpdaterStatus() {
         Path statusFile = ProjectPaths.ciel().resolve("logs/update_status.txt");
-        if (!Files.isRegularFile(statusFile)) return;
+        if (!Files.isRegularFile(statusFile)) return false;
+        boolean updateBoot = false;
         try {
             System.out.println("[Ciel Update Status] Previous updater report:");
-            for (String line : Files.readAllLines(statusFile, StandardCharsets.UTF_8)) {
+            List<String> lines = Files.readAllLines(statusFile, StandardCharsets.UTF_8);
+            for (String line : lines) {
                 System.out.println("[Ciel Update Status] " + line);
+                if (line.trim().equalsIgnoreCase("event=paired-update-installed")) updateBoot = true;
             }
             Path reportedFile = statusFile.resolveSibling("update_status.last_reported.txt");
             Files.move(statusFile, reportedFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
             System.err.println("Ciel Warning: Could not read/acknowledge updater status: " + e.getMessage());
         }
+        return updateBoot;
     }
 
     private static boolean isJarvisAlive() {

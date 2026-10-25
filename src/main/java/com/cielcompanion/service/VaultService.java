@@ -17,6 +17,8 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.LocalDateTime;
@@ -205,19 +207,12 @@ public class VaultService {
         }
     }
 
-    private static void saveState(PipelineState state) {
-        try {
+    private static void saveState(PipelineState state) throws IOException {
             String safeDraft = Base64.getEncoder().encodeToString(state.currentDraft.getBytes(StandardCharsets.UTF_8));
             String json = String.format("{\n  \"taskId\": \"%s\",\n  \"fileName\": \"%s\",\n  \"chunkIndex\": %d,\n  \"totalChunks\": %d,\n  \"currentPhase\": %d,\n  \"sourceLength\": %d,\n  \"sourceModified\": %d,\n  \"currentDraftBase64\": \"%s\"\n}",
                     state.taskId, state.fileName, state.chunkIndex, state.totalChunks, state.currentPhase,
                     state.sourceLength, state.sourceModified, safeDraft);
-            Path statePath = statePathFor(state.fileName);
-            Path temp = statePath.resolveSibling(statePath.getFileName() + ".tmp");
-            Files.writeString(temp, json, StandardCharsets.UTF_8);
-            moveAtomically(temp, statePath);
-        } catch (IOException e) {
-            System.err.println("Ciel Error: Failed to save pipeline state: " + e.getMessage());
-        }
+            writeAtomically(statePathFor(state.fileName), json);
     }
 
     private static void deleteState(String fileName) {
@@ -268,7 +263,12 @@ public class VaultService {
     private static void writeAtomically(Path path, String content) throws IOException {
         Files.createDirectories(path.getParent());
         Path temp = path.resolveSibling(path.getFileName() + ".tmp");
-        Files.writeString(temp, content, StandardCharsets.UTF_8);
+        try (FileChannel channel = FileChannel.open(temp, StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+            ByteBuffer bytes = ByteBuffer.wrap(content.getBytes(StandardCharsets.UTF_8));
+            while (bytes.hasRemaining()) channel.write(bytes);
+            channel.force(true);
+        }
         moveAtomically(temp, path);
     }
 
