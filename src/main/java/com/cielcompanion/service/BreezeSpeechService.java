@@ -68,7 +68,7 @@ public final class BreezeSpeechService {
         if (!available || text == null || text.isBlank()) return false;
         Path cached = cachePath(text, style, pitch, languageCode);
         if (Settings.isBreezeCacheEnabled() && Files.isRegularFile(cached)) {
-            boolean played = AzureSpeechService.playWavFile(cached.toFile(), key == null ? "BreezeCached" : key);
+            boolean played = AzureSpeechService.playProviderWavFile(cached.toFile(), key == null ? "BreezeCached" : key);
             if (played) System.out.println("[Breeze TTS] Cache hit; no credits consumed.");
             return played;
         }
@@ -120,7 +120,7 @@ public final class BreezeSpeechService {
                 temp = null;
             }
             Path playable = Settings.isBreezeCacheEnabled() ? cached : temp;
-            boolean played = AzureSpeechService.playWavFile(playable.toFile(), key == null ? "BreezeDynamic" : key);
+            boolean played = AzureSpeechService.playProviderWavFile(playable.toFile(), key == null ? "BreezeDynamic" : key);
             if (!played) System.err.println("[Breeze TTS] Audio generated but playback failed; Azure fallback scheduled.");
             return played;
         } catch (Exception e) {

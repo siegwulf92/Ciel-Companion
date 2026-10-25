@@ -375,6 +375,10 @@ public class AzureSpeechService {
     }
 
     private static boolean playWav(File file, String key) {
+        return playWav(file, key, true);
+    }
+
+    private static boolean playWav(File file, String key, boolean primeOutput) {
         Clip clip = null;
         try (javax.sound.sampled.AudioInputStream audioStream = AudioSystem.getAudioInputStream(file)) {
             AudioFormat format = audioStream.getFormat();
@@ -386,7 +390,7 @@ public class AzureSpeechService {
             javax.sound.sampled.AudioInputStream playbackStream = audioStream;
             int frameSize = format.getFrameSize();
             float frameRate = format.getFrameRate();
-            if (frameSize > 0 && frameRate > 0 && audioStream.getFrameLength() >= 0) {
+            if (primeOutput && frameSize > 0 && frameRate > 0 && audioStream.getFrameLength() >= 0) {
                 prerollFrames = Math.max(1L, Math.round(frameRate * SPEAKER_PREROLL_MILLIS / 1000.0));
                 byte[] warmup = buildSpeakerWarmup(format, prerollFrames);
                 playbackStream = new javax.sound.sampled.AudioInputStream(
@@ -413,9 +417,11 @@ public class AzureSpeechService {
             }
             if (clip.getLongFramePosition() < prerollFrames)
                 throw new IllegalStateException("Speaker pre-roll did not complete before timeout");
-            System.out.println("[Azure TTS] Default output primed before WAV speech playback (key="
-                    + (key == null ? "Dynamic" : key) + ", mixer=" + defaultOutput.getMixerInfo().getName()
-                    + ", preroll_ms=" + SPEAKER_PREROLL_MILLIS + ", wake_cue=very_quiet_660hz_pcm).");
+            if (primeOutput) {
+                System.out.println("[Azure TTS] Default output primed before WAV speech playback (key="
+                        + (key == null ? "Dynamic" : key) + ", mixer=" + defaultOutput.getMixerInfo().getName()
+                        + ", preroll_ms=" + SPEAKER_PREROLL_MILLIS + ", wake_cue=very_quiet_660hz_pcm).");
+            }
             long playbackDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(
                     Math.max(5000L, clip.getMicrosecondLength() / 1000L + 5000L));
             while (clip.isRunning() && System.nanoTime() < playbackDeadline) Thread.sleep(50);
@@ -446,7 +452,12 @@ public class AzureSpeechService {
      * without duplicating Ciel's pause/GUI/audio cleanup behavior.
      */
     public static boolean playWavFile(File file, String key) {
-        return file != null && file.isFile() && playWav(file, key);
+        return file != null && file.isFile() && playWav(file, key, true);
+    }
+
+    /** Play provider-generated audio without injecting the Azure speaker wake cue. */
+    public static boolean playProviderWavFile(File file, String key) {
+        return file != null && file.isFile() && playWav(file, key, false);
     }
 
     /**
