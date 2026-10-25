@@ -42,6 +42,10 @@ public final class LoreDocumentStore {
             }
             Path generated = campaignRoot == null ? null : campaignRoot.resolve("02 dm notes")
                     .resolve(LIBRARY).resolve("Ciel Generated");
+            try { prepareLocalLinks(cielRoot, generated); }
+            catch (IOException e) {
+                System.err.println("Ciel Lore DB: local source links unavailable: " + e.getMessage());
+            }
             if (generated != null && Files.isDirectory(campaignRoot)) {
                 try { mirror(cielRoot, generated); }
                 catch (IOException e) {
@@ -70,13 +74,45 @@ public final class LoreDocumentStore {
                 "# Ciel Tensura source library\n\nDM-only reference copy. Ciel refreshes files in this folder from its local lore vault. "
                 + "Edit campaign canon elsewhere; AI candidate facts remain review-required.\n", StandardCharsets.UTF_8);
         for (int volume = 1; volume <= MAX_LN_VOLUME; volume++) {
-            Path source = findSource(cielRoot, null, volume);
+            Path source = cielRoot.resolve("lore").resolve("Raw")
+                    .resolve("LN Volume " + volume + ".md");
+            if (!Files.isRegularFile(source)) source = findSource(cielRoot, null, volume);
             if (source != null) copyChanged(source, generated.resolve("Raw").resolve("LN Volume " + volume + ".md"));
         }
         mirrorTree(cielRoot.resolve("lore").resolve("Transcripts"), generated.resolve("Transcripts"));
         mirrorTree(cielRoot.resolve("lore").resolve("Indexes"), generated.resolve("Indexes"));
         mirrorTree(cielRoot.resolve("lore").resolve("Review").resolve("Tensura"),
                 generated.resolve("Review").resolve("Tensura"));
+        ensureIndexRawLinks(generated.resolve("Indexes"), generated.resolve("Raw"));
+    }
+
+    private static void prepareLocalLinks(Path cielRoot, Path generated) throws IOException {
+        Path raw = cielRoot.resolve("lore").resolve("Raw");
+        for (int volume = 1; volume <= MAX_LN_VOLUME; volume++) {
+            Path source = findSource(cielRoot, generated, volume);
+            if (source != null) copyChanged(source, raw.resolve("LN Volume " + volume + ".md"));
+        }
+        ensureIndexRawLinks(cielRoot.resolve("lore").resolve("Indexes"), raw);
+    }
+
+    private static void ensureIndexRawLinks(Path indexes, Path raw) throws IOException {
+        if (!Files.isDirectory(indexes)) return;
+        for (int volume = 1; volume <= MAX_LN_VOLUME; volume++) {
+            Path source = raw.resolve("LN Volume " + volume + ".md");
+            Path index = indexes.resolve("LN Volume " + volume + " Master Index.md");
+            if (!Files.isRegularFile(source) || !Files.isRegularFile(index)) continue;
+            String content = Files.readString(index, StandardCharsets.UTF_8);
+            String link = "Raw novel source: [[../Raw/LN Volume " + volume + "]]";
+            if (content.contains(link)) continue;
+            String newline = content.contains("\r\n") ? "\r\n" : "\n";
+            int transcript = content.indexOf("Source transcript:");
+            int endLine = transcript < 0 ? -1 : content.indexOf('\n', transcript);
+            String updated = endLine < 0 ? content + newline + link + newline
+                    : content.substring(0, endLine + 1) + link + newline + content.substring(endLine + 1);
+            Path temp = index.resolveSibling(index.getFileName() + ".ciel.tmp");
+            Files.writeString(temp, updated, StandardCharsets.UTF_8);
+            Files.move(temp, index, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     private static void mirrorTree(Path source, Path target) throws IOException {
@@ -103,6 +139,7 @@ public final class LoreDocumentStore {
         String file = "LN Volume " + volume + ".md";
         return List.of(cielRoot.resolve("requests").resolve(file),
                 cielRoot.resolve("requests").resolve("archive").resolve(file),
+                cielRoot.resolve("lore").resolve("Raw").resolve(file),
                 generated == null ? cielRoot.resolve("__absent__") : generated.resolve("Raw").resolve(file))
                 .stream().filter(Files::isRegularFile)
                 .max(Comparator.comparingLong(path -> {
