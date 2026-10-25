@@ -17,6 +17,7 @@ public class LoreService {
     private final Map<String, Path> publicKnowledgeBase = new ConcurrentHashMap<>();
     private final Map<String, Path> restrictedKnowledgeBase = new ConcurrentHashMap<>();
     private Path campaignRoot;
+    private volatile long lastScanMillis;
 
     // Regex to match Obsidian links: [[NoteName]] or [[NoteName|Alias]] or [[NoteName#Header]]
     private static final Pattern OBSIDIAN_LINK_PATTERN = Pattern.compile("\\[\\[(.*?)(?:\\|.*?)?\\]\\]");
@@ -65,6 +66,7 @@ public class LoreService {
             });
             System.out.printf("Ciel Debug (D&D): Scan complete. Indexed %d public files and %d restricted files.%n", 
                 publicKnowledgeBase.size(), restrictedKnowledgeBase.size());
+            lastScanMillis = System.currentTimeMillis();
         } catch (IOException e) { 
             System.err.println("Ciel Error (D&D): Failed to scan campaign files.");
             e.printStackTrace(); 
@@ -85,7 +87,9 @@ public class LoreService {
         String key = fileName.contains(".") ? fileName.substring(0, fileName.lastIndexOf('.')).toLowerCase() : fileName.toLowerCase();
         
         String fullPathLower = file.toAbsolutePath().toString().toLowerCase();
-        boolean isRestricted = fullPathLower.contains("dm only") || fullPathLower.contains("secret") || fullPathLower.contains("restricted") || fullPathLower.contains("hidden");
+        boolean isRestricted = fullPathLower.contains("dm only") || fullPathLower.contains("02 dm notes")
+                || fullPathLower.contains("secret") || fullPathLower.contains("restricted")
+                || fullPathLower.contains("hidden");
 
         if (isRestricted) {
             restrictedKnowledgeBase.put(key, file);
@@ -146,7 +150,7 @@ public class LoreService {
         String lowerSubject = cleanSubject.toLowerCase();
 
         // 1. OUTBOUND LINKS: Get the direct note and its outbound links (Depth 2)
-        getExpandedNoteContentRecursive(lowerSubject, visited, 2, false)
+        getExpandedNoteContentRecursive(lowerSubject, visited, 2, false, null, 14_000)
             .ifPresent(expandedContent::append);
 
         // 2. FOLDER HIERARCHY CHECK: If the note is in a dedicated folder (e.g. /Tet/Tet.md), 
@@ -162,7 +166,8 @@ public class LoreService {
                         if (isMarkdownOrTxt(sibling)) {
                             String siblingKey = sibling.getFileName().toString().replaceFirst("[.][^.]+$", "").toLowerCase();
                             if (!visited.contains(siblingKey)) {
-                                getExpandedNoteContentRecursive(siblingKey, visited, 0, false)
+                                getExpandedNoteContentRecursive(siblingKey, visited, 0, false, null,
+                                        Math.max(0, 14_000 - expandedContent.length()))
                                     .ifPresent(expandedContent::append);
                             }
                         }
@@ -183,7 +188,8 @@ public class LoreService {
                 String content = Files.readString(entry.getValue(), StandardCharsets.UTF_8);
                 if (backlinkPattern.matcher(content).find()) {
                     // This file links TO our target. Pull it in at depth 0.
-                    getExpandedNoteContentRecursive(entry.getKey(), visited, 0, false)
+                    getExpandedNoteContentRecursive(entry.getKey(), visited, 0, false, null,
+                            Math.max(0, 14_000 - expandedContent.length()))
                         .ifPresent(expandedContent::append);
                 }
             } catch (IOException ignored) {}
@@ -193,35 +199,59 @@ public class LoreService {
         return Optional.of(expandedContent.toString());
     }
 
-    private Optional<String> getExpandedNoteContentRecursive(String subject, Set<String> visited, int depth, boolean allowRestricted) {
+    /** Explicit DM analysis may follow the Ciel-generated source library. */
+    public Optional<String> getExpandedNoteContentForDm(String subject) {
+        if (subject == null || subject.isBlank()) return Optional.empty();
+        if (campaignRoot == null) return Optional.empty();
+        if (System.currentTimeMillis() - lastScanMillis > 60_000) scanFiles();
+        return getExpandedNoteContentRecursive(subject, new HashSet<>(), 2, true, null, 14_000);
+    }
+
+    private Optional<String> getExpandedNoteContentRecursive(String subject, Set<String> visited, int depth,
+                                                              boolean allowRestricted, Path referringFile, int budget) {
+        if (budget <= 0) return Optional.empty();
         String cleanSubject = subject;
         int hashIndex = cleanSubject.indexOf('#');
         if (hashIndex != -1) cleanSubject = cleanSubject.substring(0, hashIndex);
         cleanSubject = cleanSubject.trim();
-        String lowerSubject = cleanSubject.toLowerCase();
+        String lowerSubject = cleanSubject.replace('\\', '/').toLowerCase();
 
-        if (visited.contains(lowerSubject) || depth < 0) return Optional.empty();
+        if (depth < 0) return Optional.empty();
 
-        Optional<Path> fileOpt = findBestMatch(publicKnowledgeBase, lowerSubject);
-        if (fileOpt.isEmpty() && allowRestricted) {
-            fileOpt = findBestMatch(restrictedKnowledgeBase, lowerSubject);
+        Optional<Path> fileOpt = Optional.empty();
+        if (referringFile != null && (cleanSubject.contains("/") || cleanSubject.contains("\\"))) {
+            Path relative = referringFile.getParent().resolve(cleanSubject.replace('\\', '/')).normalize();
+            if (!relative.toString().toLowerCase().endsWith(".md"))
+                relative = relative.resolveSibling(relative.getFileName() + ".md");
+            if (relative.startsWith(campaignRoot) && Files.isRegularFile(relative)
+                    && (allowRestricted || publicKnowledgeBase.containsValue(relative)))
+                fileOpt = Optional.of(relative);
         }
+        String basename = lowerSubject.substring(lowerSubject.lastIndexOf('/') + 1).replaceFirst("(?i)\\.md$", "");
+        if (fileOpt.isEmpty()) fileOpt = findBestMatch(publicKnowledgeBase, basename);
+        if (fileOpt.isEmpty() && allowRestricted) fileOpt = findBestMatch(restrictedKnowledgeBase, basename);
 
         if (fileOpt.isEmpty()) return Optional.empty();
 
-        visited.add(lowerSubject);
+        Path resolved = fileOpt.get();
+        if (!visited.add(resolved.toAbsolutePath().normalize().toString().toLowerCase())) return Optional.empty();
 
         try {
-            String content = Files.readString(fileOpt.get(), StandardCharsets.UTF_8);
+            String content = Files.readString(resolved, StandardCharsets.UTF_8);
             StringBuilder expandedContent = new StringBuilder();
-            expandedContent.append("\n--- LORE ENTRY: ").append(cleanSubject.toUpperCase()).append(" ---\n");
-            expandedContent.append(content).append("\n");
+            expandedContent.append("\n--- LORE ENTRY: ").append(cleanSubject.toUpperCase())
+                    .append(" [").append(campaignRoot.relativize(resolved)).append("] ---\n");
+            int excerptLength = Math.min(content.length(), Math.min(2_500, budget));
+            expandedContent.append(content, 0, excerptLength);
+            if (excerptLength < content.length()) expandedContent.append("\n[Note excerpt truncated; use source search for precise passages.]\n");
 
             if (depth > 0) {
                 Matcher matcher = OBSIDIAN_LINK_PATTERN.matcher(content);
-                while (matcher.find()) {
+                int followed = 0;
+                while (matcher.find() && followed++ < 4 && expandedContent.length() < budget) {
                     String linkedSubject = matcher.group(1);
-                    getExpandedNoteContentRecursive(linkedSubject, visited, depth - 1, allowRestricted)
+                    getExpandedNoteContentRecursive(linkedSubject, visited, depth - 1, allowRestricted,
+                            resolved, budget - expandedContent.length())
                         .ifPresent(expandedContent::append);
                 }
             }

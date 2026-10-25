@@ -330,12 +330,15 @@ public class CommandService {
                         System.out.println("Ciel Debug: Routing deep analysis to Logic Core (Phi-4).");
                         String subject = semanticAnalysis.entities().get("query");
                         
-                        String loreData = loreService.getExpandedNoteContent(subject)
+                        String loreData = loreService.getExpandedNoteContentForDm(subject)
                                                       .orElse("No specific campaign notes found for: " + subject);
+                        String sourceExcerpts = LoreDocumentStore.search(subject);
 
                         String context = ContextBuilder.buildActiveContext(loreService, activeText) +
                                          "\n\n[D&D CAMPAIGN NOTES FOR ANALYSIS]\n" + loreData +
-                                         "\n\nINSTRUCTION: Analyze the provided campaign notes and answer the user's query.";
+                                         "\n\n" + sourceExcerpts +
+                                         "\n\nINSTRUCTION: Cross-check Obsidian notes against cited LN source excerpts. "
+                                         + "AI review candidates are not approved canon; respect the campaign's spoiler ceiling.";
                         
                         ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
                         AIEngine.reasonDeeply(semanticAnalysis.entities().get("query"), context, () -> isBusy.set(false));
@@ -460,8 +463,11 @@ public class CommandService {
             case DND_ANALYZE_LORE: 
                 String subject = analysis.entities().get("subject");
                 if (subject == null) subject = userText;
-                String loreData = loreService.getExpandedNoteContent(subject).orElse("No specific notes found.");
-                return sendToAiWithData(userText, "[D&D CAMPAIGN NOTES]\n" + loreData + "\n\nINSTRUCTION: Analyze these notes to answer the user.");
+                String loreData = loreService.getExpandedNoteContentForDm(subject).orElse("No specific notes found.");
+                String sourceExcerpts = LoreDocumentStore.search(subject);
+                return sendToAiWithData(userText, "[D&D CAMPAIGN NOTES]\n" + loreData + "\n\n"
+                        + sourceExcerpts + "\n\nINSTRUCTION: Cross-check Obsidian notes against cited LN passages. "
+                        + "Review candidates are not approved campaign canon; respect the spoiler ceiling.");
             case TOGGLE_LISTENING: 
                 if (voiceListener != null) {
                     voiceListener.toggleListening();
