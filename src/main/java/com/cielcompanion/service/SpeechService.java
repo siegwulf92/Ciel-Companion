@@ -23,6 +23,7 @@ import java.util.Optional;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -486,30 +487,45 @@ public class SpeechService {
             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
 
             boolean breezeSuccess = false;
-            // Breeze is the configured primary provider. Its own cache and
-            // daily credit guard prevent repetitive lines from consuming the
-            // daily grant; Azure remains the immediate fallback for any
-            // Breeze/API/playback failure or exhausted quota.
+            // Once a Breeze file exists, it is the preferred local voice. A
+            // miss does not spend credits or delay speech: Azure supplies the
+            // line immediately and queues a one-time Breeze prefetch below.
             if (BreezeSpeechService.isAvailable() && breezeEligible) {
-                breezeSuccess = BreezeSpeechService.speak(text, key, style, pitch, langCode);
-                if (breezeSuccess) {
-                    System.out.println("Ciel Debug: Breeze Speech successful (dynamic dialogue).");
+                boolean breezeCacheHit = BreezeSpeechService.isCached(text, key, style, pitch, langCode);
+                boolean warmupComplete = Settings.isBreezeDynamicPrimary()
+                        && BreezeSpeechService.isWarmupComplete();
+                if (breezeCacheHit || warmupComplete) {
+                    breezeSuccess = BreezeSpeechService.speak(text, key, style, pitch, langCode);
+                    if (breezeSuccess) {
+                        System.out.println(breezeCacheHit
+                                ? "[Breeze TTS] Cached line selected before Azure."
+                                : "[Breeze TTS] Warm-up threshold reached; generated line selected before Azure.");
+                    }
                 }
             }
 
-            boolean azureSuccess = breezeSuccess;
-
-            if (!azureSuccess && AzureSpeechService.isAvailable()) {
+            boolean azureSuccess = false;
+            if (!breezeSuccess && AzureSpeechService.isAvailable()) {
                 azureSuccess = AzureSpeechService.speak(text, key, style, pitch, langCode);
                 if (azureSuccess) {
                     System.out.println("Ciel Debug: Azure Speech successful (Key: " + (key != null ? key : "Dynamic") + ", Style: " + style + ")");
+                    queueBreezePrefetch(text, key, style, pitch, langCode);
                 } else {
-                    System.out.println("Ciel Warning: Azure Speech failed or skipped. Falling back to SAPI.");
+                    System.out.println("Ciel Warning: Azure Speech failed or skipped; trying Breeze generation.");
+                }
+            }
+
+            // If both the Breeze cache and Azure are unavailable, a direct
+            // Breeze request is still the last hosted-provider fallback.
+            if (!breezeSuccess && !azureSuccess && BreezeSpeechService.isAvailable() && breezeEligible) {
+                breezeSuccess = BreezeSpeechService.speak(text, key, style, pitch, langCode);
+                if (breezeSuccess) {
+                    System.out.println("Ciel Debug: Breeze Speech successful (generated fallback).");
                 }
             }
 
             boolean sapiSuccess = false;
-            if (!azureSuccess && !AzureSpeechService.isIntentionalCancellation
+            if (!azureSuccess && !breezeSuccess && !AzureSpeechService.isIntentionalCancellation
                     && taskGeneration == speechGeneration.get() && !Thread.currentThread().isInterrupted()) {
                 System.out.println("Ciel Debug: SAPI Speaking (Clean Fallback): \"" + text + "\"");
 
@@ -538,7 +554,7 @@ public class SpeechService {
                     activeProcess.set(null);
                 }
             }
-            return azureSuccess || sapiSuccess;
+            return azureSuccess || breezeSuccess || sapiSuccess;
         } finally {
             isActivelySpeaking.set(false);
             if (voiceListener != null) voiceListener.setInternalMute(false);
@@ -559,12 +575,20 @@ public class SpeechService {
     }
 
     private static boolean shouldUseBreeze(String originalKey, boolean alreadyCached) {
-        if (Settings.isBreezePreferAll()) return true;
-        if (alreadyCached) return false;
-        if (originalKey == null || originalKey.isBlank()) return true;
-        String normalized = originalKey.toLowerCase(java.util.Locale.ROOT);
-        return normalized.startsWith("media_") || normalized.startsWith("game_")
-                || normalized.contains("dynamic") || normalized.contains("commentary");
+        // Provider order is enforced in executeSpeechBlocking. This flag keeps
+        // Breeze available for cache hits and for the final hosted fallback.
+        return BreezeSpeechService.isAvailable();
+    }
+
+    private static void queueBreezePrefetch(String text, String key, String style, String pitch, String langCode) {
+        if (!Settings.isBreezePrefetchEnabled() || key == null || key.isBlank()
+                || !BreezeSpeechService.isAvailable()
+                || BreezeSpeechService.isCached(text, key, style, pitch, langCode)) return;
+        CompletableFuture.runAsync(() -> {
+            if (BreezeSpeechService.prefetch(text, key, style, pitch, langCode)) {
+                System.out.println("[Breeze TTS] Cached companion line for future fallback use.");
+            }
+        });
     }
 
     private static String applyHumanVariance(String basePitch) {

@@ -85,7 +85,10 @@ public class AzureSpeechService {
         String safeLang = (langCode == null || langCode.isBlank()) ? "ja-JP" : langCode;
         boolean isDndContent = safeLang.equalsIgnoreCase("en-US");
         String targetCacheDir = isDndContent ? DND_CACHE_DIR_PATH : CACHE_DIR_PATH;
-        return new File(targetCacheDir, cacheFilename(key, style, safeLang)).exists();
+        // New files are explicitly provider-tagged. Existing Nanami files use
+        // the legacy name and remain valid fallbacks during the transition.
+        return new File(targetCacheDir, cacheFilename(key, style, safeLang)).exists()
+                || new File(targetCacheDir, legacyCacheFilename(key, style, safeLang)).exists();
     }
     
     public static void stopAllAudio() {
@@ -132,6 +135,12 @@ public class AzureSpeechService {
                 return playWav(cachedFile, key);
             }
 
+            File legacyFile = new File(targetCacheDir, legacyCacheFilename(key, safeStyle, safeLang));
+            if (legacyFile.exists()) {
+                System.out.println("[Azure TTS] Legacy Nanami cache hit: " + legacyFile.getName());
+                return playWav(legacyFile, key);
+            }
+
             return generateAndPlayFile(text, safeStyle, safePitch, safeLang, cachedFile, key);
             
         } else {
@@ -140,6 +149,13 @@ public class AzureSpeechService {
     }
 
     private static String cacheFilename(String key, String style, String lang) {
+        String voice = voiceForLanguage(lang);
+        String resolvedStyle = styleForVoice(style, voice);
+        String profile = VOICE_PROFILE_VERSION + "_" + voice + "_" + resolvedStyle + "_" + lang;
+        return ("azure_" + key + "_" + profile).replaceAll("[^a-zA-Z0-9._-]", "_") + ".wav";
+    }
+
+    private static String legacyCacheFilename(String key, String style, String lang) {
         String voice = voiceForLanguage(lang);
         String resolvedStyle = styleForVoice(style, voice);
         String profile = VOICE_PROFILE_VERSION + "_" + voice + "_" + resolvedStyle + "_" + lang;
