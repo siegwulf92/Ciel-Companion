@@ -468,7 +468,7 @@ public class CielCompanion {
             List<String> lines = Files.readAllLines(statusFile, StandardCharsets.UTF_8);
             for (String line : lines) {
                 System.out.println("[Ciel Update Status] " + line);
-                if (line.trim().equalsIgnoreCase("event=paired-update-installed")) updateBoot = true;
+                if (line.replace("\uFEFF", "").trim().equalsIgnoreCase("event=paired-update-installed")) updateBoot = true;
             }
             Path reportedFile = statusFile.resolveSibling("update_status.last_reported.txt");
             Files.move(statusFile, reportedFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
