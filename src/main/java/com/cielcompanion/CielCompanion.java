@@ -43,9 +43,12 @@ public class CielCompanion {
     private static ScheduledExecutorService scheduler;
     private static VoiceListener voiceListener;
     private static CielGui cielGui;
+    // Keep the singleton lock independent of launcher-specific LOCALAPPDATA
+    // overrides. The Task Scheduler launcher uses the Codex profile for
+    // bridge data, while a manual launch may use the normal Windows profile;
+    // both must still resolve to one per-user Ciel instance.
     private static final Path INSTANCE_LOCK_PATH = Paths.get(
-            System.getenv().getOrDefault("LOCALAPPDATA", System.getProperty("user.home")),
-            "CielCompanion", "ciel-instance.lock");
+            System.getProperty("user.home"), ".cielcompanion", "ciel-instance.lock");
     private static FileChannel instanceLockChannel;
     private static FileLock instanceFileLock;
     private static final String COMMAND_TRIGGER_PASSPHRASE = localTriggerKey("command");
