@@ -273,6 +273,11 @@ public class CielController {
             
             // If gaming, skip local polling entirely to preserve game FPS
             if (isGaming) return; 
+
+            // The Java loop can start a few seconds before the Python router.
+            // Do not spend a model request (or emit a connection failure) during
+            // that normal startup race; the next scheduled poll will retry.
+            if (!isEmotionRouterReady()) return;
             
             CompletableFuture.runAsync(() -> {
                 try {
@@ -306,6 +311,22 @@ public class CielController {
                     logEmotionPollFailure(e);
                 }
             });
+        }
+    }
+
+    private static boolean isEmotionRouterReady() {
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL("http://127.0.0.1:8000/docs").openConnection();
+            connection.setConnectTimeout(250);
+            connection.setReadTimeout(250);
+            connection.setRequestMethod("GET");
+            int status = connection.getResponseCode();
+            return status >= 200 && status < 500;
+        } catch (IOException | RuntimeException ignored) {
+            return false;
+        } finally {
+            if (connection != null) connection.disconnect();
         }
     }
 
