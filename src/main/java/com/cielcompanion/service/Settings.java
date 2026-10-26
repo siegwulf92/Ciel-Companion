@@ -65,6 +65,8 @@ public class Settings {
     private static String HOTKEY_KEY;
     
     private static String DND_CAMPAIGN_PATH;
+    private static String DND_KNOWLEDGE_MODE;
+    private static String DND_LIVE_STATE_PATH;
 
     private static String ASTRONOMY_API_APPLICATION_ID;
     private static String ASTRONOMY_API_APPLICATION_SECRET;
@@ -219,6 +221,11 @@ public class Settings {
             HOTKEY_KEY = props.getProperty("ciel.hotkey.key", "F12");
             
             DND_CAMPAIGN_PATH = props.getProperty("dnd.campaignPath", "");
+            DND_KNOWLEDGE_MODE = props.getProperty("dnd.knowledgeMode", "player").trim().toLowerCase(Locale.ROOT);
+            if (!DND_KNOWLEDGE_MODE.equals("player") && !DND_KNOWLEDGE_MODE.equals("dm")) {
+                DND_KNOWLEDGE_MODE = "player";
+            }
+            DND_LIVE_STATE_PATH = props.getProperty("dnd.liveStatePath", "").trim();
             
             ASTRONOMY_API_APPLICATION_ID = props.getProperty("astronomy.api.applicationId", "");
             ASTRONOMY_API_APPLICATION_SECRET = props.getProperty("astronomy.api.applicationSecret", "");
@@ -363,6 +370,8 @@ public class Settings {
     public static boolean isHotkeyEnabled() { return HOTKEY_ENABLED; }
     public static String getHotkeyKey() { return HOTKEY_KEY; }
     public static String getDndCampaignPath() { return DND_CAMPAIGN_PATH; }
+    public static String getDndKnowledgeMode() { return DND_KNOWLEDGE_MODE; }
+    public static String getDndLiveStatePath() { return DND_LIVE_STATE_PATH; }
     public static String getAstronomyApiApplicationId() { return ASTRONOMY_API_APPLICATION_ID; }
     public static String getAstronomyApiApplicationSecret() { return ASTRONOMY_API_APPLICATION_SECRET; }
     public static String getIpGeolocationApiKey() { return IPGEOLOCATION_API_KEY; }

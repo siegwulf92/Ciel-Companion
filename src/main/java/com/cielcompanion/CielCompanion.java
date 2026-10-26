@@ -128,9 +128,12 @@ public class CielCompanion {
                     
                     LoreService loreService = new LoreService();
                     RulebookService rulebookService = new RulebookService();
+                    rulebookService.initialize();
                     MasteryService masteryService = new MasteryService();
                     DndCampaignService dndCampaignService = new DndCampaignService();
                     CombatTrackerService combatTrackerService = new CombatTrackerService();
+                    com.cielcompanion.ai.ObserverService.setCombatTrackerService(combatTrackerService);
+                    com.cielcompanion.ai.ContextBuilder.setCombatTrackerService(combatTrackerService);
                     SpellCheckService spellCheckService = new SpellCheckService(); 
                     
                     CommandService commandService = new CommandService(

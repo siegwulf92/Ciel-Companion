@@ -8,6 +8,7 @@ import com.cielcompanion.service.SystemMonitor;
 import com.cielcompanion.service.SystemMonitor.SystemMetrics;
 import com.cielcompanion.service.SystemMonitor.ProcessInfo;
 import com.cielcompanion.mood.Emotion;
+import com.cielcompanion.dnd.CombatTrackerService;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -20,6 +21,7 @@ import java.util.LinkedList;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -34,6 +36,10 @@ public class ObserverService {
     private static String currentForegroundApp = "";
     private static long appFocusStartTime = System.currentTimeMillis();
     private static boolean hasWarnedForFatigue = false;
+    private static volatile CombatTrackerService combatTrackerService;
+    private static final AtomicBoolean urgentEvaluationQueued = new AtomicBoolean(false);
+    private static String lastObserverSpeech = "";
+    private static long lastObserverSpeechAt;
 
     // Fatigue threshold set to 2 hours
     private static final long FATIGUE_THRESHOLD_MS = 2 * 60 * 60 * 1000L;
@@ -61,6 +67,11 @@ public class ObserverService {
         System.out.println("Ciel Debug: AI Observer Service started (Evaluator Core).");
     }
 
+    public static void setCombatTrackerService(CombatTrackerService tracker) {
+        combatTrackerService = tracker;
+        System.out.println("Ciel Debug: D&D table observer connected to combat tracker.");
+    }
+
     public static synchronized void appendTranscript(String text) {
         if (!Settings.isAiObserverEnabled()) return;
         
@@ -68,6 +79,23 @@ public class ObserverService {
         if (transcriptBuffer.size() > MAX_BUFFER_LINES) {
             transcriptBuffer.removeFirst();
         }
+        if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT
+                && observerScheduler != null && looksLikeTableQuestion(text)
+                && urgentEvaluationQueued.compareAndSet(false, true)) {
+            observerScheduler.execute(() -> {
+                try { evaluateBuffer(); }
+                finally { urgentEvaluationQueued.set(false); }
+            });
+        }
+    }
+
+    private static boolean looksLikeTableQuestion(String text) {
+        if (text == null) return false;
+        String lower = text.toLowerCase(java.util.Locale.ROOT);
+        return text.contains("?") || lower.contains("what does") || lower.contains("how does")
+                || lower.contains("is it a rule") || lower.contains("ruling") || lower.contains("initiative")
+                || lower.contains("whose turn") || lower.contains("bloodied") || lower.contains("hit point")
+                || lower.contains("ciel");
     }
 
     public static void logToPermanentTranscript(String text) {
@@ -95,6 +123,9 @@ public class ObserverService {
     }
 
     private static synchronized void evaluateBuffer() {
+        if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT && combatTrackerService != null) {
+            combatTrackerService.refreshFromLiveNotes(Settings.getDndCampaignPath());
+        }
         SystemMetrics metrics = SystemMonitor.getSystemMetrics();
         
         // --- 1. Proactive System Guardian (RAM/CPU Overload) ---
@@ -201,6 +232,14 @@ public class ObserverService {
         }
         
         if (!cleanText.isEmpty()) {
+            long now = System.currentTimeMillis();
+            if (cleanText.equalsIgnoreCase(lastObserverSpeech)
+                    && now - lastObserverSpeechAt < 90_000L) {
+                System.out.println("Ciel Debug: Suppressed duplicate observer speech.");
+                return;
+            }
+            lastObserverSpeech = cleanText;
+            lastObserverSpeechAt = now;
             SpeechService.speak(cleanText);
         }
     }

@@ -6,21 +6,37 @@ public class Combatant {
     private int currentHp;
     private int initiative;
     private boolean isPc; // Player Character vs NPC
+    private String role;
     private boolean bloodiedAnnounced = false;
     private boolean criticalAnnounced = false;
 
     public Combatant(String name, int maxHp, int initiative, boolean isPc) {
+        this(name, maxHp, initiative, isPc, "");
+    }
+
+    public Combatant(String name, int maxHp, int initiative, boolean isPc, String role) {
         this.name = name;
         this.maxHp = maxHp;
         this.currentHp = maxHp;
         this.initiative = initiative;
         this.isPc = isPc;
+        this.role = role == null ? "" : role.trim();
     }
 
     public String getName() { return name; }
     public int getCurrentHp() { return currentHp; }
     public boolean isPc() { return isPc; }
     public int getInitiative() { return initiative; }
+    public int getMaxHp() { return maxHp; }
+    public String getRole() { return role; }
+
+    public void setInitiative(int initiative) { this.initiative = initiative; }
+    public void setRole(String role) { this.role = role == null ? "" : role.trim(); }
+
+    public void setCurrentHp(int currentHp) {
+        this.currentHp = Math.max(0, Math.min(maxHp, currentHp));
+        resetThresholds();
+    }
 
     public void heal(int amount) {
         this.currentHp = Math.min(maxHp, currentHp + amount);

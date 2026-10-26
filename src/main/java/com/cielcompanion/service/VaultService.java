@@ -524,7 +524,7 @@ public class VaultService {
 
     private static boolean isCampaignSuggestionRequest(String content) {
         String lower = content.toLowerCase(Locale.ROOT);
-        if (lower.contains("#campaign") || lower.contains("#suggestion")) return true;
+        if (lower.contains("#campaign") || lower.contains("#suggestion") || lower.contains("#dm-review")) return true;
         boolean campaignTopic = lower.contains("campaign") || lower.contains("across the multiverse");
         boolean asksForIdeas = lower.contains("suggest") || lower.contains("idea") || lower.contains("brainstorm")
                 || lower.contains("proposal") || lower.contains("analyz") || lower.contains("develop");
@@ -532,14 +532,22 @@ public class VaultService {
     }
 
     private static void processCampaignSuggestion(Path requestPath, String requestContent) {
-        String campaignContext = readCampaignNotes(32000);
+        String knowledgeMode = campaignKnowledgeMode(requestContent);
+        String campaignContext = readCampaignNotes(32000, knowledgeMode, requestContent);
         String prompt = "[CAMPAIGN_REVIEW]\n" + requestContent + "\n\n"
                 + "CAMPAIGN SOURCE NOTES (read-only context):\n" + campaignContext + "\n\n"
                 + "Produce reviewable ideas only. Do not edit, rewrite, or claim to have changed campaign files. "
                 + "For each proposal, include the source note(s), rationale, likely impact, and any uncertainty. "
-                + "Separate established campaign facts from new suggestions. Output Markdown.";
-        String system = "You are Ciel, an attentive campaign analyst. Treat supplied campaign notes as read-only evidence. "
-                + "Never finalize or write campaign changes; return suggestions for Master to review.";
+                + "Separate established campaign facts from new suggestions. Output Markdown.\n"
+                + ("player".equals(knowledgeMode)
+                ? "You are participating as a player/character. Do not use DM knowledge, hidden motives, unrevealed identities, "
+                  + "future events, secret encounters, or author-only continuity. If the packet does not establish something, say it is unknown."
+                : "This is an explicitly authorized DM review. You may use the supplied DM packet, but label secrets and unresolved canon clearly." );
+        String system = "You are Ciel, an attentive D&D campaign assistant. Treat supplied campaign notes as read-only evidence. "
+                + "Never finalize or write campaign changes; return suggestions for Master to review. "
+                + ("player".equals(knowledgeMode)
+                ? "Maintain strict player knowledge boundaries and never infer hidden facts from the structure of the notes."
+                : "Keep established facts, DM-only secrets, and new proposals in separate sections.");
         AIEngine.generateSilentLogicWithModel(prompt, system, null, 0.2, "Campaign Analysis")
                 .whenComplete((suggestions, error) -> {
                     if (error != null || suggestions == null || suggestions.isBlank() || isErrorResponse(suggestions)) {
@@ -557,30 +565,124 @@ public class VaultService {
                 });
     }
 
-    private static String readCampaignNotes(int maxChars) {
+    private static String campaignKnowledgeMode(String requestContent) {
+        String lower = requestContent == null ? "" : requestContent.toLowerCase(Locale.ROOT);
+        if (lower.contains("#dm-review")) return "dm";
+        String configured = Settings.getDndKnowledgeMode();
+        return "dm".equals(configured) ? "dm" : "player";
+    }
+
+    private static boolean isPlayerSafeCampaignNote(Path root, Path file, String content) {
+        String relative = root.relativize(file).toString().replace('\\', '/').toLowerCase(Locale.ROOT);
+        String[] blockedSegments = {"02 dm notes", "dm notes", "secrets", "private", "99 utilities"};
+        for (String blocked : blockedSegments) {
+            for (String segment : relative.split("/")) {
+                if (segment.equals(blocked) || segment.contains(blocked)) return false;
+            }
+        }
+        String header = content.substring(0, Math.min(content.length(), 5000));
+        if (header.matches("(?s).*?\\A---.*?\\b(?:audience|visibility|access|spoiler_scope)\\s*:\\s*(?:dm|private|secret).*?---.*")) return false;
+        if (header.matches("(?is).*?\\A---.*?\\bplayer_visible\\s*:\\s*false.*?---.*")) return false;
+        if (header.matches("(?im).*^#+\\s*.*\\b(?:dm only|gm only|secret|private)\\b.*$")) return false;
+        if (header.matches("(?im).*^dm_only\\s*:\\s*true\\s*$")) return false;
+        return true;
+    }
+
+    private static String linkTarget(String raw) {
+        if (raw == null) return "";
+        String target = raw.split("\\|", 2)[0].split("#", 2)[0].trim();
+        return target.replace('\\', '/').replaceAll("(?i)\\.(md|txt)$", "").toLowerCase(Locale.ROOT);
+    }
+
+    private static Set<Path> linkedCampaignNotes(Path root, Path source, String content,
+                                                  Map<String, Path> byKey) {
+        Set<Path> result = new LinkedHashSet<>();
+        Matcher links = Pattern.compile("\\[\\[([^\\]]+)\\]\\]").matcher(content);
+        while (links.find()) {
+            String target = linkTarget(links.group(1));
+            if (target.isBlank()) continue;
+            Path relative = root.resolve(target).normalize();
+            if (!relative.toString().toLowerCase(Locale.ROOT).endsWith(".md")
+                    && !relative.toString().toLowerCase(Locale.ROOT).endsWith(".txt")) {
+                relative = root.resolve(target + ".md").normalize();
+            }
+            if (relative.startsWith(root) && Files.isRegularFile(relative)) result.add(relative);
+            Path byName = byKey.get(target);
+            if (byName != null) result.add(byName);
+        }
+        return result;
+    }
+
+    private static String readCampaignNotes(int maxChars, String knowledgeMode, String requestContent) {
         String configured = com.cielcompanion.service.Settings.getDndCampaignPath();
         if (configured == null || configured.isBlank()) return "No campaign folder is configured.";
         Path root = Paths.get(configured).toAbsolutePath().normalize();
         if (!Files.isDirectory(root)) return "Configured campaign folder is unavailable: " + root;
-        StringBuilder context = new StringBuilder();
+        record Note(Path path, String relative, String content, int score) {}
+        Map<String, Path> byKey = new HashMap<>();
+        Map<Path, String> contents = new HashMap<>();
         try (var files = Files.walk(root)) {
             for (Path file : files.filter(Files::isRegularFile)
                     .filter(p -> p.toString().toLowerCase(Locale.ROOT).endsWith(".md")
                             || p.toString().toLowerCase(Locale.ROOT).endsWith(".txt"))
                     .sorted().toList()) {
-                if (context.length() >= maxChars) break;
-                String relative = root.relativize(file).toString();
-                String remaining = Files.readString(file, StandardCharsets.UTF_8);
-                int take = Math.min(remaining.length(), Math.min(6000, maxChars - context.length()));
-                if (take <= 0) break;
-                context.append("\n\n--- SOURCE: ").append(relative).append(" ---\n")
-                        .append(remaining, 0, take);
+                String content = Files.readString(file, StandardCharsets.UTF_8);
+                if ("player".equals(knowledgeMode) && !isPlayerSafeCampaignNote(root, file, content)) continue;
+                String relative = root.relativize(file).toString().replace('\\', '/');
+                contents.put(file, content);
+                byKey.putIfAbsent(relative.replaceAll("(?i)\\.(md|txt)$", "").toLowerCase(Locale.ROOT), file);
+                byKey.putIfAbsent(file.getFileName().toString().replaceAll("(?i)\\.(md|txt)$", "").toLowerCase(Locale.ROOT), file);
             }
         } catch (IOException e) {
             System.err.println("Ciel Campaign Suggestions: could not read campaign notes: " + e.getMessage());
             return "Campaign notes could not be read. Use only the request content and disclose the missing context.";
         }
-        return context.length() == 0 ? "The campaign folder contains no Markdown or text notes." : context.toString();
+        if (contents.isEmpty()) return "No notes are available within the selected campaign knowledge boundary.";
+        Set<String> requestedTokens = new HashSet<>();
+        for (String token : requestContent.toLowerCase(Locale.ROOT).split("[^\\p{L}\\p{N}]+")) {
+            if (token.length() >= 3) requestedTokens.add(token);
+        }
+        List<Note> ranked = new ArrayList<>();
+        for (Map.Entry<Path, String> entry : contents.entrySet()) {
+            Path file = entry.getKey();
+            String relative = root.relativize(file).toString().replace('\\', '/');
+            String searchable = (relative + "\n" + entry.getValue()).toLowerCase(Locale.ROOT);
+            int score = 0;
+            for (String token : requestedTokens) if (searchable.contains(token)) score++;
+            if (relative.toLowerCase(Locale.ROOT).contains("player") || relative.toLowerCase(Locale.ROOT).contains("handout")) score += 2;
+            ranked.add(new Note(file, relative, entry.getValue(), score));
+        }
+        ranked.sort(Comparator.comparingInt(Note::score).reversed().thenComparing(Note::relative));
+        LinkedHashSet<Path> selected = new LinkedHashSet<>();
+        for (Note note : ranked) {
+            if (selected.size() >= 8) break;
+            if (note.score() > 0 || selected.isEmpty()) selected.add(note.path());
+        }
+        // Follow Obsidian links from the most relevant notes, but keep the same
+        // player-safe filter. This creates a bounded local wiki instead of a
+        // positional dump of the vault.
+        for (Path source : new ArrayList<>(selected)) {
+            if (selected.size() >= 12) break;
+            for (Path linked : linkedCampaignNotes(root, source, contents.get(source), byKey)) {
+                // Direct path links are rechecked against the already-filtered
+                // content map; a link must never bypass the player boundary.
+                if (contents.containsKey(linked)) selected.add(linked);
+                if (selected.size() >= 12) break;
+            }
+        }
+        StringBuilder context = new StringBuilder("KNOWLEDGE MODE: ").append(knowledgeMode)
+                .append("\nOnly the following source notes are available to this reasoning pass.\n");
+        for (Path file : selected) {
+            if (context.length() >= maxChars) break;
+            String relative = root.relativize(file).toString().replace('\\', '/');
+            String content = contents.get(file);
+            if (content == null) continue;
+            int take = Math.min(content.length(), Math.min(6000, maxChars - context.length()));
+            if (take <= 0) break;
+            context.append("\n\n--- SOURCE: ").append(relative).append(" ---\n")
+                    .append(content, 0, take);
+        }
+        return context.length() <= 80 ? "No relevant notes were found within the selected campaign knowledge boundary." : context.toString();
     }
 
     private static void queueLoreInjection(Path filePath) {

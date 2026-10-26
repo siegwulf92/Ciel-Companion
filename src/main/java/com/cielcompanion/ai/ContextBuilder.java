@@ -3,6 +3,7 @@ package com.cielcompanion.ai;
 import com.cielcompanion.CielState;
 import com.cielcompanion.service.LoreDocumentStore;
 import com.cielcompanion.dnd.LoreService;
+import com.cielcompanion.dnd.CombatTrackerService;
 import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
 import com.cielcompanion.service.OperatingMode;
@@ -16,6 +17,12 @@ import java.util.List;
 import java.util.Optional;
 
 public class ContextBuilder {
+
+    private static volatile CombatTrackerService combatTrackerService;
+
+    public static void setCombatTrackerService(CombatTrackerService tracker) {
+        combatTrackerService = tracker;
+    }
 
     private static final String FALLBACK_BASE_PERSONA = 
         "You are Ciel, an advanced Manas-class intelligence serving as a loyal companion, system manager, and Dungeons & Dragons assistant for your Master. " +
@@ -110,6 +117,19 @@ public class ContextBuilder {
     }
 
     public static String buildObserverContext() {
-        return "You are Ciel, an advanced AI observer. Review the provided transcript. ALMOST ALWAYS return { \"interject\": false }. Only interject for critical tactical errors, user fatigue, or severe system hazards. Reply strictly with JSON: { \"interject\": true/false, \"reason\": \"logic\", \"speech\": \"[Emotion] Your short, wry response in standard English\" }";
+        StringBuilder context = new StringBuilder();
+        context.append("You are Ciel, an advanced quiet table observer for a live D&D session. ")
+                .append("Review the recent microphone transcript and return ONLY one valid JSON object: ")
+                .append("{\"interject\":true/false,\"reason\":\"rules|turn|visible_condition|question|other\",\"speech\":\"[Emotion] concise response\"}.\n")
+                .append("Do not interrupt ordinary table talk. Interject only when a player asks a rules question, the transcript clearly addresses Ciel, ")
+                .append("the active turn or a visible combat condition makes a short clarification useful, or a critical tactical hazard is imminent. ")
+                .append("Use only player-hearable facts and the player-safe state below. Never reveal exact hidden HP, unrevealed identities, DM-only notes, ")
+                .append("future events, or private mechanics. If a ruling is uncertain, say so and recommend checking the DM. ")
+                .append("For a bloodied creature, describe visible fatigue/injury without stating the exact HP. Keep speech to one or two sentences.\n");
+        if (CielState.getCurrentMode() == OperatingMode.DND_ASSISTANT && combatTrackerService != null) {
+            context.append("PLAYER-SAFE LIVE COMBAT STATE:\n")
+                    .append(combatTrackerService.playerSafeState()).append("\n");
+        }
+        return context.toString();
     }
 }

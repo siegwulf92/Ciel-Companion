@@ -85,16 +85,38 @@ public class LoreService {
     private void indexFile(Path file) {
         String fileName = file.getFileName().toString();
         String key = fileName.contains(".") ? fileName.substring(0, fileName.lastIndexOf('.')).toLowerCase() : fileName.toLowerCase();
-        
-        String fullPathLower = file.toAbsolutePath().toString().toLowerCase();
-        boolean isRestricted = fullPathLower.contains("dm only") || fullPathLower.contains("02 dm notes")
-                || fullPathLower.contains("secret") || fullPathLower.contains("restricted")
-                || fullPathLower.contains("hidden");
+
+        boolean isRestricted = isRestrictedNote(file);
 
         if (isRestricted) {
             restrictedKnowledgeBase.put(key, file);
         } else {
             publicKnowledgeBase.put(key, file);
+        }
+    }
+
+    /**
+     * Fail closed for the player-facing index. Folder names are only a first
+     * signal; Obsidian frontmatter and explicit headings are authoritative
+     * enough to keep DM material out of normal lore lookup as well.
+     */
+    private boolean isRestrictedNote(Path file) {
+        String fullPathLower = file.toAbsolutePath().toString().replace('\\', '/').toLowerCase(Locale.ROOT);
+        for (String segment : fullPathLower.split("/")) {
+            if (segment.equals("02 dm notes") || segment.equals("dm notes") || segment.equals("dm only")
+                    || segment.equals("secrets") || segment.equals("private") || segment.equals("restricted")
+                    || segment.equals("hidden") || segment.equals("99 utilities")) return true;
+        }
+        try {
+            String content = Files.readString(file, StandardCharsets.UTF_8);
+            String header = content.substring(0, Math.min(content.length(), 5000));
+            if (header.matches("(?s).*?\\A---.*?\\b(?:audience|visibility|access|spoiler_scope)\\s*:\\s*(?:dm|private|secret).*?---.*")) return true;
+            if (header.matches("(?is).*?\\A---.*?\\bplayer_visible\\s*:\\s*false.*?---.*")) return true;
+            if (header.matches("(?im).*^#+\\s*.*\\b(?:dm only|gm only|secret|private)\\b.*$")) return true;
+            return header.matches("(?im).*^dm_only\\s*:\\s*true\\s*$");
+        } catch (IOException e) {
+            // An unreadable note must not be exposed through the player index.
+            return true;
         }
     }
 
