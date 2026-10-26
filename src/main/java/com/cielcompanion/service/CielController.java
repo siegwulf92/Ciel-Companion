@@ -51,7 +51,10 @@ public class CielController {
     private static ScheduledExecutorService logoutScheduler;
     
     // --- AI Emotion Polling Trackers ---
-    private static long lastEmotionPollTime = 0;
+    // Give the Python router time to finish bringing up its chat endpoint before
+    // the first background poll. A reachable /docs page alone is not sufficient
+    // during the short JVM/Python startup handoff.
+    private static long lastEmotionPollTime = System.currentTimeMillis();
     private static long lastEmotionPollFailureLog;
     private static int suppressedEmotionPollFailures;
     
