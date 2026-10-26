@@ -281,7 +281,7 @@ public class CielController {
             // that authoritative timestamp as a second guard so class loading
             // order cannot trigger a poll during the JVM/Python handoff.
             long appStart = CielState.getAppStartTime();
-            if (appStart > 0 && currentTime - appStart < 90_000L) return;
+            if (appStart <= 0 || currentTime - appStart < 90_000L) return;
 
             // The Java loop can start a few seconds before the Python router.
             // Do not spend a model request (or emit a connection failure) during
