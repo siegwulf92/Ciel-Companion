@@ -73,6 +73,38 @@ public class VaultService {
     private static final int MAX_CONCURRENT_LORE_FILES = 1;
     private static final Set<Path> activeLorePaths = ConcurrentHashMap.newKeySet();
 
+    // Failed background requests remain queued for retry, but repeated failures
+    // must not flood the primary log. Keep the first failure and a periodic
+    // summary so a persistent endpoint problem remains diagnosable.
+    private static final long FAILURE_LOG_COOLDOWN_MS = 120_000L;
+    private static final Map<String, FailureLogState> failureLogState = new ConcurrentHashMap<>();
+
+    private static final class FailureLogState {
+        volatile long lastLoggedAt;
+        volatile int suppressed;
+    }
+
+    private static void logFailure(String key, String message) {
+        long now = System.currentTimeMillis();
+        FailureLogState state = failureLogState.computeIfAbsent(key, ignored -> new FailureLogState());
+        synchronized (state) {
+            if (state.lastLoggedAt != 0L && now - state.lastLoggedAt < FAILURE_LOG_COOLDOWN_MS) {
+                state.suppressed++;
+                return;
+            }
+            String suffix = state.suppressed == 0 ? "" : " (suppressed " + state.suppressed + " similar failures)";
+            state.suppressed = 0;
+            state.lastLoggedAt = now;
+            System.err.println(message + suffix);
+        }
+    }
+
+    private static String safeFailureReason(String reason) {
+        if (reason == null) return "unknown failure";
+        String safe = reason.replaceAll("(?i)(api[_-]?key|token|password|secret|authorization)\\s*[:=]\\s*[^\\s,;]+", "$1=[REDACTED]");
+        return safe.length() > 500 ? safe.substring(0, 500) : safe;
+    }
+
     private static final Random random = new Random();
     private static String LORE_DIR;
 
@@ -556,8 +588,9 @@ public class VaultService {
                         String reason = error != null
                                 ? "error=" + cause.getClass().getSimpleName() + ":" + (cause.getMessage() == null ? "no message" : cause.getMessage())
                                 : (suggestions == null || suggestions.isBlank() ? "empty response" : "provider returned an error response");
-                        System.err.println("Ciel Campaign Suggestions: failed; request remains queued: "
-                                + requestPath.getFileName() + " " + reason);
+                        logFailure("campaign-suggestions:" + requestPath.toAbsolutePath(),
+                                "Ciel Campaign Suggestions: failed; request remains queued: "
+                                        + requestPath.getFileName() + " " + safeFailureReason(reason));
                         return;
                     }
                     saveFileAndArchive(requestPath, suggestions, suggestionsDir, requestsArchiveDir,
@@ -634,7 +667,8 @@ public class VaultService {
                 byKey.putIfAbsent(file.getFileName().toString().replaceAll("(?i)\\.(md|txt)$", "").toLowerCase(Locale.ROOT), file);
             }
         } catch (IOException e) {
-            System.err.println("Ciel Campaign Suggestions: could not read campaign notes: " + e.getMessage());
+            logFailure("campaign-notes-read", "Ciel Campaign Suggestions: could not read campaign notes: "
+                    + safeFailureReason(e.getMessage()));
             return "Campaign notes could not be read. Use only the request content and disclose the missing context.";
         }
         if (contents.isEmpty()) return "No notes are available within the selected campaign knowledge boundary.";
