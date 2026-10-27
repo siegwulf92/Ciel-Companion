@@ -633,7 +633,7 @@ public class HabitTrackerService {
         Process process=null;
         try {
             java.nio.file.Path root=ProjectPaths.root();
-            process=new ProcessBuilder(ProjectPaths.pythonExecutable(),
+            process=new ProcessBuilder(ProjectPaths.pythonBackgroundExecutable(),
                 root.resolve("Ciel/skills/ciel_media_transport.py").toString(),action)
                 .directory(root.toFile()).redirectError(ProcessBuilder.Redirect.DISCARD).start();
             final Process running=process;

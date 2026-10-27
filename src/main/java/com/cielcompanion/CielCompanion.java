@@ -370,7 +370,7 @@ public class CielCompanion {
         System.out.println("Ciel Debug: Auto-starting local AI Swarm server...");
         try {
             long javaPid = ProcessHandle.current().pid();
-            String python = ProjectPaths.pythonExecutable();
+            String python = ProjectPaths.pythonBackgroundExecutable();
             ProcessBuilder pb = new ProcessBuilder(python,
                     ProjectPaths.root().resolve("OpenJarvis-main/openjarvis.py").toString(), Long.toString(javaPid));
             pb.directory(ProjectPaths.root().resolve("OpenJarvis-main").toFile());

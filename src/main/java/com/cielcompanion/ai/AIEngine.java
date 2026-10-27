@@ -157,7 +157,7 @@ public class AIEngine {
         java.nio.file.Path root = com.cielcompanion.util.ProjectPaths.root();
         Process process = null;
         try {
-            process = new ProcessBuilder(com.cielcompanion.util.ProjectPaths.pythonExecutable(),
+            process = new ProcessBuilder(com.cielcompanion.util.ProjectPaths.pythonBackgroundExecutable(),
                 root.resolve("Ciel/skills/ciel_phonetics.py").toString())
                 .redirectError(ProcessBuilder.Redirect.DISCARD).start();
             JsonObject payload = new JsonObject(); payload.addProperty("text", text);

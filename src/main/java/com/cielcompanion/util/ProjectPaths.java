@@ -25,6 +25,17 @@ public final class ProjectPaths {
         return "python";
     }
 
+    /** Use the windowless interpreter for background helpers launched by the GUI. */
+    public static String pythonBackgroundExecutable() {
+        Path configured = Paths.get(pythonExecutable());
+        if (configured.getFileName() != null &&
+                configured.getFileName().toString().equalsIgnoreCase("python.exe")) {
+            Path windowless = configured.resolveSibling("pythonw.exe");
+            if (java.nio.file.Files.isRegularFile(windowless)) return windowless.toString();
+        }
+        return pythonExecutable();
+    }
+
     private static Path resolveRoot() {
         String configured = System.getProperty("ciel.root");
         if (configured != null && !configured.isBlank()) return Paths.get(configured).toAbsolutePath().normalize();
