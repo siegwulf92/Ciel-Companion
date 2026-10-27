@@ -10,6 +10,7 @@ import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.URLConnection;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -17,6 +18,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
+import java.security.KeyStore;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManagerFactory;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -31,6 +37,7 @@ public final class BreezeSpeechService {
     private static volatile boolean available;
     private static volatile String apiKey;
     private static volatile String voiceId;
+    private static volatile SSLSocketFactory windowsTrustSocketFactory;
     private static final Path CACHE_DIR = Path.of(".local", "breeze_voice_cache");
 
     private BreezeSpeechService() {}
@@ -137,7 +144,7 @@ public final class BreezeSpeechService {
         try {
             URI uri = URI.create(API_ROOT + "/v1/text-to-speech/" +
                     URLEncoder.encode(voiceId, StandardCharsets.UTF_8).replace("+", "%20") + "?output_format=wav");
-            connection = (HttpURLConnection) uri.toURL().openConnection();
+            connection = openConnection(uri);
             connection.setRequestMethod("POST");
             connection.setConnectTimeout(15_000);
             connection.setReadTimeout(90_000);
@@ -255,12 +262,49 @@ public final class BreezeSpeechService {
         }
     }
 
+    /**
+     * Windows security products can terminate TLS with a locally generated
+     * certificate. Java's bundled cacerts does not know that Windows root,
+     * while the OS/browser trust store does. Use Windows-ROOT for Breeze
+     * connections when available; on non-Windows or restricted JVMs the
+     * normal Java trust configuration remains the safe fallback.
+     */
+    private static HttpURLConnection openConnection(URI uri) throws Exception {
+        URLConnection raw = uri.toURL().openConnection();
+        if (raw instanceof HttpsURLConnection https) {
+            SSLSocketFactory factory = windowsTrustSocketFactory();
+            if (factory != null) https.setSSLSocketFactory(factory);
+        }
+        return (HttpURLConnection) raw;
+    }
+
+    private static SSLSocketFactory windowsTrustSocketFactory() {
+        SSLSocketFactory cached = windowsTrustSocketFactory;
+        if (cached != null) return cached;
+        try {
+            KeyStore roots = KeyStore.getInstance("Windows-ROOT");
+            roots.load(null, null);
+            TrustManagerFactory trust = TrustManagerFactory.getInstance(
+                    TrustManagerFactory.getDefaultAlgorithm());
+            trust.init(roots);
+            SSLContext context = SSLContext.getInstance("TLS");
+            context.init(null, trust.getTrustManagers(), null);
+            cached = context.getSocketFactory();
+            windowsTrustSocketFactory = cached;
+            System.out.println("[Breeze TTS] Using Windows trusted roots for HTTPS.");
+            return cached;
+        } catch (Exception ignored) {
+            // Keep the JVM's normal trust store if Windows-ROOT is unavailable.
+            return null;
+        }
+    }
+
     private static String discoverVoice() {
         HttpURLConnection connection = null;
         try {
             String query = "search=" + URLEncoder.encode("female Japanese roleplay companion", StandardCharsets.UTF_8)
                     + "&language_code=en&gender=female&accent=japanese&page_size=50";
-            connection = (HttpURLConnection) URI.create(API_ROOT + "/v1/voices?" + query).toURL().openConnection();
+            connection = openConnection(URI.create(API_ROOT + "/v1/voices?" + query));
             connection.setRequestMethod("GET");
             connection.setConnectTimeout(15_000);
             connection.setReadTimeout(30_000);
