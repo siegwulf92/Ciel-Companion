@@ -192,11 +192,9 @@ public class SpeechService {
     }
 
     public static void speakMediaCommentary(String text, java.util.function.Consumer<Boolean> onComplete) {
-        // Media commentary is generated as fluent English, then follows the
-        // normal final-stage language/phonetic conversion for Ciel's voice.
-        // This keeps the semantic response English without speaking a full
-        // Japanese paragraph from the model itself.
-        queuePreformatted(text, "media_commentary", false, false, onComplete, "en-US");
+        // Generated commentary stays English internally; the active Japanese
+        // voice receives final-stage phonokana only when it is about to speak.
+        queuePreformatted(text, "media_commentary", false, false, onComplete, null);
     }
 
     private static void queuePreformatted(String text, String key, boolean isRare, boolean flushQueue,
@@ -254,13 +252,8 @@ public class SpeechService {
                 CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Excited", 0.8, "RareDialogue"));
             }
 
-            boolean englishMediaCommentary = "media_commentary".equals(key)
-                    && "en-US".equals(forcedLanguageCode);
-            // Authored startup/login lines are plain English. Preserve them
-            // instead of applying a second English-to-Katakana pass.
-            boolean plainEnglishDialogue = isPlainEnglishDialogueKey(key);
             String langCode = forcedLanguageCode != null
-                    ? forcedLanguageCode : (plainEnglishDialogue ? "en-US" : CielVoiceManager.getActiveLanguageCode());
+                    ? forcedLanguageCode : CielVoiceManager.getActiveLanguageCode();
 
             String style = "default";
             String pitch = "+0%";
@@ -310,14 +303,14 @@ public class SpeechService {
                     String textToSpeak = finalCleanText;
 
                     boolean needsLanguageConversion = false;
-                    String speechKey = com.cielcompanion.util.SpeechText.cacheKey(key, finalCleanText, langCode);
+                    boolean requiresPhonokana = !isGreeting && langCode.equals("ja-JP")
+                            && Pattern.compile("[a-zA-Z]").matcher(finalCleanText).find();
+                    String cacheKey = requiresPhonokana ? "phonokana-v3:" + key : key;
+                    String speechKey = com.cielcompanion.util.SpeechText.cacheKey(cacheKey, finalCleanText, langCode);
                     boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, finalStyle, langCode);
 
                     if (!isAlreadyCached) {
-                        if (!englishMediaCommentary && !plainEnglishDialogue && CielVoiceManager.isLanguageLocked()) {
-                            needsLanguageConversion = true;
-                        } else if (!englishMediaCommentary && !plainEnglishDialogue && langCode.equals("ja-JP")
-                                && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                        if (requiresPhonokana) {
                             needsLanguageConversion = true;
                         }
 
@@ -325,13 +318,12 @@ public class SpeechService {
                             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
                         }
 
-                        if (!englishMediaCommentary && !plainEnglishDialogue && CielVoiceManager.isLanguageLocked()) {
-                            textToSpeak = TranslationService.toJapanese(textToSpeak);
-                            System.out.println("[Ciel World Voice]: Translated to: " + textToSpeak);
-                        } else if (!englishMediaCommentary && !plainEnglishDialogue && langCode.equals("ja-JP")
-                                && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                        if (requiresPhonokana) {
                             textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
                             System.out.println("[Ciel World Voice]: Transliterated to Katakana: " + textToSpeak);
+                        } else if (!isGreeting && CielVoiceManager.isLanguageLocked()) {
+                            textToSpeak = TranslationService.toJapanese(textToSpeak);
+                            System.out.println("[Ciel World Voice]: Translated to: " + textToSpeak);
                         }
                     } else {
                         System.out.println("Ciel Debug: Audio is locally cached (" + key + "). Bypassing Swarm translation pipeline.");
@@ -433,13 +425,17 @@ public class SpeechService {
                         String langCode = CielVoiceManager.getActiveLanguageCode();
 
                         boolean needsLanguageConversion = false;
-                        String speechKey = com.cielcompanion.util.SpeechText.cacheKey(line.key(), textToSpeak, langCode);
+                        boolean requiresPhonokana = !line.key().startsWith("boot_greeting")
+                                && !line.key().startsWith("login_greeting")
+                                && !line.key().startsWith("warm_login")
+                                && langCode.equals("ja-JP")
+                                && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find();
+                        String cacheKey = requiresPhonokana ? "phonokana-v3:" + line.key() : line.key();
+                        String speechKey = com.cielcompanion.util.SpeechText.cacheKey(cacheKey, textToSpeak, langCode);
                         boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, style, langCode);
 
                         if (!isAlreadyCached) {
-                            if (CielVoiceManager.isLanguageLocked()) {
-                                needsLanguageConversion = true;
-                            } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                            if (requiresPhonokana) {
                                 needsLanguageConversion = true;
                             }
 
@@ -447,10 +443,11 @@ public class SpeechService {
                                 CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
                             }
 
-                            if (CielVoiceManager.isLanguageLocked()) {
-                                textToSpeak = TranslationService.toJapanese(textToSpeak);
-                            } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                            if (requiresPhonokana) {
                                 textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
+                            } else if (!line.key().startsWith("boot_greeting") && !line.key().startsWith("login_greeting")
+                                    && !line.key().startsWith("warm_login") && CielVoiceManager.isLanguageLocked()) {
+                                textToSpeak = TranslationService.toJapanese(textToSpeak);
                             }
                         }
 
@@ -670,9 +667,4 @@ public class SpeechService {
         return pitch == null || pitch.isBlank() || pitch.equalsIgnoreCase("default") ? "+0%" : pitch;
     }
 
-    private static boolean isPlainEnglishDialogueKey(String key) {
-        return key != null && (key.startsWith("boot_greeting.")
-                || key.startsWith("login_greeting.")
-                || key.startsWith("warm_login_greeting."));
-    }
 }
