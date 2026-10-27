@@ -542,7 +542,9 @@ public class SpeechService {
                 
                 String encodedCommand = Base64.getEncoder().encodeToString(psScript.getBytes(StandardCharsets.UTF_16LE));
 
-                ProcessBuilder pb = new ProcessBuilder("pwsh.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand);
+                ProcessBuilder pb = new ProcessBuilder("pwsh.exe", "-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand)
+                        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                        .redirectError(ProcessBuilder.Redirect.DISCARD);
                 try {
                     Process p = pb.start();
                     activeProcess.set(p);
