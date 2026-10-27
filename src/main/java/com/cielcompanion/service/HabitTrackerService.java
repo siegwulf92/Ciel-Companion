@@ -975,7 +975,11 @@ public class HabitTrackerService {
 
         String watchContext=ViewingProgress.context(MediaObservation.field(datText,"SERIES"),MediaObservation.field(datText,"EPISODE"),cachedCurrentTimeSec);
         String prompt = "[MEDIA_COMMENTARY] [QUERY: " + fullWindowTitle + "|||" + activeUrl + "]\nACCESSIBILITY DAT TEXT:\n" + datText + "\nHISTORY:\n" + historicalContext
-            +"\nEXACT EPISODE PLAYBACK HISTORY:\n"+watchContext;
+            +"\nEXACT EPISODE PLAYBACK HISTORY:\n"+watchContext
+            + "\nOUTPUT CONTRACT: Write one concise, natural English commentary sentence. "
+            + "Use English semantics and Latin letters only; do not translate into Japanese and do not use hiragana, katakana, kanji, or Japanese punctuation. "
+            + "Short romaji affection or praise such as 'daisuki' is allowed only when it fits naturally. "
+            + "Do not describe the output contract or return a language label.";
         
         try {
             AIEngine.generateSilentLogicWithModel(prompt, "You are Manas: Ciel.", CielTools.getBackgroundModel(), 0.7, "Media Persona Commentary")
@@ -988,6 +992,9 @@ public class HabitTrackerService {
                         } else if (response == null || response.isBlank() || response.contains("ABORT") || response.contains("DATA_DEFICIT")) {
                             mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(15));
                             System.out.println("[HabitTracker] Media commentary returned no speakable response for '" + cleanTitle + "'; retry deferred for 15 minutes.");
+                        } else if (containsJapaneseScript(response)) {
+                            mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(15));
+                            System.err.println("[HabitTracker] Media commentary rejected non-English script for '" + cleanTitle + "'; retry deferred for 15 minutes.");
                         } else {
                             if (!hashToLog.equals(currentEpisodeHash) || (cachedDurationMinutes > 0
                                     && cachedCurrentTimeSec >= cachedDurationMinutes * 60)) {
@@ -1024,6 +1031,14 @@ public class HabitTrackerService {
             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
             System.err.println("[HabitTracker] Could not start media commentary for '" + cleanTitle + "': " + e.getMessage());
         }
+    }
+
+    private static boolean containsJapaneseScript(String text) {
+        if (text == null) return false;
+        return text.codePoints().anyMatch(codePoint ->
+                (codePoint >= 0x3040 && codePoint <= 0x30ff) ||
+                (codePoint >= 0x3400 && codePoint <= 0x9fff) ||
+                (codePoint >= 0xff66 && codePoint <= 0xff9f));
     }
 
     private static void evaluateEmotionalResonance() {

@@ -192,11 +192,21 @@ public class SpeechService {
     }
 
     public static void speakMediaCommentary(String text, java.util.function.Consumer<Boolean> onComplete) {
+        // Media commentary is generated as fluent English, then follows the
+        // normal final-stage language/phonetic conversion for Ciel's voice.
+        // This keeps the semantic response English without speaking a full
+        // Japanese paragraph from the model itself.
         queuePreformatted(text, "media_commentary", false, false, onComplete);
     }
 
     private static void queuePreformatted(String text, String key, boolean isRare, boolean flushQueue,
                                           java.util.function.Consumer<Boolean> onComplete) {
+        queuePreformatted(text, key, isRare, flushQueue, onComplete, null);
+    }
+
+    private static void queuePreformatted(String text, String key, boolean isRare, boolean flushQueue,
+                                          java.util.function.Consumer<Boolean> onComplete,
+                                          String forcedLanguageCode) {
         try {
             if (text == null || text.isBlank()) {
                 if (onComplete != null) onComplete.accept(false);
@@ -244,7 +254,10 @@ public class SpeechService {
                 CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion("Excited", 0.8, "RareDialogue"));
             }
 
-            String langCode = CielVoiceManager.getActiveLanguageCode();
+            boolean englishMediaCommentary = "media_commentary".equals(key)
+                    && "en-US".equals(forcedLanguageCode);
+            String langCode = forcedLanguageCode != null
+                    ? forcedLanguageCode : CielVoiceManager.getActiveLanguageCode();
 
             String style = "default";
             String pitch = "+0%";
@@ -298,9 +311,10 @@ public class SpeechService {
                     boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, finalStyle, langCode);
 
                     if (!isAlreadyCached) {
-                        if (CielVoiceManager.isLanguageLocked()) {
+                        if (!englishMediaCommentary && CielVoiceManager.isLanguageLocked()) {
                             needsLanguageConversion = true;
-                        } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                        } else if (!englishMediaCommentary && langCode.equals("ja-JP")
+                                && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
                             needsLanguageConversion = true;
                         }
 
@@ -308,10 +322,11 @@ public class SpeechService {
                             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
                         }
 
-                        if (CielVoiceManager.isLanguageLocked()) {
+                        if (!englishMediaCommentary && CielVoiceManager.isLanguageLocked()) {
                             textToSpeak = TranslationService.toJapanese(textToSpeak);
                             System.out.println("[Ciel World Voice]: Translated to: " + textToSpeak);
-                        } else if (langCode.equals("ja-JP") && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
+                        } else if (!englishMediaCommentary && langCode.equals("ja-JP")
+                                && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
                             textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
                             System.out.println("[Ciel World Voice]: Transliterated to Katakana: " + textToSpeak);
                         }
