@@ -196,7 +196,7 @@ public class SpeechService {
         // normal final-stage language/phonetic conversion for Ciel's voice.
         // This keeps the semantic response English without speaking a full
         // Japanese paragraph from the model itself.
-        queuePreformatted(text, "media_commentary", false, false, onComplete);
+        queuePreformatted(text, "media_commentary", false, false, onComplete, "en-US");
     }
 
     private static void queuePreformatted(String text, String key, boolean isRare, boolean flushQueue,
