@@ -256,8 +256,11 @@ public class SpeechService {
 
             boolean englishMediaCommentary = "media_commentary".equals(key)
                     && "en-US".equals(forcedLanguageCode);
+            // Authored startup/login lines are plain English. Preserve them
+            // instead of applying a second English-to-Katakana pass.
+            boolean plainEnglishDialogue = isPlainEnglishDialogueKey(key);
             String langCode = forcedLanguageCode != null
-                    ? forcedLanguageCode : CielVoiceManager.getActiveLanguageCode();
+                    ? forcedLanguageCode : (plainEnglishDialogue ? "en-US" : CielVoiceManager.getActiveLanguageCode());
 
             String style = "default";
             String pitch = "+0%";
@@ -311,9 +314,9 @@ public class SpeechService {
                     boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, finalStyle, langCode);
 
                     if (!isAlreadyCached) {
-                        if (!englishMediaCommentary && CielVoiceManager.isLanguageLocked()) {
+                        if (!englishMediaCommentary && !plainEnglishDialogue && CielVoiceManager.isLanguageLocked()) {
                             needsLanguageConversion = true;
-                        } else if (!englishMediaCommentary && langCode.equals("ja-JP")
+                        } else if (!englishMediaCommentary && !plainEnglishDialogue && langCode.equals("ja-JP")
                                 && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
                             needsLanguageConversion = true;
                         }
@@ -322,10 +325,10 @@ public class SpeechService {
                             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
                         }
 
-                        if (!englishMediaCommentary && CielVoiceManager.isLanguageLocked()) {
+                        if (!englishMediaCommentary && !plainEnglishDialogue && CielVoiceManager.isLanguageLocked()) {
                             textToSpeak = TranslationService.toJapanese(textToSpeak);
                             System.out.println("[Ciel World Voice]: Translated to: " + textToSpeak);
-                        } else if (!englishMediaCommentary && langCode.equals("ja-JP")
+                        } else if (!englishMediaCommentary && !plainEnglishDialogue && langCode.equals("ja-JP")
                                 && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find()) {
                             textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
                             System.out.println("[Ciel World Voice]: Transliterated to Katakana: " + textToSpeak);
@@ -665,5 +668,11 @@ public class SpeechService {
 
     private static String normalizeSpeechPitch(String pitch) {
         return pitch == null || pitch.isBlank() || pitch.equalsIgnoreCase("default") ? "+0%" : pitch;
+    }
+
+    private static boolean isPlainEnglishDialogueKey(String key) {
+        return key != null && (key.startsWith("boot_greeting.")
+                || key.startsWith("login_greeting.")
+                || key.startsWith("warm_login_greeting."));
     }
 }
