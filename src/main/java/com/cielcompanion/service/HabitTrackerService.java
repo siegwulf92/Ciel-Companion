@@ -236,8 +236,12 @@ public class HabitTrackerService {
             final boolean isStremioProc = activeProcess.contains("stremio");
             final boolean isStremio = isStremioProc || activeTitle.toLowerCase().contains("stremio");
             
-            // FIX: Enforce that Stremio MUST be the active foreground process to be considered Media.
-            final boolean isMedia = (isMediaTitle(activeTitle) && !activeProcess.contains("chrome") && !activeProcess.contains("edge") && !activeProcess.contains("firefox")) || isStremioProc;
+            // Browser streaming pages are media too.  The Python media skill
+            // validates the active URL before creating an episode identity,
+            // so a normal search/new-tab caption cannot trigger commentary.
+            // Keeping the foreground-title gate avoids classifying a hidden
+            // browser tab or launcher as the active show.
+            final boolean isMedia = isStremioProc || isMediaTitle(activeTitle);
             
             // IF SpeechService is actively outputting, suppress new media DOM walks to prevent API loop collisions
             if (com.cielcompanion.service.SpeechService.isActivelySpeaking()) {
