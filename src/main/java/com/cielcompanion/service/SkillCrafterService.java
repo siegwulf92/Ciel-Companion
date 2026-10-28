@@ -257,6 +257,17 @@ public class SkillCrafterService {
                 
                 Path tempPath = filePath.resolveSibling(filePath.getFileName() + ".tmp");
                 Files.writeString(tempPath, code, StandardCharsets.UTF_8);
+                if (lang.equals("python")) {
+                    boolean hasEntryPoint = Pattern.compile(
+                            "(?m)^\\s*def\\s+execute\\s*\\(\\s*\\*args(?:\\s*,[^)]*)?\\s*\\)\\s*:")
+                            .matcher(code).find();
+                    if (!hasEntryPoint || !validatePythonSyntax(tempPath)) {
+                        Files.deleteIfExists(tempPath);
+                        System.err.println("Ciel Error: Generated Python skill rejected before publication: "
+                                + (!hasEntryPoint ? "missing execute(*args) entry point" : "syntax validation failed"));
+                        return false;
+                    }
+                }
                 try {
                     Files.move(tempPath, filePath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
                 } catch (AtomicMoveNotSupportedException moveFallback) {
@@ -320,5 +331,36 @@ public class SkillCrafterService {
     
     private static String purgeGlobalLoops(String code) {
         return code.replaceAll("(?m)^while\\s+True\\s*:", "# BLOCKED GLOBAL INFINITE LOOP: while True:");
+    }
+
+    private static boolean validatePythonSyntax(Path script) {
+        Process process = null;
+        try {
+            String checker = "import ast,pathlib,sys; "
+                    + "ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'), filename=sys.argv[1])";
+            process = new ProcessBuilder(ProjectPaths.pythonExecutable(), "-c", checker,
+                    script.toAbsolutePath().toString()).redirectErrorStream(true).start();
+            if (!process.waitFor(20, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                System.err.println("Ciel Error: Generated Python syntax validation timed out.");
+                return false;
+            }
+            if (process.exitValue() != 0) {
+                String detail = new String(process.getInputStream().readNBytes(4096), StandardCharsets.UTF_8)
+                        .replaceAll("[\\r\\n]+", " ").trim();
+                System.err.println("Ciel Error: Generated Python syntax validation failed: " + detail);
+                return false;
+            }
+            return true;
+        } catch (IOException error) {
+            System.err.println("Ciel Error: Generated Python syntax validator unavailable: "
+                    + error.getClass().getSimpleName());
+            return false;
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            return false;
+        } finally {
+            if (process != null && process.isAlive()) process.destroyForcibly();
+        }
     }
 }
