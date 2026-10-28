@@ -419,7 +419,8 @@ public class CielCompanion {
 
     private static void killProcessOnPort(int port) {
         try {
-            Process netstat = new ProcessBuilder("cmd.exe", "/c", "netstat -ano | findstr :" + port).start();
+            Process netstat = new ProcessBuilder("powershell.exe", "-WindowStyle", "Hidden", "-NoProfile",
+                    "-NonInteractive", "-Command", "netstat -ano | findstr :" + port).start();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(netstat.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
@@ -427,7 +428,8 @@ public class CielCompanion {
                         String[] parts = line.trim().split("\\s+");
                         String pid = parts[parts.length - 1];
                         if (!pid.equals("0")) {
-                            Process kill = new ProcessBuilder("cmd.exe", "/c", "taskkill /F /T /PID " + pid).start();
+                            Process kill = new ProcessBuilder("powershell.exe", "-WindowStyle", "Hidden", "-NoProfile",
+                                    "-NonInteractive", "-Command", "Stop-Process -Id " + pid + " -Force").start();
                             kill.waitFor();
                             System.out.println("Ciel Debug: Natively terminated ghost process (PID: " + pid + ").");
                         }
