@@ -100,8 +100,8 @@ public final class BreezeSpeechService {
 
     public static boolean isCached(String text, String key, String style, String pitch, String languageCode) {
         if (!Settings.isBreezeCacheEnabled() || text == null || text.isBlank()) return false;
-        Path current = cachePath(key, text, style, pitch, languageCode);
-        return Files.isRegularFile(current) || Files.isRegularFile(legacyCachePath(text, style, pitch, languageCode));
+        return findCachedPath(key, text, style, pitch, languageCode) != null
+                || Files.isRegularFile(legacyCachePath(text, style, pitch, languageCode));
     }
 
     /** True once enough local Breeze WAVs exist to enable dynamic-speech mode. */
@@ -123,9 +123,10 @@ public final class BreezeSpeechService {
                                  boolean playAudio) {
         if (!available || text == null || text.isBlank()) return false;
         Path cached = cachePath(key, text, style, pitch, languageCode);
-        if (Settings.isBreezeCacheEnabled() && Files.isRegularFile(cached)) {
+        Path reusable = findCachedPath(key, text, style, pitch, languageCode);
+        if (Settings.isBreezeCacheEnabled() && reusable != null) {
             if (!playAudio) return true;
-            boolean played = AzureSpeechService.playProviderWavFile(cached.toFile(), key == null ? "BreezeCached" : key,
+            boolean played = AzureSpeechService.playProviderWavFile(reusable.toFile(), key == null ? "BreezeCached" : key,
                     Settings.isBreezePrimeOutput());
             if (played) System.out.println("[Breeze TTS] Cache hit; no credits consumed.");
             return played;
@@ -213,11 +214,63 @@ public final class BreezeSpeechService {
             StringBuilder hex = new StringBuilder();
             for (byte b : digest) hex.append(String.format("%02x", b));
             String prefix = "breeze_" + safeToken(Settings.getBreezeModel()) + "_"
+                    + safeToken(voiceId) + "_" + safeToken(key) + "_" + safeToken(style);
+            return CACHE_DIR.resolve(prefix + "_" + hex + ".wav");
+        } catch (Exception e) {
+            return CACHE_DIR.resolve("breeze_" + safeToken(Settings.getBreezeModel()) + "_"
+                    + safeToken(voiceId) + "_" + safeToken(key) + "_" + safeToken(style) + "_"
+                    + Integer.toHexString(material.hashCode()) + ".wav");
+        }
+    }
+
+    /** Previous cache naming, retained so existing audio remains usable. */
+    private static Path priorCachePath(String key, String text, String style, String pitch, String languageCode) {
+        String material = key + "\n" + voiceId + "\n" + Settings.getBreezeModel() + "\n"
+                + Settings.getBreezeLanguageCode() + "\n" + languageCode + "\n"
+                + style + "\n" + pitch + "\n" + text;
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(material.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder();
+            for (byte b : digest) hex.append(String.format("%02x", b));
+            String prefix = "breeze_" + safeToken(Settings.getBreezeModel()) + "_"
                     + safeToken(voiceId) + "_" + safeToken(key);
             return CACHE_DIR.resolve(prefix + "_" + hex + ".wav");
         } catch (Exception e) {
             return CACHE_DIR.resolve("breeze_" + safeToken(Settings.getBreezeModel()) + "_"
-                    + safeToken(voiceId) + "_" + Integer.toHexString(material.hashCode()) + ".wav");
+                    + safeToken(voiceId) + "_" + safeToken(key) + "_" + Integer.toHexString(material.hashCode()) + ".wav");
+        }
+    }
+
+    /**
+     * Fixed dialogue keys include a content fingerprint in the key.  Their
+     * cache filename also varies with pitch/style, so human-variance changes
+     * must not spend another Breeze credit for the same sentence.  Dynamic
+     * keys are intentionally excluded because they do not identify their text.
+     */
+    private static Path findCachedPath(String key, String text, String style, String pitch, String languageCode) {
+        if (!Settings.isBreezeCacheEnabled() || key == null || key.isBlank()) {
+            return null;
+        }
+        Path exact = cachePath(key, text, style, pitch, languageCode);
+        if (Files.isRegularFile(exact)) return exact;
+        Path prior = priorCachePath(key, text, style, pitch, languageCode);
+        if (Files.isRegularFile(prior)) return prior;
+        if (key.equals("media_commentary") || key.equals("game_launch") || key.startsWith("dynamic")) {
+            return null;
+        }
+        String prefix = "breeze_" + safeToken(Settings.getBreezeModel()) + "_"
+                + safeToken(voiceId) + "_" + safeToken(key) + "_" + safeToken(style) + "_";
+        try (java.util.stream.Stream<Path> files = Files.list(CACHE_DIR)) {
+            return files.filter(path -> path.getFileName().toString().startsWith(prefix)
+                            && path.getFileName().toString().endsWith(".wav"))
+                    .max(java.util.Comparator.comparingLong(path -> {
+                        try { return Files.getLastModifiedTime(path).toMillis(); }
+                        catch (Exception ignored) { return Long.MIN_VALUE; }
+                    }))
+                    .orElse(null);
+        } catch (Exception ignored) {
+            return null;
         }
     }
 
