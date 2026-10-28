@@ -43,7 +43,7 @@ public class LocationService {
     private static boolean tryWindowsLocation() {
         try {
             var script = java.nio.file.Paths.get(System.getProperty("user.dir"), "tools", "location-update", "Get-DeviceLocation.ps1");
-            var result = readCommandJson("powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script.toString());
+            var result = readCommandJson("powershell.exe", "-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script.toString());
             if (!result.has("available") || !result.get("available").getAsBoolean()) return false;
             double lat = result.get("latitude").getAsDouble(), lon = result.get("longitude").getAsDouble();
             if (!Double.isFinite(lat) || !Double.isFinite(lon) || Math.abs(lat)>90 || Math.abs(lon)>180) return false;

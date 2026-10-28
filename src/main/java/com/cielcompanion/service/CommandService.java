@@ -1117,8 +1117,15 @@ public class CommandService {
         try {
             Path script = ProjectPaths.root().resolve("update_ciel.bat");
             if (!Files.isRegularFile(script)) throw new IOException("Updater script is missing: " + script);
-            new ProcessBuilder("cmd.exe", "/c", "start", "\"Ciel Updater\"", "\"" + script + "\"")
+            String escapedScript = script.toAbsolutePath().toString().replace("'", "''");
+            String escapedRoot = ProjectPaths.root().toAbsolutePath().toString().replace("'", "''");
+            String launch = "Start-Process -FilePath '" + escapedScript
+                    + "' -WorkingDirectory '" + escapedRoot + "' -WindowStyle Hidden";
+            new ProcessBuilder("powershell.exe", "-WindowStyle", "Hidden", "-NoProfile",
+                    "-NonInteractive", "-Command", launch)
                     .directory(ProjectPaths.root().toFile())
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
                     .start();
         } catch (Exception e) {
             System.err.println("Ciel Error: Could not launch updater: " + e.getMessage());

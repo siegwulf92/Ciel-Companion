@@ -91,6 +91,8 @@ public class DynamicScriptEngine {
 
                 List<String> command = new ArrayList<>();
                 command.add("powershell.exe");
+                command.add("-WindowStyle");
+                command.add("Hidden");
                 command.add("-NoProfile");
                 command.add("-NonInteractive");
                 command.add("-Command");

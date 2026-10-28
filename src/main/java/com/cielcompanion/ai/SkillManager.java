@@ -199,6 +199,8 @@ public class SkillManager {
             } else {
                 // Default to PowerShell execution from file
                 command.add("powershell.exe");
+                command.add("-WindowStyle");
+                command.add("Hidden");
                 command.add("-NoProfile");
                 command.add("-ExecutionPolicy");
                 command.add("Bypass");
