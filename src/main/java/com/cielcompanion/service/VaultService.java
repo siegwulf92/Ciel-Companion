@@ -558,16 +558,17 @@ public class VaultService {
                     return;
                 }
 
-                if (isCampaignSuggestionRequest(requestContent)) {
-                    processCampaignSuggestion(filePath, requestContent);
+                // A novel can naturally contain words such as "campaign",
+                // "idea", or "analyze". Route explicit lore files before the
+                // broad campaign-suggestion heuristic so a full volume never
+                // bypasses the ordered three-hour assimilation queue.
+                if (isLoreRequest(filePath, requestContent)) {
+                    queueLoreInjection(filePath);
                     return;
                 }
-                
-                if (requestContent.toLowerCase().contains("#transcript") || 
-                    requestContent.toLowerCase().contains("#novel") || 
-                    requestContent.toLowerCase().contains("#lore")) {
-                    
-                    queueLoreInjection(filePath);
+
+                if (isCampaignSuggestionRequest(requestContent)) {
+                    processCampaignSuggestion(filePath, requestContent);
                     return;
                 }
 
@@ -600,6 +601,13 @@ public class VaultService {
         boolean asksForIdeas = lower.contains("suggest") || lower.contains("idea") || lower.contains("brainstorm")
                 || lower.contains("proposal") || lower.contains("analyz") || lower.contains("develop");
         return campaignTopic && asksForIdeas;
+    }
+
+    static boolean isLoreRequest(Path file, String content) {
+        String name = file == null || file.getFileName() == null ? "" : file.getFileName().toString();
+        if (name.matches("(?i)LN Volume ([1-9]|1[0-9]|2[0-3])\\.(md|txt)")) return true;
+        String lower = content == null ? "" : content.toLowerCase(Locale.ROOT);
+        return lower.contains("#transcript") || lower.contains("#novel") || lower.contains("#lore");
     }
 
     private static void processCampaignSuggestion(Path requestPath, String requestContent) {
