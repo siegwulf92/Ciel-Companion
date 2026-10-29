@@ -728,7 +728,11 @@ public class CielController {
     }
 
     private static int determinePhase(long idleTimeMinutes, boolean isGaming) {
-        if (idleTimeMinutes >= Settings.getPhase4ThresholdMin()) return isGaming ? 3 : 4; 
+        // Controller and fullscreen play do not reliably reset Windows' mouse/
+        // keyboard idle clock. An observed game session is active engagement,
+        // not loneliness or an idle-return event.
+        if (isGaming) return 0;
+        if (idleTimeMinutes >= Settings.getPhase4ThresholdMin()) return 4;
         if (idleTimeMinutes >= Settings.getPhase3ThresholdMin()) return 3;
         if (idleTimeMinutes >= Settings.getPhase2ThresholdMin()) return 2;
         if (idleTimeMinutes >= Settings.getPhase1ThresholdMin()) return 1;

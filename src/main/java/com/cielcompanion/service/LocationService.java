@@ -17,16 +17,9 @@ public class LocationService {
     private static Double accuracyMeters;
 
     private static com.google.gson.JsonObject readCommandJson(String... command) throws Exception {
-        Process process = new ProcessBuilder(command).redirectError(ProcessBuilder.Redirect.DISCARD).start();
-        var output = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
-            try { return new String(process.getInputStream().readNBytes(1000000), java.nio.charset.StandardCharsets.UTF_8); }
-            catch (Exception e) { return ""; }
-        });
-        try {
-            if (!process.waitFor(12, java.util.concurrent.TimeUnit.SECONDS)) throw new java.io.IOException("Location helper timeout");
-            if (process.exitValue() != 0) throw new java.io.IOException("Location helper failed");
-            return com.google.gson.JsonParser.parseString(output.get(1, java.util.concurrent.TimeUnit.SECONDS)).getAsJsonObject();
-        } finally { process.destroyForcibly(); }
+        var result = com.cielcompanion.util.WindowlessCommand.run(java.util.Arrays.asList(command), 12);
+        if (result.exitCode() != 0) throw new java.io.IOException("Location helper failed");
+        return com.google.gson.JsonParser.parseString(result.output()).getAsJsonObject();
     }
 
     private static String tailscaleExitNodeState() {

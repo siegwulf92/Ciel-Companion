@@ -190,7 +190,7 @@ public class SkillManager {
 
             // NATIVE FILE EXECUTION (Bypasses AMSI memory flagging)
             if (lang.equals("python") || lang.equals("py")) {
-                command.add("python");
+                command.add(ProjectPaths.pythonBackgroundExecutable());
                 command.add(scriptPath.toAbsolutePath().toString());
             } else if (lang.equals("bat") || lang.equals("cmd")) {
                 command.add("cmd.exe");
@@ -213,7 +213,7 @@ public class SkillManager {
                 command.addAll(Arrays.asList(arguments.split(" ")));
             }
 
-            ProcessBuilder pb = new ProcessBuilder(command);
+            ProcessBuilder pb = new ProcessBuilder(ProjectPaths.windowlessCommand(command));
             pb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
             pb.redirectError(ProcessBuilder.Redirect.INHERIT);
             

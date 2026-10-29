@@ -98,17 +98,11 @@ public class DynamicScriptEngine {
                 command.add("-Command");
                 command.add("-"); // Instructs PS to read from standard input
 
-                ProcessBuilder pb = new ProcessBuilder(command);
-                pb.redirectErrorStream(true); 
-                
-                Process process = pb.start();
-                try (java.io.OutputStream os = process.getOutputStream()) {
-                    os.write(scriptToExecute.getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                }
-                
-                String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-                int exitCode = process.waitFor();
+                com.cielcompanion.util.WindowlessCommand.Result execution =
+                        com.cielcompanion.util.WindowlessCommand.run(command, 120,
+                                scriptToExecute.getBytes(StandardCharsets.UTF_8));
+                String output = execution.output();
+                int exitCode = execution.exitCode();
                 
                 boolean hasError = exitCode != 0 || output.toLowerCase().contains("exception") || output.toLowerCase().contains("error");
                 

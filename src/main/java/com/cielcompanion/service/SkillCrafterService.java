@@ -338,7 +338,7 @@ public class SkillCrafterService {
         try {
             String checker = "import ast,pathlib,sys; "
                     + "ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'), filename=sys.argv[1])";
-            process = new ProcessBuilder(ProjectPaths.pythonExecutable(), "-c", checker,
+            process = new ProcessBuilder(ProjectPaths.pythonBackgroundExecutable(), "-c", checker,
                     script.toAbsolutePath().toString()).redirectErrorStream(true).start();
             if (!process.waitFor(20, TimeUnit.SECONDS)) {
                 process.destroyForcibly();

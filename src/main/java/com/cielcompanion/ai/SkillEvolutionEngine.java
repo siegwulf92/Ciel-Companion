@@ -48,7 +48,7 @@ public class SkillEvolutionEngine {
         System.out.println("[Beelzebub — Skill Consolidation] Starting Phase 1: scan for redundant skills and safe merge opportunities.");
 
         try {
-            Process process = new ProcessBuilder(System.getProperty("ciel.python", ProjectPaths.root().resolve(".venv/Scripts/python.exe").toString()), ProjectPaths.ciel().resolve("skills")
+            Process process = new ProcessBuilder(ProjectPaths.pythonBackgroundExecutable(), ProjectPaths.ciel().resolve("skills")
                     .resolve("ciel_skill_consolidation.py").toString(), "--scan")
                     .directory(ProjectPaths.root().toFile()).redirectErrorStream(true).start();
             if (!process.waitFor(60, TimeUnit.SECONDS)) {

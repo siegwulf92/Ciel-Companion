@@ -26,8 +26,10 @@ import java.util.stream.Stream;
 public final class LoreDocumentStore {
     public static final int MAX_LN_VOLUME = 23;
     private static final Pattern WORD = Pattern.compile("[\\p{L}\\p{N}]{3,}");
+    private static final Pattern VOLUME_REQUEST = Pattern.compile("(?i)\\b(?:ln|light\\s+novel|vol(?:ume)?)\\s*(?:volume\\s*)?(\\d{1,2})\\b");
     private static final Set<String> STOP = Set.of("the", "and", "for", "with", "from", "about", "what",
-            "who", "how", "does", "did", "was", "were", "volume", "tensura", "light", "novel");
+            "who", "how", "does", "did", "was", "were", "volume", "tensura", "light", "novel",
+            "according", "says", "say", "tell", "before", "after", "where", "when");
     private static final int CHUNK_CHARS = 5_500;
     private static final String LIBRARY = "Tensura Source Library";
 
@@ -196,10 +198,12 @@ public final class LoreDocumentStore {
     }
 
     public static String search(String question) {
+        Matcher requestedVolumeMatcher = VOLUME_REQUEST.matcher(question == null ? "" : question);
+        int requestedVolume = requestedVolumeMatcher.find() ? Integer.parseInt(requestedVolumeMatcher.group(1)) : 0;
         List<String> terms = new ArrayList<>();
         Matcher words = WORD.matcher(question == null ? "" : question.toLowerCase(Locale.ROOT));
-        while (words.find() && terms.size() < 6) {
-            String word = words.group();
+        while (words.find() && terms.size() < 10) {
+            String word = normalizeTerm(words.group());
             if (!STOP.contains(word) && !terms.contains(word)) terms.add(word);
         }
         if (terms.isEmpty()) return "";
@@ -209,20 +213,29 @@ public final class LoreDocumentStore {
                      "SELECT volume,chunk_index,body FROM lore_documents");
              ResultSet rows = query.executeQuery()) {
             while (rows.next()) {
+                int volume = rows.getInt(1);
+                if (requestedVolume > 0 && volume != requestedVolume) continue;
                 String body = rows.getString(3);
                 String lower = body.toLowerCase(Locale.ROOT);
                 int score = 0;
                 int first = -1;
+                int last = -1;
+                int matches = 0;
                 for (String term : terms) {
                     int position = lower.indexOf(term);
                     if (position >= 0) {
+                        matches++;
                         score += 5;
                         if (first < 0 || position < first) first = position;
+                        if (position > last) last = position;
                         if (lower.indexOf(term, position + term.length()) >= 0) score++;
                     }
                 }
-                if (score > 0) hits.add(new Hit(rows.getInt(1), rows.getInt(2), score,
-                        excerpt(body, first)));
+                if (matches > 1) score += matches * matches;
+                if (matches > 1 && last - first <= 1_200) score += 15;
+                if (requestedVolume > 0) score += 30;
+                int requiredMatches = terms.size() <= 1 ? 1 : 2;
+                if (matches >= requiredMatches) hits.add(new Hit(volume, rows.getInt(2), score, body, first));
             }
         } catch (SQLException e) {
             System.err.println("Ciel Lore DB: retrieval unavailable: " + e.getMessage());
@@ -232,10 +245,14 @@ public final class LoreDocumentStore {
                 .thenComparingInt(Hit::volume).thenComparingInt(Hit::chunk));
         StringBuilder context = new StringBuilder("[TENSURA LIGHT NOVEL SOURCE EXCERPTS; DM REFERENCE, SPOILERS POSSIBLE]\n"
                 + "These are raw source passages, not approved campaign canon. Cite the volume and excerpt.\n");
-        for (int i = 0; i < Math.min(4, hits.size()); i++) {
+        int limit = requestedVolume > 0 ? 2 : 4;
+        for (int i = 0; i < Math.min(limit, hits.size()); i++) {
             Hit hit = hits.get(i);
             context.append("\n[LN Volume ").append(hit.volume()).append(", excerpt ")
-                    .append(hit.chunk()).append("] ").append(hit.excerpt()).append('\n');
+                    .append(hit.chunk()).append("] ")
+                    .append(requestedVolume > 0 ? hit.body().replaceAll("\\s+", " ").trim()
+                            : excerpt(hit.body(), hit.first())).append('\n')
+                    .append("[Obsidian source: [[../Raw/LN Volume ").append(hit.volume()).append("]]]\n");
         }
         return hits.isEmpty() ? "" : context.toString();
     }
@@ -247,11 +264,19 @@ public final class LoreDocumentStore {
                 + (end < body.length() ? "…" : "");
     }
 
+    private static String normalizeTerm(String word) {
+        if (word == null) return "";
+        if (word.length() > 6 && word.endsWith("ing")) return word.substring(0, word.length() - 3);
+        if (word.length() > 5 && word.endsWith("ed")) return word.substring(0, word.length() - 2);
+        if (word.length() > 4 && word.endsWith("s")) return word.substring(0, word.length() - 1);
+        return word;
+    }
+
     private static int indexedVolumeCount(Connection db) throws SQLException {
         try (var sql = db.createStatement(); ResultSet rows = sql.executeQuery("SELECT count(*) FROM lore_sources")) {
             return rows.next() ? rows.getInt(1) : 0;
         }
     }
 
-    private record Hit(int volume, int chunk, int score, String excerpt) {}
+    private record Hit(int volume, int chunk, int score, String body, int first) {}
 }

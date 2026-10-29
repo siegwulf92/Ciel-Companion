@@ -315,6 +315,33 @@ public class VaultService {
         return safe.isBlank() ? "Uncategorized" : safe.substring(0, Math.min(safe.length(), 80));
     }
 
+    /** Human-facing Obsidian names: readable spaces, Windows-safe punctuation. */
+    private static String readableLorePart(String value) {
+        String safe = value == null ? "" : value.replace(":", " - ").replaceAll("[<>\"/\\\\|?*]", " ")
+                .replaceAll("\\s+", " ").trim();
+        return safe.isBlank() ? "Uncategorized" : safe.substring(0, Math.min(safe.length(), 100));
+    }
+
+    private static String readableVolume(String volumeName) {
+        Matcher number = Pattern.compile("(?i)(?:ln\\s*)?(?:volume|vol)?\\s*(\\d+)").matcher(volumeName == null ? "" : volumeName);
+        return number.find() ? "LN " + Integer.parseInt(number.group(1)) : readableLorePart(volumeName);
+    }
+
+    private static String skillTypeFolder(JsonObject fact) {
+        if (!fact.has("skill_type") || !fact.get("skill_type").isJsonPrimitive()) return "";
+        String value = fact.get("skill_type").getAsString().trim().toLowerCase(Locale.ROOT);
+        return switch (value) {
+            case "ultimate", "ultimate skill", "ultimate skills" -> "Ultimate Skills";
+            case "unique", "unique skill", "unique skills" -> "Unique Skills";
+            case "extra", "extra skill", "extra skills" -> "Extra Skills";
+            case "intrinsic", "intrinsic skill", "intrinsic skills" -> "Intrinsic Skills";
+            case "common", "common skill", "common skills" -> "Common Skills";
+            case "resistance", "resistances" -> "Resistances";
+            case "art", "arts" -> "Arts";
+            default -> ""; // Unknown/ordinary skills stay directly under Skills.
+        };
+    }
+
     private static JsonObject parseLoreChunkResult(String raw) throws IOException {
         String json = raw == null ? "" : raw.trim();
         json = json.replaceFirst("(?s)^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "").trim();
@@ -357,19 +384,31 @@ public class VaultService {
                     rejected++;
                     continue;
                 }
-                Path note = loreReviewDir.resolve(safeLorePart(volumeName)).resolve(category)
-                        .resolve(safeLorePart(entity)).resolve(String.format(Locale.ROOT, "Chunk_%05d.md", chunkIndex + 1));
+                Path folder = loreReviewDir.resolve(readableVolume(volumeName)).resolve(category);
+                String skillType = category.equals("Skills") ? skillTypeFolder(fact) : "";
+                if (!skillType.isBlank()) folder = folder.resolve(skillType);
+                Path note = folder.resolve(readableLorePart(entity) + ".md");
                 StringBuilder body = grouped.computeIfAbsent(note, ignored -> new StringBuilder(
-                        "---\nstatus: review-candidate\nseries: \"That Time I Got Reincarnated as a Slime\"\n"
-                                + "spoiler_reviewed: false\nsource_volume: \"" + volumeName + "\"\nsource_chunk: " + (chunkIndex + 1)
-                                + "\n---\n\n# " + entity + "\n\n## Candidate fact\n"));
+                        "\n## Source excerpt " + (chunkIndex + 1) + "\n"));
                 body.append("- ").append(claim.replace("\r", " ").replace("\n", " ")).append("\n")
                         .append("  - Evidence: \"").append(evidence.replace("\r", " ").replace("\n", " ")).append("\"\n");
             } catch (Exception e) {
                 rejected++;
             }
         }
-        for (Map.Entry<Path, StringBuilder> note : grouped.entrySet()) writeAtomically(note.getKey(), note.getValue().toString());
+        for (Map.Entry<Path, StringBuilder> note : grouped.entrySet()) {
+            String existing = Files.isRegularFile(note.getKey()) ? Files.readString(note.getKey(), StandardCharsets.UTF_8) : "";
+            if (existing.isBlank()) {
+                String entity = note.getKey().getFileName().toString().replaceFirst("\\.md$", "");
+                int depth = loreReviewDir.relativize(note.getKey().getParent()).getNameCount() + 2;
+                String rawLink = "../".repeat(depth) + "Raw/" + volumeName;
+                existing = "---\nstatus: review-candidate\nseries: \"That Time I Got Reincarnated as a Slime\"\n"
+                        + "spoiler_reviewed: false\nsource_volume: \"" + volumeName + "\"\n---\n\n# " + entity
+                        + "\n\nRaw source: [[" + rawLink + "]]\n";
+            }
+            String addition = note.getValue().toString();
+            if (!existing.contains(addition.trim())) writeAtomically(note.getKey(), existing.stripTrailing() + "\n" + addition);
+        }
         System.out.println("Ciel Lore Candidates: volume=" + volumeName + " chunk=" + (chunkIndex + 1)
                 + " accepted=" + grouped.size() + " rejected=" + rejected + " status=review-candidate");
     }
@@ -905,7 +944,8 @@ public class VaultService {
                     if (state.currentPhase == 2) {
                         String prompt = "SOURCE: " + originalName + ", excerpt " + (c + 1) + ".\n"
                                 + "Return exactly one JSON object with keys cleaned_text and lore_facts. cleaned_text must preserve every sentence and event, correcting only obvious transcription spelling and punctuation errors. "
-                                + "lore_facts must be an array of objects {category, entity, fact, evidence}; use only categories Characters, Locations, Skills, Factions, Species, Items, Events, Concepts. "
+                                + "lore_facts must be an array of objects {category, entity, skill_type, fact, evidence}; use only categories Characters, Locations, Skills, Factions, Species, Items, Events, Concepts. "
+                                + "Use the canonical English proper name for entity, never a pronoun, generic role, group label, or guessed correction. For Skills only, skill_type may be Ultimate Skills, Unique Skills, Extra Skills, Intrinsic Skills, Common Skills, Resistances, Arts, or blank. "
                                 + "Include only important facts explicitly stated in this excerpt. evidence must be a short exact quotation copied from SOURCE TEXT; omit any fact without a matching quote. "
                                 + "Do not use outside knowledge, foreshadow later events, or add headings outside the JSON.\n\nSOURCE TEXT:\n" + state.currentDraft;
                         String result = awaitLorePhase(prompt,
@@ -1053,7 +1093,7 @@ public class VaultService {
     private static void createGroundedLoreIndex(Path transcriptPath, String originalName) {
         Path indexPath = vaultRoot.resolve("lore").resolve("Indexes").resolve(originalName + " Master Index.md");
         try {
-            Path volumeReview = loreReviewDir.resolve(safeLorePart(originalName));
+            Path volumeReview = loreReviewDir.resolve(readableVolume(originalName));
             StringBuilder index = new StringBuilder("---\nstatus: review-required\nseries: \"That Time I Got Reincarnated as a Slime\"\n---\n\n")
                     .append("# ").append(originalName).append(" — Lore Index\n\n")
                     .append("Source transcript: [[../Transcripts/").append(transcriptPath.getFileName().toString().replace(".md", ""))
@@ -1066,7 +1106,7 @@ public class VaultService {
                             .sorted().toList();
                     for (Path note : noteFiles) {
                         String relative = volumeReview.relativize(note).toString().replace('\\', '/').replace(".md", "");
-                        index.append("\n- [[../Review/Tensura/").append(safeLorePart(originalName)).append('/')
+                        index.append("\n- [[../Review/Tensura/").append(readableVolume(originalName)).append('/')
                                 .append(relative).append("]]\n");
                     }
                 }

@@ -354,8 +354,9 @@ public class AIEngine {
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.PERSONALITY);
         
         JsonObject payload = buildPayloadWithHistory(ModelManager.ModelTier.PERSONALITY, systemContext, false);
-        payload.addProperty("model", "local");
-        payload.addProperty("task_intent", "Local Reflex Dialogue");
+        boolean groundedLore = systemContext != null && systemContext.contains("--- LOCAL TENSURA SOURCE RETRIEVAL ---");
+        payload.addProperty("model", groundedLore ? "auto" : "local");
+        payload.addProperty("task_intent", groundedLore ? "Grounded Lore Answer" : "Local Reflex Dialogue");
         
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))

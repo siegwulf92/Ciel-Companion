@@ -14,6 +14,7 @@ import com.cielcompanion.service.nlu.IntentService;
 import com.cielcompanion.ui.CielGui;
 import com.cielcompanion.ui.GuiSettings;
 import com.cielcompanion.util.ProjectPaths;
+import com.cielcompanion.util.WindowlessCommand;
 
 import javax.swing.*;
 import java.io.BufferedReader;
@@ -93,6 +94,9 @@ public class CielCompanion {
             Settings.initialize();
             DeviceProfileService.initialize();
             GuiSettings.initialize();
+            // Game/media observers start immediately, so durable memory must be
+            // ready before they can record a launch that happens during boot.
+            MemoryService.initialize();
             LineManager.load();
             voiceListener = new VoiceListener(null);
             if (Settings.isHotkeyEnabled()) new HotkeyService(voiceListener).initialize();
@@ -114,7 +118,6 @@ public class CielCompanion {
             
             CompletableFuture.runAsync(() -> {
                 try {
-                    MemoryService.initialize();
                     com.cielcompanion.service.CodexAgentService.initialize();
                     VaultService.initialize();
                     AppProfilerService.initialize();
@@ -419,18 +422,17 @@ public class CielCompanion {
 
     private static void killProcessOnPort(int port) {
         try {
-            Process netstat = new ProcessBuilder("powershell.exe", "-WindowStyle", "Hidden", "-NoProfile",
-                    "-NonInteractive", "-Command", "netstat -ano | findstr :" + port).start();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(netstat.getInputStream()))) {
+            WindowlessCommand.Result netstat = WindowlessCommand.run(List.of("powershell.exe", "-NoProfile",
+                    "-NonInteractive", "-Command", "netstat -ano | findstr :" + port), 10);
+            try (BufferedReader reader = new BufferedReader(new java.io.StringReader(netstat.output()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     if (line.contains("LISTENING")) {
                         String[] parts = line.trim().split("\\s+");
                         String pid = parts[parts.length - 1];
                         if (!pid.equals("0")) {
-                            Process kill = new ProcessBuilder("powershell.exe", "-WindowStyle", "Hidden", "-NoProfile",
-                                    "-NonInteractive", "-Command", "Stop-Process -Id " + pid + " -Force").start();
-                            kill.waitFor();
+                            WindowlessCommand.run(List.of("powershell.exe", "-NoProfile", "-NonInteractive",
+                                    "-Command", "Stop-Process -Id " + pid + " -Force"), 10);
                             System.out.println("Ciel Debug: Natively terminated ghost process (PID: " + pid + ").");
                         }
                     }

@@ -3,6 +3,8 @@ package com.cielcompanion.util;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 
 /** Resolves files relative to the Ciel installation instead of one machine's path. */
 public final class ProjectPaths {
@@ -34,6 +36,22 @@ public final class ProjectPaths {
             if (java.nio.file.Files.isRegularFile(windowless)) return windowless.toString();
         }
         return pythonExecutable();
+    }
+
+    /**
+     * Run a console-oriented child without ever allocating a visible Windows
+     * console. This lightweight wrapper is for commands whose output is not
+     * consumed. Use {@link WindowlessCommand} when stdin or captured stdout is
+     * part of the command contract.
+     */
+    public static List<String> windowlessCommand(List<String> child) {
+        if (!System.getProperty("os.name", "").toLowerCase().contains("win")) return new ArrayList<>(child);
+        List<String> wrapped = new ArrayList<>();
+        wrapped.add(pythonBackgroundExecutable());
+        wrapped.add("-c");
+        wrapped.add("import subprocess,sys; p=subprocess.run(sys.argv[1:], creationflags=0x08000000); raise SystemExit(p.returncode)");
+        wrapped.addAll(child);
+        return wrapped;
     }
 
     private static Path resolveRoot() {

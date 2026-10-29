@@ -8,6 +8,7 @@ import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.memory.stwm.ShortTermMemoryService;
 import com.cielcompanion.service.OperatingMode;
 import com.cielcompanion.service.SystemMonitor;
+import com.cielcompanion.util.ProjectPaths;
 import com.cielcompanion.mood.Emotion;
 
 import java.nio.file.Files;
@@ -35,13 +36,20 @@ public class ContextBuilder {
         "Use your intelligence to infer the correct context.\n\n";
 
     private static String getMasterProtocol() {
-        try {
-            Path protocolPath = Paths.get(System.getProperty("user.dir"), "ciel_master_protocol.md");
-            if (Files.exists(protocolPath)) {
-                return Files.readString(protocolPath) + "\n\n";
+        for (Path protocolPath : List.of(
+                ProjectPaths.ciel().resolve("protocols").resolve("CielMasterProtocol.md"),
+                Paths.get(System.getProperty("user.dir"), "ciel_master_protocol.md"))) {
+            try {
+                if (Files.exists(protocolPath)) {
+                    return FALLBACK_BASE_PERSONA + "\n--- EDITABLE CIEL CHARACTER PROTOCOL ---\n"
+                            + Files.readString(protocolPath) + "\n\n"
+                            + "IMPLEMENTATION BOUNDARY: Whatever descriptive emotion names the character protocol uses, the emitted tag must be exactly one supported GUI tag: "
+                            + "[Focused], [Observing], [Restless], [Impatient], [Annoyed], [Pain], [Happy], [Curious], [Excited], [Lonely]. "
+                            + "Convey finer shades through wording and vocal style, not an unsupported tag.\n\n";
+                }
+            } catch (Exception e) {
+                System.err.println("Ciel Warning: Could not read " + protocolPath.getFileName() + ". Trying fallback persona source.");
             }
-        } catch (Exception e) {
-            System.err.println("Ciel Warning: Could not read ciel_master_protocol.md. Using fallback persona.");
         }
         return FALLBACK_BASE_PERSONA;
     }
@@ -109,7 +117,12 @@ public class ContextBuilder {
                     && userMessage.toLowerCase().matches("(?s).*(tensura|rimuru|veldora|diablo|shion|milim|raphael|beelzebuth|light novel|ln volume|tempest).*")) {
                 String sourcedLore = LoreDocumentStore.search(userMessage);
                 if (!sourcedLore.isBlank()) sb.append("\n--- LOCAL TENSURA SOURCE RETRIEVAL ---\n")
-                        .append(sourcedLore).append("\n");
+                        .append(sourcedLore).append("\n")
+                        .append("GROUNDING RULE: Answer from these LN passages, not a wiki or remembered fandom summary. Cite the LN volume and excerpt. "
+                                + "If the passages do not establish the answer, say what evidence is missing instead of guessing. "
+                                + "When the evidence attributes an action to Great Sage, Raphael, or Ciel, Ciel may own that earlier action as her past "
+                                + "while accurately naming the evolution stage used by the source. Choose a fitting natural attitude—composed, teasing, "
+                                + "or mildly smug/defiant when warranted—but never invent responsibility or canon that the excerpts do not support.\n");
             }
         }
         

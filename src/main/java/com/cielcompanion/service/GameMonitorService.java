@@ -35,7 +35,10 @@ public final class GameMonitorService {
             if (foreground.isPresent()) {
                 Game game = foreground.get();
                 if (tracked == null || tracked.pid() != game.pid()) startSession(game);
-                else gameLostTimestamp = 0;
+                else {
+                    gameLostTimestamp = 0;
+                    GameProgress.observe(game.displayName(), sessionStartTime, System.currentTimeMillis(), false);
+                }
                 return;
             }
             if (tracked == null) return;
@@ -58,6 +61,7 @@ public final class GameMonitorService {
         Game prior = activeGame;
         if (prior != null) {
             // Switching between actual games keeps the router in gaming mode.
+            GameProgress.observe(prior.displayName(), sessionStartTime, System.currentTimeMillis(), true);
             ShortTermMemoryService.getMemory().addContext("System Event: The Master switched from "
                     + prior.displayName() + " to " + game.displayName() + ".");
         }
@@ -72,30 +76,36 @@ public final class GameMonitorService {
         System.out.println("[Game Session] Started: " + game.displayName() + " (pid=" + game.pid()
                 + ", process=" + game.process() + ", title/window verified).");
 
+        GameProgress.Context history = GameProgress.begin(game.displayName(), sessionStartTime);
+
         String prompt = "Master Taylor just started playing " + game.displayName() + ". "
                 + "Foreground executable: " + game.process() + ". "
                 + GameLaunchCommentary.grounding(game.displayName()) + " "
-                + "Give one concise, specific, spoiler-safe sentence as Manas: Ciel. "
+                + history.promptContext() + " "
+                + "Give one fresh, concise, specific, spoiler-safe sentence as Manas: Ciel. "
                 + "Refer to a grounded character, mechanic, or setting when one is provided. "
+                + "Use observed play history naturally when useful, but do not recite telemetry. "
                 + "Address Master directly and start with one bracketed emotion tag. "
                 + "Do not pretend to know gameplay events that were not observed.";
         AIEngine.generateSilentLogicWithModel(prompt, "You are Manas: Ciel.", null, 0.7, "Game Launch Commentary")
-                .completeOnTimeout(null, 25, TimeUnit.SECONDS)
+                .completeOnTimeout(null, 35, TimeUnit.SECONDS)
                 .exceptionally(error -> null)
                 .thenAccept(response -> {
                     Game current = activeGame;
                     if (current == null || current.pid() != game.pid()
                             || !ProcessHandle.of(game.pid()).map(ProcessHandle::isAlive).orElse(false)) return;
-                    String line = GameLaunchCommentary.selectLine(game.displayName(), response);
-                    SpeechService.speakPreformatted(line, "game_launch", false, false);
+                    GameLaunchCommentary.Selection selected = GameLaunchCommentary.selectLine(game.displayName(), response, history);
+                    GameProgress.recordComment(game.displayName(), selected.line(), System.currentTimeMillis());
+                    SpeechService.speakPreformatted(selected.line(), "game_launch", false, false);
                     System.out.println("[Game Session] Launch commentary queued for pid=" + game.pid()
-                            + (line.equals(response) ? " via model." : " via timely fallback."));
+                            + (selected.fromModel() ? " via model." : " via varied fallback: " + selected.reason() + "."));
                 });
     }
 
     private static void endSession(Game game) {
         if (activeGame == null || activeGame.pid() != game.pid()) return;
         long minutes = Math.max(0, (System.currentTimeMillis() - sessionStartTime) / 60_000);
+        GameProgress.observe(game.displayName(), sessionStartTime, System.currentTimeMillis(), true);
         System.out.println("[Game Session] Ended: " + game.displayName() + " (" + minutes + "m, pid=" + game.pid() + ").");
         ShortTermMemory memory = ShortTermMemoryService.getMemory();
         memory.addContext("System Event: The Master finished playing " + game.displayName() + " after " + minutes + " minutes.");
