@@ -250,8 +250,12 @@ public class CielGui {
                 // Keep a clearly visible cadence even when Windows is muted or
                 // a mixer reports no level. The measured envelope enhances the
                 // motion when available; it is never the sole source of motion.
-                pulse = Math.max(0.18f, Math.min(1.0f,
-                        0.16f + renderedSpeechLevel * (0.60f + intensity * 0.18f) + cadence * 0.30f));
+                // Keep the provider/mixer envelope as an accent, but make the
+                // deterministic cadence carry most of the range.  The previous
+                // 0.30 cadence contribution was visually indistinguishable
+                // from a color drift on the 150px orb.
+                pulse = Math.max(0.12f, Math.min(1.0f,
+                        0.18f + renderedSpeechLevel * (0.28f + intensity * 0.12f) + cadence * 0.65f));
             } else if (currentState == GuiState.THINKING) {
                 pulse = (float) (Math.sin(animationTick * 15.0) + 1) / 2.0f; // Rapid processing throb
             }
@@ -268,7 +272,7 @@ public class CielGui {
                 // Couple the same guaranteed cadence to luminance so speaking
                 // is unmistakable even when the output mixer is muted.
                 displayBrightness = Math.max(0.18f, Math.min(1.0f,
-                        brightness * (0.68f + pulse * 0.42f)));
+                        brightness * (0.38f + pulse * 0.62f)));
             }
 
             // --- LAYER 1: Outer Glow (Soft Halo) ---
