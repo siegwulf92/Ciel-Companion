@@ -39,6 +39,9 @@ public final class BreezeSpeechService {
     private static volatile String voiceId;
     private static volatile SSLSocketFactory windowsTrustSocketFactory;
     private static final Path CACHE_DIR = Path.of(".local", "breeze_voice_cache");
+    // Bump this whenever speech normalization or delivery semantics change so
+    // an older malformed WAV cannot silently win over the corrected source.
+    private static final String CACHE_PROFILE_VERSION = "breeze-cache-v2-phonetic";
 
     private BreezeSpeechService() {}
 
@@ -205,7 +208,7 @@ public final class BreezeSpeechService {
     }
 
     private static Path cachePath(String key, String text, String style, String pitch, String languageCode) {
-        String material = key + "\n" + voiceId + "\n" + Settings.getBreezeModel() + "\n"
+        String material = CACHE_PROFILE_VERSION + "\n" + key + "\n" + voiceId + "\n" + Settings.getBreezeModel() + "\n"
                 + Settings.getBreezeLanguageCode() + "\n" + languageCode + "\n"
                 + style + "\n" + pitch + "\n" + text;
         try {
