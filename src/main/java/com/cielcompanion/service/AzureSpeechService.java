@@ -17,6 +17,7 @@ import java.io.SequenceInputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.Base64;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -405,8 +406,14 @@ public class AzureSpeechService {
 
     private static boolean playWav(File file, String key, boolean primeOutput) {
         Clip clip = null;
+        byte[] analysisPcm = null;
         try (javax.sound.sampled.AudioInputStream audioStream = AudioSystem.getAudioInputStream(file)) {
             AudioFormat format = audioStream.getFormat();
+            if (audioStream.getFrameLength() >= 0 && audioStream.getFrameLength() * Math.max(1, format.getFrameSize()) <= 16_000_000L) {
+                try (javax.sound.sampled.AudioInputStream analysis = AudioSystem.getAudioInputStream(file)) {
+                    analysisPcm = analysis.readAllBytes();
+                }
+            }
             DataLine.Info info = new DataLine.Info(Clip.class, format);
             Mixer defaultOutput = AudioSystem.getMixer(null);
             clip = (Clip) defaultOutput.getLine(info);
@@ -452,9 +459,12 @@ public class AzureSpeechService {
                     Math.max(5000L, clip.getMicrosecondLength() / 1000L + 5000L));
             while (clip.isRunning() && System.nanoTime() < playbackDeadline) {
                 float level = 0.14f;
+                float pcmLevel = samplePcmLevel(analysisPcm, format,
+                        clip.getLongFramePosition(), prerollFrames);
+                if (!Float.isNaN(pcmLevel)) level = pcmLevel;
                 try {
                     float db = clip.getLevel();
-                    if (!Float.isNaN(db) && !Float.isInfinite(db) && db > -60f) {
+                    if (Float.isNaN(pcmLevel) && !Float.isNaN(db) && !Float.isInfinite(db) && db > -60f) {
                         level = Math.max(0.08f, Math.min(1.0f, (db + 60f) / 60f));
                     }
                 } catch (RuntimeException ignored) {
@@ -485,6 +495,34 @@ public class AzureSpeechService {
                 if (activeClip == clip) activeClip = null;
             }
         }
+    }
+
+    /** Return a short RMS envelope synchronized to the WAV frame position. */
+    private static float samplePcmLevel(byte[] pcm, AudioFormat format, long framePosition, long prerollFrames) {
+        if (pcm == null || pcm.length == 0 || format.getEncoding() != AudioFormat.Encoding.PCM_SIGNED
+                || format.getSampleSizeInBits() != 16 || format.getFrameSize() <= 0) return Float.NaN;
+        long speechFrame = Math.max(0L, framePosition - prerollFrames);
+        int frameSize = format.getFrameSize();
+        int start = (int) Math.min((long) pcm.length, speechFrame * frameSize);
+        int windowFrames = Math.max(1, Math.round(format.getFrameRate() * 0.055f));
+        int end = Math.min(pcm.length, start + windowFrames * frameSize);
+        if (end <= start + 1) return 0.08f;
+        double sum = 0.0;
+        long samples = 0;
+        boolean bigEndian = format.isBigEndian();
+        for (int offset = start; offset + 1 < end; offset += 2) {
+            int lo = pcm[offset] & 0xff;
+            int hi = pcm[offset + 1] & 0xff;
+            int sample = bigEndian ? ((lo << 8) | hi) : (lo | (hi << 8));
+            if (sample > 32767) sample -= 65536;
+            double normalized = sample / 32768.0;
+            sum += normalized * normalized;
+            samples++;
+        }
+        if (samples == 0) return 0.08f;
+        double rms = Math.sqrt(sum / samples);
+        double db = rms <= 0.000001 ? -60.0 : 20.0 * Math.log10(rms);
+        return (float) Math.max(0.08, Math.min(1.0, (db + 60.0) / 60.0));
     }
 
     /**
