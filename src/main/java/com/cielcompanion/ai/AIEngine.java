@@ -133,11 +133,12 @@ public class AIEngine {
             if (englishText == null || englishText.isBlank()) return "";
             if (!ALPHA_NUM_PATTERN.matcher(englishText).find()) return englishText;
 
-            // Make all-caps initialisms unambiguous to both the hosted formatter
-            // and the offline G2P path.  Without separators, "DD" is commonly
-            // rendered as ディディ rather than the English letter names
-            // ディー ディー.  This only touches standalone 2-6 letter tokens;
-            // ordinary words such as "address" remain unchanged.
+            // Make all-caps initialisms and standalone letter names unambiguous
+            // to both the hosted formatter and the offline G2P path. Without
+            // this, "DD" can be rendered as ディディ rather than the English
+            // letter names ディー ディー, and "G" can lose its long vowel.
+            // This only touches standalone 2-6 letter tokens; ordinary words
+            // such as "address" remain unchanged.
             final String phoneticSource = expandInitialisms(englishText);
 
             String fallbackResult = attemptTransliteration(phoneticSource);
@@ -158,10 +159,24 @@ public class AIEngine {
         StringBuffer out = new StringBuffer();
         while (matcher.find()) {
             String token = matcher.group(1);
+            java.util.Map<Character, String> names = java.util.Map.ofEntries(
+                    java.util.Map.entry('A', "ay"), java.util.Map.entry('B', "bee"),
+                    java.util.Map.entry('C', "see"), java.util.Map.entry('D', "dee"),
+                    java.util.Map.entry('E', "ee"), java.util.Map.entry('F', "eff"),
+                    java.util.Map.entry('G', "gee"), java.util.Map.entry('H', "aitch"),
+                    java.util.Map.entry('I', "eye"), java.util.Map.entry('J', "jay"),
+                    java.util.Map.entry('K', "kay"), java.util.Map.entry('L', "el"),
+                    java.util.Map.entry('M', "em"), java.util.Map.entry('N', "en"),
+                    java.util.Map.entry('O', "oh"), java.util.Map.entry('P', "pee"),
+                    java.util.Map.entry('Q', "cue"), java.util.Map.entry('R', "ar"),
+                    java.util.Map.entry('S', "ess"), java.util.Map.entry('T', "tee"),
+                    java.util.Map.entry('U', "you"), java.util.Map.entry('V', "vee"),
+                    java.util.Map.entry('W', "double you"), java.util.Map.entry('X', "ex"),
+                    java.util.Map.entry('Y', "why"), java.util.Map.entry('Z', "zee"));
             StringBuilder separated = new StringBuilder();
             for (int i = 0; i < token.length(); i++) {
                 if (i > 0) separated.append(' ');
-                separated.append(token.charAt(i));
+                separated.append(names.getOrDefault(token.charAt(i), String.valueOf(token.charAt(i))));
             }
             matcher.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(separated.toString()));
         }
