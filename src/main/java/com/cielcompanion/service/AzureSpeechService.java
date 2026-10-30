@@ -271,6 +271,7 @@ public class AzureSpeechService {
             if (reservation == null) return false;
             
             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
+            CielState.getCielGui().ifPresent(gui -> gui.setSpeechLevel(0.14f));
             
             SpeechSynthesisResult result = activeSynthesizer.SpeakSsml(ssml);
 
@@ -443,7 +444,21 @@ public class AzureSpeechService {
             }
             long playbackDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(
                     Math.max(5000L, clip.getMicrosecondLength() / 1000L + 5000L));
-            while (clip.isRunning() && System.nanoTime() < playbackDeadline) Thread.sleep(50);
+            while (clip.isRunning() && System.nanoTime() < playbackDeadline) {
+                float level = 0.14f;
+                try {
+                    float db = clip.getLevel();
+                    if (!Float.isNaN(db) && !Float.isInfinite(db) && db > -60f) {
+                        level = Math.max(0.08f, Math.min(1.0f, (db + 60f) / 60f));
+                    }
+                } catch (RuntimeException ignored) {
+                    // Some Windows mixers do not expose a peak level; the
+                    // baseline keeps the speaking animation alive in that case.
+                }
+                final float visualLevel = level;
+                CielState.getCielGui().ifPresent(gui -> gui.setSpeechLevel(visualLevel));
+                Thread.sleep(30);
+            }
             if (clip.isRunning()) {
                 System.err.println("[Azure TTS] Cached audio exceeded its playback deadline; stopping the output line.");
                 clip.stop();
@@ -457,6 +472,7 @@ public class AzureSpeechService {
             System.err.println("[Azure TTS] Cached audio playback failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return false;
         } finally {
+            CielState.getCielGui().ifPresent(gui -> gui.clearSpeechLevel());
             if (clip != null) {
                 try { clip.stop(); } catch (Exception ignored) {}
                 try { clip.close(); } catch (Exception ignored) {}

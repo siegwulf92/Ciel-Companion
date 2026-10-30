@@ -54,6 +54,10 @@ public class SpeechService {
     private static volatile boolean mediaWasPausedForSpeech = false;
     private static volatile boolean gameWasPausedForSpeech = false;
     private static final Object pauseLock = new Object();
+    // Keep the media/GUI handoff tight without leaving the orb visible for a
+    // long post-speech grace period. The queue count still protects chained
+    // lines from resuming playback between utterances.
+    private static final long SPEECH_HANDOFF_SETTLE_MS = 180L;
 
     public static void initialize(VoiceListener listener) {
         voiceListener = listener;
@@ -110,7 +114,7 @@ public class SpeechService {
 
     private static void dequeueSpeech() {
         if (speechQueueCount.decrementAndGet() == 0) {
-            Executors.newSingleThreadScheduledExecutor().schedule(() -> {
+            CompletableFuture.delayedExecutor(SPEECH_HANDOFF_SETTLE_MS, TimeUnit.MILLISECONDS).execute(() -> {
                 synchronized (pauseLock) {
                     if (speechQueueCount.get() == 0) {
                         if (mediaWasPausedForSpeech) {
@@ -134,7 +138,7 @@ public class SpeechService {
                         CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
                     }
                 }
-            }, 1500, TimeUnit.MILLISECONDS);
+            });
         }
     }
 
@@ -173,6 +177,8 @@ public class SpeechService {
         AzureSpeechService.stopAllAudio();
         ShortTermMemoryService.getMemory().setSpeechEndTime(System.currentTimeMillis());
         isActivelySpeaking.set(false);
+        // A cancelled thought must not leave the activity indicator stranded.
+        CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
     }
 
     public static void speak(String text) { speakPreformatted(text, null, false, true); }

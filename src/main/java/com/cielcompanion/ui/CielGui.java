@@ -47,7 +47,10 @@ public class CielGui {
         frame.addMouseMotionListener(mouseAdapter);
 
         SwingUtilities.invokeLater(() -> {
-            frame.setVisible(true);
+            // The orb is an activity indicator, not a permanent desktop widget.
+            // It becomes visible only when the state machine enters THINKING,
+            // LISTENING, or SPEAKING (unless the explicit idle setting opts in).
+            frame.setVisible(GuiSettings.isVisibleWhenIdle());
             isInitialized = true;
             System.out.println("Ciel Debug: GUI Initialized (Visual Effects Restored).");
         });
@@ -56,18 +59,30 @@ public class CielGui {
     public void setState(GuiState state) { 
         if (panel != null) {
             panel.setCurrentState(state); 
-            
-            // Force the window to the absolute front whenever she becomes active
-            if (state != GuiState.IDLE && frame != null) {
+            if (state == GuiState.IDLE) panel.clearSpeechLevel();
+
+            if (frame != null) {
+                final boolean visible = state != GuiState.IDLE || GuiSettings.isVisibleWhenIdle();
                 SwingUtilities.invokeLater(() -> {
-                    // Toggling this off and back on is a reliable trick to force 
-                    // the OS window manager to push the frame over active apps.
-                    frame.setAlwaysOnTop(false); 
-                    frame.setAlwaysOnTop(true);
-                    frame.toFront();
+                    frame.setVisible(visible);
+                    // Force the window to the absolute front whenever she becomes active.
+                    if (visible && state != GuiState.IDLE) {
+                        frame.setAlwaysOnTop(false);
+                        frame.setAlwaysOnTop(true);
+                        frame.toFront();
+                    }
                 });
             }
         }
+    }
+
+    /** Feed the current output-envelope level (0..1) to the visualizer. */
+    public void setSpeechLevel(float level) {
+        if (panel != null) panel.setSpeechLevel(level);
+    }
+
+    public void clearSpeechLevel() {
+        if (panel != null) panel.clearSpeechLevel();
     }
     
     public void setVisualState(EmotionalState.VisualState state) { if (panel != null) panel.setCurrentVisualState(state); }
@@ -75,6 +90,8 @@ public class CielGui {
     private static class CielPanel extends JPanel {
         private volatile GuiState currentState = GuiState.IDLE;
         private volatile EmotionalState.VisualState currentVisualState;
+        private volatile float targetSpeechLevel = 0f;
+        private float renderedSpeechLevel = 0f;
         private float animationTick = 0;
         private long lastAnimationNanos = System.nanoTime();
         private final Random random = new Random();
@@ -160,7 +177,17 @@ public class CielGui {
         
         public void pauseMovement() { isPaused = true; }
         public void resumeMovement() { isPaused = false; pickNewTarget(); }
-        public void setCurrentState(GuiState state) { this.currentState = state; repaint(); }
+        public void setCurrentState(GuiState state) {
+            this.currentState = state;
+            if (state != GuiState.SPEAKING) targetSpeechLevel = 0f;
+            else if (targetSpeechLevel < 0.12f) targetSpeechLevel = 0.12f;
+            repaint();
+        }
+        public void setSpeechLevel(float level) {
+            if (Float.isNaN(level) || Float.isInfinite(level)) level = 0.12f;
+            targetSpeechLevel = Math.max(0f, Math.min(1f, level));
+        }
+        public void clearSpeechLevel() { targetSpeechLevel = 0f; }
         public void setCurrentVisualState(EmotionalState.VisualState state) { this.currentVisualState = state; }
 
        @Override
@@ -194,20 +221,32 @@ public class CielGui {
             
             // Animation Pulses
             float breath = (float) (Math.sin(animationTick * GuiSettings.getBreathingSpeed() * 2.0)) / 2.0f + 0.5f;
+            renderedSpeechLevel += (targetSpeechLevel - renderedSpeechLevel) * 0.28f;
             
             // GUI SYNC FIX: Distinct rapid pulse logic for the THINKING state
             float pulse = breath;
             if (currentState == GuiState.SPEAKING) {
-                pulse = (float) Math.abs(Math.sin(animationTick * GuiSettings.getSpeakingFlickerSpeed() * 2.0));
+                float cadence = (float) Math.abs(Math.sin(animationTick * GuiSettings.getSpeakingFlickerSpeed() * 2.0));
+                float intensity = (float) Math.max(0.1, Math.min(1.0, GuiSettings.getSpeakingFlickerIntensity()));
+                // Keep a clearly visible cadence even when Windows is muted or
+                // a mixer reports no level. The measured envelope enhances the
+                // motion when available; it is never the sole source of motion.
+                pulse = Math.max(0.18f, Math.min(1.0f,
+                        0.16f + renderedSpeechLevel * (0.60f + intensity * 0.18f) + cadence * 0.30f));
             } else if (currentState == GuiState.THINKING) {
                 pulse = (float) (Math.sin(animationTick * 15.0) + 1) / 2.0f; // Rapid processing throb
             }
 
-            float coreR = maxRadius * (0.65f + pulse * 0.1f);
-            float glowR = maxRadius * (0.9f + breath * 0.1f);
+            // Make the envelope visible at a glance. The previous 10% radius
+            // range was too subtle on small always-on-top windows, especially
+            // when a mixer reported a quiet level. Keep the motion smooth but
+            // give speech a clearly readable expansion/contraction.
+            float coreR = maxRadius * (0.58f + pulse * 0.24f);
+            float glowR = maxRadius * (0.78f + breath * 0.12f + pulse * 0.10f);
 
             // --- LAYER 1: Outer Glow (Soft Halo) ---
-            Color g1 = new Color(baseColor.getRed()/255f, baseColor.getGreen()/255f, baseColor.getBlue()/255f, brightness * 0.4f);
+            float glowAlpha = Math.max(0.08f, Math.min(0.85f, brightness * (0.22f + pulse * 0.42f)));
+            Color g1 = new Color(baseColor.getRed()/255f, baseColor.getGreen()/255f, baseColor.getBlue()/255f, glowAlpha);
             Color g2 = new Color(baseColor.getRed()/255f, baseColor.getGreen()/255f, baseColor.getBlue()/255f, 0f);
             g2d.setPaint(new RadialGradientPaint(center, glowR, new float[]{0f, 1f}, new Color[]{g1, g2}));
             g2d.fill(new Ellipse2D.Float(center.x - glowR, center.y - glowR, glowR*2, glowR*2));
