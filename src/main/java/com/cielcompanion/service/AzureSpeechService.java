@@ -35,7 +35,7 @@ public class AzureSpeechService {
     private static final String CACHE_DIR_PATH = "voice_cache";
     private static final String DND_CACHE_DIR_PATH = "dnd_voice_cache";
     // Rebuild old neutral WAVs after correcting Nanami's supported style mapping.
-    private static final String VOICE_PROFILE_VERSION = "nanami_conversational_v2";
+    private static final String VOICE_PROFILE_VERSION = "nanami_conversational_v3";
     // Wake output devices that suppress initial audio after a quiet period. The cue is
     // intentionally quiet and is followed by enough time for the endpoint to settle.
     private static final int SPEAKER_PREROLL_MILLIS = 2500;
@@ -264,6 +264,12 @@ public class AzureSpeechService {
             
             AudioConfig audioConfig = AudioConfig.fromDefaultSpeakerOutput();
             activeSynthesizer = new SpeechSynthesizer(config, audioConfig);
+            // Azure exposes word-boundary callbacks even when the audio is
+            // routed directly to the default speaker.  They provide a real
+            // speech timeline for the orb instead of relying on an optional
+            // Windows mixer peak level.
+            activeSynthesizer.WordBoundary.addEventListener((sender, event) ->
+                    CielState.getCielGui().ifPresent(CielGui::markSpeechWord));
             String ssml = buildSsml(text, style, pitch, lang, true);
             reservation = AzureUsageTracker.reserve((SpeechService.estimateSpeechDuration(text) / 1000) + 1,
                     voiceForLanguage(lang), text.codePointCount(0, text.length()),
@@ -271,7 +277,6 @@ public class AzureSpeechService {
             if (reservation == null) return false;
             
             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
-            CielState.getCielGui().ifPresent(gui -> gui.setSpeechLevel(0.14f));
             
             SpeechSynthesisResult result = activeSynthesizer.SpeakSsml(ssml);
 
@@ -423,6 +428,7 @@ public class AzureSpeechService {
             if (playbackStream != audioStream) playbackStream.close();
             
             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
+            CielState.getCielGui().ifPresent(gui -> gui.setSpeechLevel(0.14f));
             
             clip.start();
             long readyTimeoutMillis = Math.max(5000L, SPEAKER_PREROLL_MILLIS + 3000L);

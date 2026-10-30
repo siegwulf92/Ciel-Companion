@@ -84,6 +84,11 @@ public class CielGui {
     public void clearSpeechLevel() {
         if (panel != null) panel.clearSpeechLevel();
     }
+
+    /** Mark a provider word boundary; used to make speech cadence visibly track output. */
+    public void markSpeechWord() {
+        if (panel != null) panel.markSpeechWord();
+    }
     
     public void setVisualState(EmotionalState.VisualState state) { if (panel != null) panel.setCurrentVisualState(state); }
     
@@ -91,6 +96,7 @@ public class CielGui {
         private volatile GuiState currentState = GuiState.IDLE;
         private volatile EmotionalState.VisualState currentVisualState;
         private volatile float targetSpeechLevel = 0f;
+        private volatile long lastSpeechWordNanos = 0L;
         private float renderedSpeechLevel = 0f;
         private float animationTick = 0;
         private long lastAnimationNanos = System.nanoTime();
@@ -188,6 +194,10 @@ public class CielGui {
             targetSpeechLevel = Math.max(0f, Math.min(1f, level));
         }
         public void clearSpeechLevel() { targetSpeechLevel = 0f; }
+        public void markSpeechWord() {
+            lastSpeechWordNanos = System.nanoTime();
+            targetSpeechLevel = Math.max(targetSpeechLevel, 0.88f);
+        }
         public void setCurrentVisualState(EmotionalState.VisualState state) { this.currentVisualState = state; }
 
        @Override
@@ -226,8 +236,17 @@ public class CielGui {
             // GUI SYNC FIX: Distinct rapid pulse logic for the THINKING state
             float pulse = breath;
             if (currentState == GuiState.SPEAKING) {
-                float cadence = (float) Math.abs(Math.sin(animationTick * GuiSettings.getSpeakingFlickerSpeed() * 2.0));
+                // This envelope is based on monotonic time, not the speaker
+                // mixer.  It therefore remains visible when Windows reports
+                // a muted/quiet endpoint. Word-boundary callbacks add a kick
+                // at each spoken word when the provider exposes them.
+                float cadence = (float) ((Math.sin(animationTick * GuiSettings.getSpeakingFlickerSpeed() * 2.0) + 1.0) * 0.5);
+                long sinceWord = System.nanoTime() - lastSpeechWordNanos;
+                if (sinceWord >= 0 && sinceWord < 180_000_000L) cadence = Math.max(cadence, 0.92f);
                 float intensity = (float) Math.max(0.1, Math.min(1.0, GuiSettings.getSpeakingFlickerIntensity()));
+                // The audio envelope supplies most of the movement; the small
+                // cadence term keeps the orb alive when a provider cannot expose
+                // sample levels (for example, streamed Azure output).
                 // Keep a clearly visible cadence even when Windows is muted or
                 // a mixer reports no level. The measured envelope enhances the
                 // motion when available; it is never the sole source of motion.
@@ -243,24 +262,32 @@ public class CielGui {
             // give speech a clearly readable expansion/contraction.
             float coreR = maxRadius * (0.58f + pulse * 0.24f);
             float glowR = maxRadius * (0.78f + breath * 0.12f + pulse * 0.10f);
+            float displayBrightness = brightness;
+            if (currentState == GuiState.SPEAKING) {
+                // Radius-only motion can look like a hue shift at a glance.
+                // Couple the same guaranteed cadence to luminance so speaking
+                // is unmistakable even when the output mixer is muted.
+                displayBrightness = Math.max(0.18f, Math.min(1.0f,
+                        brightness * (0.68f + pulse * 0.42f)));
+            }
 
             // --- LAYER 1: Outer Glow (Soft Halo) ---
-            float glowAlpha = Math.max(0.08f, Math.min(0.85f, brightness * (0.22f + pulse * 0.42f)));
+            float glowAlpha = Math.max(0.08f, Math.min(0.90f, displayBrightness * (0.22f + pulse * 0.48f)));
             Color g1 = new Color(baseColor.getRed()/255f, baseColor.getGreen()/255f, baseColor.getBlue()/255f, glowAlpha);
             Color g2 = new Color(baseColor.getRed()/255f, baseColor.getGreen()/255f, baseColor.getBlue()/255f, 0f);
             g2d.setPaint(new RadialGradientPaint(center, glowR, new float[]{0f, 1f}, new Color[]{g1, g2}));
             g2d.fill(new Ellipse2D.Float(center.x - glowR, center.y - glowR, glowR*2, glowR*2));
 
             // --- LAYER 2: Crystal Core (Solid Center) ---
-            Color coreC = new Color(baseColor.getRed(), baseColor.getGreen(), baseColor.getBlue(), (int)(255 * brightness));
-            Color coreHigh = new Color(255, 255, 255, (int)(100 * brightness)); // Highlight
+            Color coreC = new Color(baseColor.getRed(), baseColor.getGreen(), baseColor.getBlue(), (int)(255 * displayBrightness));
+            Color coreHigh = new Color(255, 255, 255, (int)(120 * displayBrightness)); // Highlight
             g2d.setPaint(new RadialGradientPaint(new Point2D.Float(center.x - coreR*0.2f, center.y - coreR*0.2f), coreR, new float[]{0f, 1f}, new Color[]{coreHigh, coreC}));
             g2d.fill(new Ellipse2D.Float(center.x - coreR, center.y - coreR, coreR*2, coreR*2));
 
             // --- LAYER 3: Particles (Energy Motes) ---
             for (Particle p : particles) {
                 float particleAlpha = p.alpha * (0.5f + pulse * 0.5f);
-                g2d.setColor(new Color(1f, 1f, 1f, particleAlpha * brightness));
+                g2d.setColor(new Color(1f, 1f, 1f, particleAlpha * displayBrightness));
                 g2d.fill(new Ellipse2D.Float(p.x - p.size/2, p.y - p.size/2, p.size, p.size));
             }
 

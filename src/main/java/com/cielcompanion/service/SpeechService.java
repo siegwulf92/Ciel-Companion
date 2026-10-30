@@ -318,7 +318,9 @@ public class SpeechService {
                     boolean needsLanguageConversion = false;
                     boolean requiresPhonokana = !isGreeting && langCode.equals("ja-JP")
                             && Pattern.compile("[a-zA-Z]").matcher(finalCleanText).find();
-                    String cacheKey = requiresPhonokana ? "phonokana-v3:" + key : key;
+                    // v4 invalidates older cached transliterations that could
+                    // contain collapsed initialisms (for example DD -> ディディ).
+                    String cacheKey = requiresPhonokana ? "phonokana-v4:" + key : key;
                     String speechKey = com.cielcompanion.util.SpeechText.cacheKey(cacheKey, finalCleanText, langCode);
                     boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, finalStyle, langCode);
 
@@ -443,7 +445,7 @@ public class SpeechService {
                                 && !line.key().startsWith("warm_login")
                                 && langCode.equals("ja-JP")
                                 && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find();
-                        String cacheKey = requiresPhonokana ? "phonokana-v3:" + line.key() : line.key();
+                        String cacheKey = requiresPhonokana ? "phonokana-v4:" + line.key() : line.key();
                         String speechKey = com.cielcompanion.util.SpeechText.cacheKey(cacheKey, textToSpeak, langCode);
                         boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, style, langCode);
 

@@ -133,15 +133,40 @@ public class AIEngine {
             if (englishText == null || englishText.isBlank()) return "";
             if (!ALPHA_NUM_PATTERN.matcher(englishText).find()) return englishText;
 
-            String fallbackResult = attemptTransliteration(englishText);
+            // Make all-caps initialisms unambiguous to both the hosted formatter
+            // and the offline G2P path.  Without separators, "DD" is commonly
+            // rendered as ディディ rather than the English letter names
+            // ディー ディー.  This only touches standalone 2-6 letter tokens;
+            // ordinary words such as "address" remain unchanged.
+            final String phoneticSource = expandInitialisms(englishText);
+
+            String fallbackResult = attemptTransliteration(phoneticSource);
             if (fallbackResult != null && !ALPHA_PATTERN.matcher(fallbackResult).find()) {
                 return fallbackResult; 
             }
 
-            String localFallback = localKatakanaFallback(englishText);
+            String localFallback = localKatakanaFallback(phoneticSource);
             System.err.println("[Speech Phonetics] Formatter endpoint unavailable or returned unusable output; using the offline phoneme converter.");
             return localFallback;
         }, translationExecutor);
+    }
+
+    private static String expandInitialisms(String text) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("(?<![A-Za-z])([A-Z]{2,6})(?![A-Za-z])")
+                .matcher(text);
+        StringBuffer out = new StringBuffer();
+        while (matcher.find()) {
+            String token = matcher.group(1);
+            StringBuilder separated = new StringBuilder();
+            for (int i = 0; i < token.length(); i++) {
+                if (i > 0) separated.append(' ');
+                separated.append(token.charAt(i));
+            }
+            matcher.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(separated.toString()));
+        }
+        matcher.appendTail(out);
+        return out.toString();
     }
 
     public static String transliterateToKatakanaSync(String englishText) {

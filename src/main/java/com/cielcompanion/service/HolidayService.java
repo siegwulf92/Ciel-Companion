@@ -3,6 +3,7 @@ package com.cielcompanion.service;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.Month;
+import java.time.ZoneId;
 import java.time.temporal.TemporalAdjusters;
 import java.util.Optional;
 
@@ -12,7 +13,9 @@ public class HolidayService {
      * Checks for holidays today or tomorrow and returns a conversational warning for Ciel to speak.
      */
     public static Optional<String> getHolidayGreeting() {
-        LocalDate today = LocalDate.now();
+        // Holiday wording must follow the user's local calendar rather than the
+        // JVM/default timezone (which can still be UTC on a newly provisioned PC).
+        LocalDate today = LocalDate.now(ZoneId.of("America/New_York"));
         LocalDate tomorrow = today.plusDays(1);
         
         String todayHoliday = checkDate(today);
@@ -20,12 +23,12 @@ public class HolidayService {
             if (todayHoliday.equals("Master Taylor's Birthday")) {
                 return Optional.of("[Happy] マスター、 ハッピー バースデー。 アイ ウィッシュ ユー ナッシング バット サクセス イン ザ カミング イヤー。");
             }
-            return Optional.of("[Observing] I should note that today is " + todayHoliday + ".");
+            return Optional.of("[Observing] It is " + todayHoliday + " today, " + formatDate(today) + ".");
         }
         
         String tomorrowHoliday = checkDate(tomorrow);
         if (tomorrowHoliday != null) {
-            return Optional.of("[Observing] I should note that tomorrow is " + tomorrowHoliday + ". Shall we prepare accordingly?");
+            return Optional.of("[Observing] " + tomorrowHoliday + " is tomorrow, " + formatDate(tomorrow) + ". Shall we prepare accordingly?");
         }
         
         return Optional.empty();
@@ -35,14 +38,19 @@ public class HolidayService {
      * Appends to the daily idle report or explicit command report.
      */
     public static Optional<String> getDailyReportAddition() {
-        LocalDate today = LocalDate.now();
+        LocalDate today = LocalDate.now(ZoneId.of("America/New_York"));
         LocalDate tomorrow = today.plusDays(1);
         String todayH = checkDate(today);
         String tomH = checkDate(tomorrow);
         
-        if (todayH != null) return Optional.of("Today is " + todayH + ".");
-        if (tomH != null) return Optional.of("Tomorrow will be " + tomH + ".");
+        if (todayH != null) return Optional.of("Today is " + todayH + " (" + formatDate(today) + ").");
+        if (tomH != null) return Optional.of("Tomorrow will be " + tomH + " (" + formatDate(tomorrow) + ").");
         return Optional.empty();
+    }
+
+    private static String formatDate(LocalDate date) {
+        return date.getMonth().getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.US)
+                + " " + date.getDayOfMonth();
     }
     
     private static String checkDate(LocalDate date) {
