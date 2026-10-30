@@ -200,7 +200,14 @@ public class SpeechService {
     public static void speakMediaCommentary(String text, java.util.function.Consumer<Boolean> onComplete) {
         // Generated commentary stays English internally; the active Japanese
         // voice receives final-stage phonokana only when it is about to speak.
-        queuePreformatted(text, "media_commentary", false, false, onComplete, null);
+        queuePreformatted(text, "media_commentary", false, false, spoken -> {
+            // Media detection may have put the orb into THINKING before the
+            // speech queue rejects the request (lock, gaming suppression,
+            // failed pause confirmation, or a stale episode). Never leave a
+            // cancelled thought visible.
+            if (!spoken) CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
+            if (onComplete != null) onComplete.accept(spoken);
+        }, null);
     }
 
     private static void queuePreformatted(String text, String key, boolean isRare, boolean flushQueue,
