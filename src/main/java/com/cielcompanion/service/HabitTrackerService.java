@@ -519,6 +519,10 @@ public class HabitTrackerService {
         return currentCategory;
     }
 
+    public static String getCurrentMediaTitle() {
+        return currentMediaTitle == null ? "" : currentMediaTitle;
+    }
+
     public static int getCurrentExposureMinutes() {
         if ("Media".equals(currentCategory) && currentMediaTitle != null && !currentMediaTitle.isEmpty()) {
             return episodeExposureMinutes.getOrDefault(currentMediaTitle, 0);

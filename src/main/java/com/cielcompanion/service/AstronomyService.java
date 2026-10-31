@@ -329,8 +329,12 @@ public class AstronomyService {
                 if (p == null || p.id() == null || p.id().equalsIgnoreCase("sun") || p.id().equalsIgnoreCase("moon")) continue;
                 double alt = currentAltitude(p, now);
                 if (alt < config.getDouble("astronomy.minPlanetAltitudeDeg", 10.0) || !isPlanetObservable(p)) continue;
-                LineManager.getPlanetLine(p.id().toLowerCase(Locale.ROOT)).ifPresent(line ->
-                        visibleLines.add(line.text() + dynamicBodyDetail(p, alt)));
+                LineManager.getPlanetLine(p.id().toLowerCase(Locale.ROOT)).ifPresent(line -> {
+                    String meta = AstronomyMetaReferences.referenceFor(p.id());
+                    String suffix = meta.isBlank() ? "" : " Meta reference: " + meta + ".";
+                    visibleLines.add(line.text() + dynamicBodyDetail(p, alt)
+                            + (suffix.isBlank() ? "" : PhonoKana.getInstance().toKatakana(suffix)));
+                });
             }
             
             boolean jupiter = visibleLines.stream().anyMatch(s -> s.contains("Jupiter") || s.contains("ジュピター"));
@@ -560,7 +564,10 @@ public class AstronomyService {
             }
             if (group.size() >= 3) {
                 String names = group.stream().map(p -> p.name() == null ? p.id() : p.name()).limit(4).reduce((a, b) -> a + ", " + b).orElse("");
-                sequentialEvents.put("special_alignment", PhonoKana.getInstance().toKatakana(names + " form a loose line in the " + AstroUtils.compassDirection(currentAzimuth(group.get(0), now)) + " sky tonight."));
+                String references = group.stream().map(p -> AstronomyMetaReferences.referenceFor(p.id()))
+                        .filter(s -> s != null && !s.isBlank()).distinct().reduce((a, b) -> a + "; " + b).orElse("");
+                String metaSuffix = references.isBlank() ? "" : " If you are thinking of Re:Zero, the names echo " + references + ".";
+                sequentialEvents.put("special_alignment", PhonoKana.getInstance().toKatakana(names + " form a loose line in the " + AstroUtils.compassDirection(currentAzimuth(group.get(0), now)) + " sky tonight." + metaSuffix));
                 return;
             }
         }

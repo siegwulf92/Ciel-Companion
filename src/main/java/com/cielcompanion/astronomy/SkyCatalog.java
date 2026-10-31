@@ -32,6 +32,7 @@ public final class SkyCatalog {
             new Object("fomalhaut", "Fomalhaut", 344.4128, -29.6222, 1.16, Kind.STAR, "Piscis Austrinus", true),
             new Object("deneb", "Deneb", 310.3579, 45.2803, 1.25, Kind.STAR, "Cygnus", true),
             new Object("regulus", "Regulus", 152.0929, 11.9672, 1.35, Kind.STAR, "Leo", true),
+            new Object("shaula", "Shaula", 263.4022, -37.1038, 1.62, Kind.STAR, "Scorpius", true),
             new Object("castor", "Castor", 113.6494, 31.8883, 1.58, Kind.STAR, "Gemini", true),
             new Object("alnilam", "Alnilam", 84.0533, -1.2019, 1.69, Kind.STAR, "Orion", true),
             new Object("alnitak", "Alnitak", 85.1897, -1.9426, 1.74, Kind.STAR, "Orion", true),
