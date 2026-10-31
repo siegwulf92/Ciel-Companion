@@ -188,6 +188,7 @@ public class AstronomyService {
         
         checkSunriseSunset(sequentialEvents);
         checkEclipses(sequentialEvents);
+        checkUpcomingSkyEvents(sequentialEvents);
         
         // CRITICAL FIX: Only report on Deep Sky Objects if the sun is actually down
         if (isNight) {
@@ -219,11 +220,15 @@ public class AstronomyService {
         String moonPhase = sunMoon == null ? null : sunMoon.moonPhase();
         ZoneId zone = ZoneId.of(LocationService.getTimezone());
         ZonedDateTime now = ZonedDateTime.now(zone);
-        List<CombinedAstronomyData.PlanetCoordinate> planetCoords = AstronomyApi.fetchPlanetCoordinates(now.toLocalDate(), now.toLocalTime());
+        LocalTime forecastTime = LocalTime.of(21, 0);
+        Map<LocalDate, List<CombinedAstronomyData.PlanetCoordinate>> forecast = AstronomyApi.fetchPlanetForecast(
+                now.toLocalDate(), config.getInt("astronomy.forecastDays", 3), forecastTime);
+        List<CombinedAstronomyData.PlanetCoordinate> planetCoords = forecast.getOrDefault(now.toLocalDate(), List.of());
         List<String> constellationLines = AstronomyApi.getProminentConstellationLines(LocalDate.now());
+        List<CombinedAstronomyData.SkyEvent> skyEvents = buildUpcomingSkyEvents(forecast, forecastTime);
 
         if (sunMoonTimes != null || moonPhase != null || !planetCoords.isEmpty() || !constellationLines.isEmpty()) {
-            todaysApiData = new CombinedAstronomyData(sunMoonTimes, moonPhase, planetCoords, new ArrayList<>(), constellationLines, System.currentTimeMillis() / 1000L);
+            todaysApiData = new CombinedAstronomyData(sunMoonTimes, moonPhase, planetCoords, new ArrayList<>(), constellationLines, skyEvents, System.currentTimeMillis() / 1000L);
             cacheApiData();
             System.out.println("Ciel Debug: Primary API fetch successful and data cached.");
         } else {
@@ -263,7 +268,7 @@ public class AstronomyService {
         todaysApiData = new CombinedAstronomyData(
                 todaysApiData.sunMoonTimes, moonPhase,
                 new ArrayList<>(merged.values()), todaysApiData.meteorShowerLines,
-                todaysApiData.prominentConstellationLines, now.toEpochSecond());
+                todaysApiData.prominentConstellationLines, todaysApiData.upcomingSkyEvents, now.toEpochSecond());
         cacheApiData();
         System.out.println("Ciel Debug (Astronomy): Refreshed observer-time body positions at " + now);
     }
@@ -479,6 +484,53 @@ public class AstronomyService {
         double d1 = Math.toRadians(dec1), d2 = Math.toRadians(dec2);
         double cosine = Math.sin(d1) * Math.sin(d2) + Math.cos(d1) * Math.cos(d2) * Math.cos(r1 - r2);
         return Math.toDegrees(Math.acos(Math.max(-1.0, Math.min(1.0, cosine))));
+    }
+
+    private static List<CombinedAstronomyData.SkyEvent> buildUpcomingSkyEvents(
+            Map<LocalDate, List<CombinedAstronomyData.PlanetCoordinate>> forecast, LocalTime viewingTime) {
+        Map<String, CombinedAstronomyData.SkyEvent> best = new LinkedHashMap<>();
+        for (Map.Entry<LocalDate, List<CombinedAstronomyData.PlanetCoordinate>> entry : forecast.entrySet()) {
+            LocalDate date = entry.getKey();
+            ZonedDateTime viewing = ZonedDateTime.of(date, viewingTime, ZoneId.of(LocationService.getTimezone()));
+            CombinedAstronomyData.PlanetCoordinate sun = entry.getValue().stream().filter(p -> p != null && "sun".equalsIgnoreCase(p.id())).findFirst().orElse(null);
+            if (sun == null || currentAltitude(sun, viewing) >= -6.0) continue;
+            CombinedAstronomyData.PlanetCoordinate moon = entry.getValue().stream().filter(p -> p != null && "moon".equalsIgnoreCase(p.id())).findFirst().orElse(null);
+            if (moon == null || currentAltitude(moon, viewing) < 10.0) continue;
+            for (String id : List.of("venus", "mars", "jupiter", "saturn")) {
+                CombinedAstronomyData.PlanetCoordinate planet = entry.getValue().stream().filter(p -> p != null && id.equalsIgnoreCase(p.id())).findFirst().orElse(null);
+                if (planet == null || currentAltitude(planet, viewing) < 10.0) continue;
+                double separation = angularSeparation(moon.ra(), moon.dec(), planet.ra(), planet.dec());
+                if (Double.isFinite(separation) && separation <= 8.0) {
+                    CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), viewingTime.toString(), "Moon", planet.name() == null ? id : planet.name(), separation);
+                    best.merge("moon-" + id, candidate, (a, b) -> a.separationDeg() <= b.separationDeg() ? a : b);
+                }
+            }
+            double pleiadesAltitude = AstroUtils.getAltitude(56.75, 24.1167, LocationService.getLatitude(), LocationService.getLongitude(), viewing);
+            double pleiadesSeparation = angularSeparation(moon.ra(), moon.dec(), 56.75, 24.1167);
+            if (pleiadesAltitude >= 10.0 && Double.isFinite(pleiadesSeparation) && pleiadesSeparation <= 8.0) {
+                CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), viewingTime.toString(), "Moon", "the Pleiades (Seven Sisters)", pleiadesSeparation);
+                best.merge("moon-pleiades", candidate, (a, b) -> a.separationDeg() <= b.separationDeg() ? a : b);
+            }
+        }
+        return new ArrayList<>(best.values());
+    }
+
+    private static void checkUpcomingSkyEvents(Map<String, String> sequentialEvents) {
+        if (!config.enabled("show.upcomingSkyEvents", true) || todaysApiData.upcomingSkyEvents == null) return;
+        LocalDate today = LocalDate.now(ZoneId.of(LocationService.getTimezone()));
+        int added = 0;
+        for (CombinedAstronomyData.SkyEvent event : todaysApiData.upcomingSkyEvents) {
+            try {
+                LocalDate date = LocalDate.parse(event.date());
+                LocalTime time = LocalTime.parse(event.time());
+                if (date.isBefore(today) || date.isAfter(today.plusDays(config.getInt("astronomy.forecastDays", 3) - 1L))) continue;
+                if (!WeatherService.isSkyLikelyClear(date, time)) continue;
+                String when = date.equals(today) ? "Tonight around " + time.format(DateTimeFormatter.ofPattern("h:mm a")) : "On " + date.format(DateTimeFormatter.ofPattern("MMM d")) + " around " + time.format(DateTimeFormatter.ofPattern("h:mm a"));
+                String english = when + ", the " + event.primary() + " will be close to " + event.secondary() + ", about " + Math.round(event.separationDeg()) + " degrees apart.";
+                sequentialEvents.put("upcoming_sky_" + added++, PhonoKana.getInstance().toKatakana(english));
+                if (added >= 2) break;
+            } catch (Exception ignored) { }
+        }
     }
 
     private static boolean skyTooObscured() {

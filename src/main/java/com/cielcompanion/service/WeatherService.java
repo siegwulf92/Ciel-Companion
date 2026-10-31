@@ -17,6 +17,9 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -75,6 +78,28 @@ public class WeatherService {
                 cachedWeatherData.fetchTimeEpochSeconds);
     }
 
+    public static boolean isSkyLikelyClear(LocalDate date, LocalTime time) {
+        if (date == null || time == null) return false;
+        if (cachedWeatherData == null) getCurrentWeather();
+        if (cachedWeatherData == null || cachedWeatherData.forecast == null || cachedWeatherData.forecast.forecastday == null) return false;
+        for (ForecastDay day : cachedWeatherData.forecast.forecastday) {
+            if (day == null || !date.toString().equals(day.date) || day.hour == null || day.hour.isEmpty()) continue;
+            Hour best = null; long bestDistance = Long.MAX_VALUE;
+            for (Hour hour : day.hour) {
+                try {
+                    LocalDateTime timestamp = LocalDateTime.parse(hour.time.replace(" ", "T"), DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+                    long distance = Math.abs(java.time.Duration.between(time.atDate(date), timestamp).toMinutes());
+                    if (distance < bestDistance) { bestDistance = distance; best = hour; }
+                } catch (Exception ignored) { }
+            }
+            if (best == null) return false;
+            String condition = best.condition == null || best.condition.text == null ? "" : best.condition.text.toLowerCase();
+            return best.cloud < 60 && best.visibilityKm >= 5.0 && best.chanceOfRain < 40 && best.chanceOfSnow < 40
+                    && !condition.matches(".*(rain|snow|thunder|storm|fog|mist|sleet|ice).*" );
+        }
+        return false;
+    }
+
     private static String getWeatherData(boolean isForecast) {
         String apiKey = weatherProps.getProperty("weather.apiKey");
         if (apiKey == null || apiKey.isBlank() || apiKey.equalsIgnoreCase("YOUR_API_KEY_HERE")) return "Weather API key not configured.";
@@ -97,7 +122,7 @@ public class WeatherService {
 
     private static String fetchAndCacheNewData(String apiKey, boolean isForecast) {
         String location = String.format("%f,%f", LocationService.getLatitude(), LocationService.getLongitude());
-        String urlString = String.format("http://api.weatherapi.com/v1/forecast.json?key=%s&q=%s&days=1&aqi=no&alerts=yes", apiKey, location);
+        String urlString = String.format("http://api.weatherapi.com/v1/forecast.json?key=%s&q=%s&days=3&aqi=no&alerts=yes", apiKey, location);
 
         try {
             URL url = new URL(urlString);
@@ -188,7 +213,8 @@ public class WeatherService {
     }
     private static class Condition { String text; }
     private static class Forecast { List<ForecastDay> forecastday; }
-    private static class ForecastDay { Day day; }
+    private static class ForecastDay { String date; Day day; List<Hour> hour; }
+    private static class Hour { String time; @SerializedName("cloud") int cloud; @SerializedName("vis_km") double visibilityKm; @SerializedName("daily_chance_of_rain") int chanceOfRain; @SerializedName("chance_of_snow") int chanceOfSnow; Condition condition; }
     private static class Day { @SerializedName("maxtemp_f") double maxtempF; @SerializedName("mintemp_f") double mintempF; Condition condition; }
     private static class Alerts { List<Alert> alert; }
     private static class Alert { String headline; String event; String severity; String desc; String effective; String expires; }

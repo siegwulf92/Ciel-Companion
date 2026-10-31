@@ -9,7 +9,7 @@ import java.util.Map;
  * This allows Ciel to calculate real-time visibility mathematically without new API calls.
  */
 public class CombinedAstronomyData implements Serializable {
-    private static final long serialVersionUID = 4L; // Version bumped for live horizontal positions
+    private static final long serialVersionUID = 5L; // Adds cached date-range sky-event candidates
 
     public final Map<String, String> sunMoonTimes;
     public final String moonPhase;
@@ -17,16 +17,25 @@ public class CombinedAstronomyData implements Serializable {
     public final List<PlanetCoordinate> planetCoordinates; 
     public final List<String> meteorShowerLines;
     public final List<String> prominentConstellationLines; 
+    public final List<SkyEvent> upcomingSkyEvents;
     public final long fetchTimeEpochSeconds;
 
     public CombinedAstronomyData(Map<String, String> sunMoonTimes, String moonPhase, List<PlanetCoordinate> planetCoordinates, List<String> meteorShowerLines, List<String> prominentConstellationLines, long fetchTime) {
+        this(sunMoonTimes, moonPhase, planetCoordinates, meteorShowerLines, prominentConstellationLines, List.of(), fetchTime);
+    }
+
+    public CombinedAstronomyData(Map<String, String> sunMoonTimes, String moonPhase, List<PlanetCoordinate> planetCoordinates, List<String> meteorShowerLines, List<String> prominentConstellationLines, List<SkyEvent> upcomingSkyEvents, long fetchTime) {
         this.sunMoonTimes = sunMoonTimes;
         this.moonPhase = moonPhase;
         this.planetCoordinates = planetCoordinates;
         this.meteorShowerLines = meteorShowerLines;
         this.prominentConstellationLines = prominentConstellationLines;
+        this.upcomingSkyEvents = upcomingSkyEvents == null ? List.of() : upcomingSkyEvents;
         this.fetchTimeEpochSeconds = fetchTime;
     }
+
+    public record SkyEvent(String date, String time, String primary, String secondary,
+                           double separationDeg) implements Serializable {}
 
     /**
      * Inner record to store celestial coordinates.

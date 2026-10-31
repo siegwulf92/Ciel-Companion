@@ -39,6 +39,7 @@ public class AstronomyApi {
         public static class Table { public List<Row> rows; }
         public static class Row { public List<Cell> cells; }
         public static class Cell {
+            public String date;
             public String id;
             public String name;
             public Position position;
@@ -177,37 +178,8 @@ public class AstronomyApi {
                         if (row.cells == null || row.cells.isEmpty()) continue;
                         CelestialBodyData.Cell cell = row.cells.get(0);
                         try {
-                            if (cell.position != null && cell.position.equatorial != null) {
-                                double ra = parseRaToDegrees(cell.position.equatorial.rightAscension.string);
-                                double dec = parseDecToDegrees(cell.position.equatorial.declination.string);
-                                
-                                double altitude = Double.NaN;
-                                double azimuth = Double.NaN;
-                                CelestialBodyData.Horizontal horizontal = cell.position.horizontal != null
-                                        ? cell.position.horizontal : cell.position.horizonal;
-                                if (horizontal != null) {
-                                    altitude = parseDouble(horizontal.altitude == null ? null : horizontal.altitude.degrees);
-                                    azimuth = parseDouble(horizontal.azimuth == null ? null : horizontal.azimuth.degrees);
-                                }
-                                // Gson maps extraInfo on the cell in current
-                                // responses; malformed/older responses simply
-                                // leave these values as unknown.
-                                double magnitude = Double.NaN;
-                                double elongation = Double.NaN;
-                                String phaseName = null;
-                                double phaseFraction = Double.NaN;
-                                if (cell.extraInfo != null) {
-                                    magnitude = cell.extraInfo.magnitude == null ? Double.NaN : cell.extraInfo.magnitude;
-                                    elongation = cell.extraInfo.elongation == null ? Double.NaN : cell.extraInfo.elongation;
-                                    if (cell.extraInfo.phase != null) {
-                                        phaseName = cell.extraInfo.phase.string;
-                                        phaseFraction = parseDouble(cell.extraInfo.phase.fraction);
-                                    }
-                                }
-                                coordinates.add(new CombinedAstronomyData.PlanetCoordinate(
-                                        cell.id, cell.name, ra, dec, altitude, azimuth,
-                                        magnitude, elongation, phaseName, phaseFraction, capturedAt));
-                            }
+                            CombinedAstronomyData.PlanetCoordinate parsed = parsePlanetCell(cell, date, time);
+                            if (parsed != null) coordinates.add(parsed);
                         } catch (Exception e) { /* Ignore parse errors */ }
                     }
                 }
@@ -219,6 +191,68 @@ public class AstronomyApi {
                     + e.getClass().getSimpleName());
         }
         return coordinates;
+    }
+
+    public static Map<LocalDate, List<CombinedAstronomyData.PlanetCoordinate>> fetchPlanetForecast(
+            LocalDate fromDate, int days, LocalTime time) {
+        if (fromDate == null || days < 1) return Map.of();
+        LocalDate toDate = fromDate.plusDays(Math.min(days, 14) - 1L);
+        String dateString = fromDate.format(DateTimeFormatter.ISO_LOCAL_DATE);
+        String endString = toDate.format(DateTimeFormatter.ISO_LOCAL_DATE);
+        String timeString = time == null ? "21:00:00" : time.withNano(0).toString();
+        String url = String.format(Locale.US,
+                "%s/bodies/positions?latitude=%.4f&longitude=%.4f&elevation=0&from_date=%s&to_date=%s&time=%s&bodies=sun,moon,mercury,venus,mars,jupiter,saturn,uranus,neptune",
+                BASE_URL, LocationService.getLatitude(), LocationService.getLongitude(), dateString, endString, timeString);
+        Map<LocalDate, List<CombinedAstronomyData.PlanetCoordinate>> forecast = new LinkedHashMap<>();
+        HttpGet request = new HttpGet(url);
+        configureRequest(request);
+        try (CloseableHttpResponse response = client.execute(request)) {
+            if (response.getStatusLine().getStatusCode() != 200) return forecast;
+            CelestialBodyData bodyData = gson.fromJson(EntityUtils.toString(response.getEntity()), CelestialBodyData.class);
+            if (bodyData == null || bodyData.data == null || bodyData.data.table == null || bodyData.data.table.rows == null) return forecast;
+            for (CelestialBodyData.Row row : bodyData.data.table.rows) {
+                if (row.cells == null) continue;
+                for (CelestialBodyData.Cell cell : row.cells) {
+                    LocalDate cellDate = parseCellDate(cell.date, fromDate);
+                    CombinedAstronomyData.PlanetCoordinate parsed = parsePlanetCell(cell, cellDate, time);
+                    if (parsed != null) forecast.computeIfAbsent(cellDate, ignored -> new ArrayList<>()).add(parsed);
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Ciel Warning (AstronomyApi): Planet forecast unavailable: " + e.getClass().getSimpleName());
+        }
+        return forecast;
+    }
+
+    private static LocalDate parseCellDate(String value, LocalDate fallback) {
+        try { return value == null || value.isBlank() ? fallback : java.time.OffsetDateTime.parse(value).toLocalDate(); }
+        catch (Exception ignored) { return fallback; }
+    }
+
+    private static CombinedAstronomyData.PlanetCoordinate parsePlanetCell(CelestialBodyData.Cell cell, LocalDate date, LocalTime time) {
+        if (cell == null || cell.position == null || cell.position.equatorial == null) return null;
+        double ra = parseRaToDegrees(cell.position.equatorial.rightAscension.string);
+        double dec = parseDecToDegrees(cell.position.equatorial.declination.string);
+        double altitude = Double.NaN, azimuth = Double.NaN;
+        CelestialBodyData.Horizontal horizontal = cell.position.horizontal != null ? cell.position.horizontal : cell.position.horizonal;
+        if (horizontal != null) {
+            altitude = parseDouble(horizontal.altitude == null ? null : horizontal.altitude.degrees);
+            azimuth = parseDouble(horizontal.azimuth == null ? null : horizontal.azimuth.degrees);
+        }
+        double magnitude = Double.NaN, elongation = Double.NaN, phaseFraction = Double.NaN;
+        String phaseName = null;
+        if (cell.extraInfo != null) {
+            magnitude = cell.extraInfo.magnitude == null ? Double.NaN : cell.extraInfo.magnitude;
+            elongation = cell.extraInfo.elongation == null ? Double.NaN : cell.extraInfo.elongation;
+            if (cell.extraInfo.phase != null) {
+                phaseName = cell.extraInfo.phase.string;
+                phaseFraction = parseDouble(cell.extraInfo.phase.fraction);
+            }
+        }
+        ZoneId zone = ZoneId.of(LocationService.getTimezone());
+        long capturedAt = ZonedDateTime.of(date, time == null ? LocalTime.NOON : time, zone).toEpochSecond();
+        return new CombinedAstronomyData.PlanetCoordinate(cell.id, cell.name, ra, dec, altitude, azimuth,
+                magnitude, elongation, phaseName, phaseFraction, capturedAt);
     }
 
     private static double parseDouble(String value) {
