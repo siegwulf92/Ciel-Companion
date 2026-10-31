@@ -47,6 +47,7 @@ public class AstronomyApi {
         }
         public static class Position {
             public Equatorial equatorial;
+            public Constellation constellation;
             // Astronomy API spells this correctly in current responses.  The
             // misspelled alias is retained because older responses used it.
             public Horizontal horizontal;
@@ -60,6 +61,7 @@ public class AstronomyApi {
         }
         public static class RightAscension { public String string; }
         public static class Declination { public String string; }
+        public static class Constellation { public String id; public String name; }
         public static class ExtraInfo {
             public Double magnitude;
             public Double elongation;
@@ -252,7 +254,8 @@ public class AstronomyApi {
         ZoneId zone = ZoneId.of(LocationService.getTimezone());
         long capturedAt = ZonedDateTime.of(date, time == null ? LocalTime.NOON : time, zone).toEpochSecond();
         return new CombinedAstronomyData.PlanetCoordinate(cell.id, cell.name, ra, dec, altitude, azimuth,
-                magnitude, elongation, phaseName, phaseFraction, capturedAt);
+                magnitude, elongation, phaseName, phaseFraction, capturedAt,
+                cell.position.constellation == null ? null : cell.position.constellation.name);
     }
 
     private static double parseDouble(String value) {

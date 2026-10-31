@@ -9,7 +9,7 @@ import java.util.Map;
  * This allows Ciel to calculate real-time visibility mathematically without new API calls.
  */
 public class CombinedAstronomyData implements Serializable {
-    private static final long serialVersionUID = 5L; // Adds cached date-range sky-event candidates
+    private static final long serialVersionUID = 6L; // Adds API constellation metadata
 
     public final Map<String, String> sunMoonTimes;
     public final String moonPhase;
@@ -65,12 +65,13 @@ public class CombinedAstronomyData implements Serializable {
             double elongation,
             String phaseName,
             double phaseFraction,
-            long capturedAtEpochSeconds) implements Serializable {
+            long capturedAtEpochSeconds,
+            String constellationName) implements Serializable {
 
         /** Backward-compatible constructor for older callers and fixtures. */
         public PlanetCoordinate(String id, String name, double ra, double dec) {
             this(id, name, ra, dec, Double.NaN, Double.NaN, Double.NaN,
-                    Double.NaN, null, Double.NaN, 0L);
+                    Double.NaN, null, Double.NaN, 0L, null);
         }
 
         public boolean hasHorizontalPosition() {

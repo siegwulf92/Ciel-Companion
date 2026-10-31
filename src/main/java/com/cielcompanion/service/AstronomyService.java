@@ -378,6 +378,7 @@ public class AstronomyService {
         double azimuth = currentAzimuth(p, ZonedDateTime.now(ZoneId.of(LocationService.getTimezone())));
         StringBuilder english = new StringBuilder(" Look ").append(AstroUtils.compassDirection(azimuth)).append(", about ").append(Math.round(altitude)).append(" degrees above the horizon");
         if (Double.isFinite(azimuth)) english.append(" at azimuth ").append(Math.round(azimuth)).append(" degrees");
+        if (p.constellationName() != null && !p.constellationName().isBlank()) english.append(", in the constellation of ").append(p.constellationName());
         if (p.hasPhotometry()) english.append(" and has an apparent magnitude near ")
                 .append(String.format(Locale.ROOT, "%.1f", p.magnitude()));
         english.append(".");
@@ -478,7 +479,29 @@ public class AstronomyService {
             sequentialEvents.put("special_alignment", PhonoKana.getInstance().toKatakana(english));
             return;
         }
-        double pleiadesAltitude = AstroUtils.getAltitude(56.75, 24.1167,
+        List<CombinedAstronomyData.PlanetCoordinate> brightBodies = new ArrayList<>();
+        for (String id : List.of("venus", "mars", "jupiter", "saturn", "uranus")) {
+            CombinedAstronomyData.PlanetCoordinate planet = body(id);
+            if (planet != null && currentAltitude(planet, now) >= 10.0 && isPlanetObservable(planet)) brightBodies.add(planet);
+        }
+        for (int i = 0; i < brightBodies.size(); i++) for (int j = i + 1; j < brightBodies.size(); j++) {
+            CombinedAstronomyData.PlanetCoordinate a = brightBodies.get(i), b = brightBodies.get(j);
+            double separation = angularSeparation(a.ra(), a.dec(), b.ra(), b.dec());
+            if (Double.isFinite(separation) && separation <= 6.0) {
+                sequentialEvents.put("special_alignment", PhonoKana.getInstance().toKatakana((a.name() == null ? a.id() : a.name()) + " and " + (b.name() == null ? b.id() : b.name()) + " are close together tonight. Look toward " + AstroUtils.compassDirection(currentAzimuth(a, now)) + "."));
+                return;
+            }
+        }
+            List<CombinedAstronomyData.PlanetCoordinate> brightBodies = entry.getValue().stream().filter(p -> p != null && List.of("venus", "mars", "jupiter", "saturn", "uranus").contains(p.id().toLowerCase(Locale.ROOT))).filter(p -> currentAltitude(p, viewing) >= 10.0).toList();
+            for (int i = 0; i < brightBodies.size(); i++) for (int j = i + 1; j < brightBodies.size(); j++) {
+                CombinedAstronomyData.PlanetCoordinate a = brightBodies.get(i), b = brightBodies.get(j);
+                double separation = angularSeparation(a.ra(), a.dec(), b.ra(), b.dec());
+                if (Double.isFinite(separation) && separation <= 6.0) {
+                    CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), viewingTime.toString(), a.name() == null ? a.id() : a.name(), b.name() == null ? b.id() : b.name(), separation, currentAltitude(a, viewing), currentAzimuth(a, viewing), currentAltitude(b, viewing), currentAzimuth(b, viewing));
+                    best.merge("pair-" + a.id() + "-" + b.id(), candidate, (x, y) -> x.separationDeg() <= y.separationDeg() ? x : y);
+                }
+            }
+            double pleiadesAltitude = AstroUtils.getAltitude(56.75, 24.1167,
                 LocationService.getLatitude(), LocationService.getLongitude(), now);
         double pleiadesSeparation = angularSeparation(moon.ra(), moon.dec(), 56.75, 24.1167);
         if (pleiadesAltitude >= 10.0 && Double.isFinite(pleiadesSeparation) && pleiadesSeparation <= 8.0) {
