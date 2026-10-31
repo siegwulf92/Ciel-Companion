@@ -52,7 +52,27 @@ public class WeatherService {
 
     public static String getRawWeatherCondition() {
         if (cachedWeatherData == null) getCurrentWeather(); 
-        return (cachedWeatherData != null && cachedWeatherData.current != null) ? cachedWeatherData.current.condition.text : "Unknown";
+        return (cachedWeatherData != null && cachedWeatherData.current != null
+                && cachedWeatherData.current.condition != null
+                && cachedWeatherData.current.condition.text != null)
+                ? cachedWeatherData.current.condition.text : "Unknown";
+    }
+
+    /** A compact, astronomy-oriented view of the current sky conditions. */
+    public record SkyConditions(String condition, int cloudCoverPercent,
+                                double visibilityKm, boolean daytime,
+                                long fetchedAtEpochSeconds) {}
+
+    public static SkyConditions getCurrentSkyConditions() {
+        if (cachedWeatherData == null) getCurrentWeather();
+        if (cachedWeatherData == null || cachedWeatherData.current == null) return null;
+        Current current = cachedWeatherData.current;
+        return new SkyConditions(
+                current.condition == null ? "Unknown" : current.condition.text,
+                current.cloud,
+                current.visibilityKm,
+                current.isDay == 1,
+                cachedWeatherData.fetchTimeEpochSeconds);
     }
 
     private static String getWeatherData(boolean isForecast) {
@@ -159,7 +179,13 @@ public class WeatherService {
         Location location; Current current; Forecast forecast; Alerts alerts; long fetchTimeEpochSeconds;
     }
     private static class Location { String name; }
-    private static class Current { @SerializedName("temp_f") double tempF; Condition condition; }
+    private static class Current {
+        @SerializedName("temp_f") double tempF;
+        @SerializedName("cloud") int cloud;
+        @SerializedName("vis_km") double visibilityKm;
+        @SerializedName("is_day") int isDay;
+        Condition condition;
+    }
     private static class Condition { String text; }
     private static class Forecast { List<ForecastDay> forecastday; }
     private static class ForecastDay { Day day; }
@@ -167,3 +193,5 @@ public class WeatherService {
     private static class Alerts { List<Alert> alert; }
     private static class Alert { String headline; String event; String severity; String desc; String effective; String expires; }
 }
+
+

@@ -9,7 +9,7 @@ import java.util.Map;
  * This allows Ciel to calculate real-time visibility mathematically without new API calls.
  */
 public class CombinedAstronomyData implements Serializable {
-    private static final long serialVersionUID = 3L; // Version bumped for new structure
+    private static final long serialVersionUID = 4L; // Version bumped for live horizontal positions
 
     public final Map<String, String> sunMoonTimes;
     public final String moonPhase;
@@ -32,5 +32,45 @@ public class CombinedAstronomyData implements Serializable {
      * Inner record to store celestial coordinates.
      * RA (Right Ascension) and Dec (Declination) are essentially "Latitude/Longitude" for the sky.
      */
-    public record PlanetCoordinate(String id, String name, double ra, double dec) implements Serializable {}
+    /**
+     * A body position captured for a specific observer time.  The original
+     * implementation stored only RA/Dec sampled at noon, then extrapolated
+     * altitude later.  That made a report stale by several hours and could
+     * describe an object as visible after it had set.  The API also gives us
+     * horizontal coordinates, apparent magnitude, elongation and (for the
+     * Moon) illumination; retain all of those values when available.
+     */
+    public record PlanetCoordinate(
+            String id,
+            String name,
+            double ra,
+            double dec,
+            double altitudeDeg,
+            double azimuthDeg,
+            double magnitude,
+            double elongation,
+            String phaseName,
+            double phaseFraction,
+            long capturedAtEpochSeconds) implements Serializable {
+
+        /** Backward-compatible constructor for older callers and fixtures. */
+        public PlanetCoordinate(String id, String name, double ra, double dec) {
+            this(id, name, ra, dec, Double.NaN, Double.NaN, Double.NaN,
+                    Double.NaN, null, Double.NaN, 0L);
+        }
+
+        public boolean hasHorizontalPosition() {
+            return Double.isFinite(altitudeDeg) && Double.isFinite(azimuthDeg);
+        }
+
+        public boolean hasPhotometry() {
+            return Double.isFinite(magnitude);
+        }
+
+        public boolean hasMoonPhase() {
+            return phaseName != null && !phaseName.isBlank();
+        }
+    }
 }
+
+

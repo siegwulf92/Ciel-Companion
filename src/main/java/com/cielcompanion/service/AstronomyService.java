@@ -15,6 +15,7 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -36,6 +37,7 @@ public class AstronomyService {
     }
     
     private static CombinedAstronomyData todaysApiData = null;
+    private static final long LIVE_POSITION_REFRESH_SECONDS = 30 * 60;
 
     public record AstronomyReport(Map<String, String> sequentialEvents, List<String> reportAmbientLines, List<String> idleAmbientLines) {}
 
@@ -118,6 +120,15 @@ public class AstronomyService {
      * in the middle of the afternoon.
      */
     private static boolean isNightTime() {
+        CombinedAstronomyData.PlanetCoordinate sun = body("sun");
+        if (sun != null && sun.hasHorizontalPosition()) {
+            long age = Math.max(0L, Instant.now().getEpochSecond() - sun.capturedAtEpochSeconds());
+            if (age <= LIVE_POSITION_REFRESH_SECONDS * 2) {
+                // Civil twilight is still too bright for dependable
+                // constellation or meteor claims.
+                return sun.altitudeDeg() < -6.0;
+            }
+        }
         LocalTime now = LocalTime.now(ZoneId.of(LocationService.getTimezone()));
         
         if (todaysApiData != null && todaysApiData.sunMoonTimes != null) {
@@ -155,6 +166,8 @@ public class AstronomyService {
         if (!ensureConfigLoaded()) {
             return new AstronomyReport(sequentialEvents, reportAmbientLines, idleAmbientLines);
         }
+
+        refreshLivePositionsIfStale();
         
         boolean isNight = isNightTime();
         
@@ -178,7 +191,8 @@ public class AstronomyService {
             checkDeepSkyObjectsDynamic(sequentialEvents);
         }
         
-        checkMoonPhase(reportAmbientLines);       
+        checkMoonPhase(reportAmbientLines);
+        checkMoonVisibility(reportAmbientLines);
         checkSeasonal(idleAmbientLines);  
         checkMeteorShowers(reportAmbientLines); 
         
@@ -196,7 +210,9 @@ public class AstronomyService {
 
         Map<String, String> sunMoonTimes = AstronomyApi.getSunMoonTimes(LocalDate.now());
         String moonPhase = AstronomyApi.getMoonPhase(LocalDate.now());
-        List<CombinedAstronomyData.PlanetCoordinate> planetCoords = AstronomyApi.fetchPlanetCoordinates(LocalDate.now());
+        ZoneId zone = ZoneId.of(LocationService.getTimezone());
+        ZonedDateTime now = ZonedDateTime.now(zone);
+        List<CombinedAstronomyData.PlanetCoordinate> planetCoords = AstronomyApi.fetchPlanetCoordinates(now.toLocalDate(), now.toLocalTime());
         List<String> constellationLines = AstronomyApi.getProminentConstellationLines(LocalDate.now());
 
         if (sunMoonTimes != null || moonPhase != null || !planetCoords.isEmpty() || !constellationLines.isEmpty()) {
@@ -207,6 +223,42 @@ public class AstronomyService {
             System.out.println("Ciel Warning: Primary API fetch failed. Attempting fallback fetch...");
             performFallbackApiFetch();
         }
+    }
+
+    private static void refreshLivePositionsIfStale() {
+        if (todaysApiData == null) return;
+        ZoneId zone = ZoneId.of(LocationService.getTimezone());
+        ZonedDateTime now = ZonedDateTime.now(zone);
+        long newest = todaysApiData.planetCoordinates == null ? 0L
+                : todaysApiData.planetCoordinates.stream()
+                    .mapToLong(CombinedAstronomyData.PlanetCoordinate::capturedAtEpochSeconds)
+                    .max().orElse(0L);
+        if (newest > 0 && now.toEpochSecond() - newest < LIVE_POSITION_REFRESH_SECONDS) return;
+
+        List<CombinedAstronomyData.PlanetCoordinate> fresh = AstronomyApi.fetchPlanetCoordinates(
+                now.toLocalDate(), now.toLocalTime());
+        if (fresh.isEmpty()) {
+            System.out.println("Ciel Debug (Astronomy): Live body refresh unavailable; retaining the last verified snapshot.");
+            return;
+        }
+        Map<String, CombinedAstronomyData.PlanetCoordinate> merged = new LinkedHashMap<>();
+        if (todaysApiData.planetCoordinates != null) {
+            for (CombinedAstronomyData.PlanetCoordinate p : todaysApiData.planetCoordinates) {
+                if (p != null && p.id() != null) merged.put(p.id().toLowerCase(Locale.ROOT), p);
+            }
+        }
+        for (CombinedAstronomyData.PlanetCoordinate p : fresh) {
+            if (p != null && p.id() != null) merged.put(p.id().toLowerCase(Locale.ROOT), p);
+        }
+        String moonPhase = todaysApiData.moonPhase;
+        CombinedAstronomyData.PlanetCoordinate moon = merged.get("moon");
+        if (moon != null && moon.hasMoonPhase()) moonPhase = moon.phaseName();
+        todaysApiData = new CombinedAstronomyData(
+                todaysApiData.sunMoonTimes, moonPhase,
+                new ArrayList<>(merged.values()), todaysApiData.meteorShowerLines,
+                todaysApiData.prominentConstellationLines, now.toEpochSecond());
+        cacheApiData();
+        System.out.println("Ciel Debug (Astronomy): Refreshed observer-time body positions at " + now);
     }
     
     private static void performFallbackApiFetch() {
@@ -253,10 +305,12 @@ public class AstronomyService {
             ZonedDateTime now = ZonedDateTime.now(ZoneId.of(LocationService.getTimezone()));
             
             for (CombinedAstronomyData.PlanetCoordinate p : todaysApiData.planetCoordinates) {
-                double alt = AstroUtils.getAltitude(p.ra(), p.dec(), LocationService.getLatitude(), LocationService.getLongitude(), now);
-                if (alt > 10.0) { // Visible if > 10 degrees above horizon
-                     LineManager.getPlanetLine(p.id()).ifPresent(line -> visibleLines.add(line.text()));
-                }
+                if (p == null || p.id() == null || p.id().equalsIgnoreCase("sun") || p.id().equalsIgnoreCase("moon")) continue;
+                double alt = p.hasHorizontalPosition() ? p.altitudeDeg()
+                        : AstroUtils.getAltitude(p.ra(), p.dec(), LocationService.getLatitude(), LocationService.getLongitude(), now);
+                if (alt < config.getDouble("astronomy.minPlanetAltitudeDeg", 10.0) || !isPlanetObservable(p)) continue;
+                LineManager.getPlanetLine(p.id().toLowerCase(Locale.ROOT)).ifPresent(line ->
+                        visibleLines.add(line.text() + dynamicBodyDetail(p, alt)));
             }
             
             boolean jupiter = visibleLines.stream().anyMatch(s -> s.contains("Jupiter") || s.contains("ジュピター"));
@@ -276,6 +330,31 @@ public class AstronomyService {
 
     private static void checkDeepSkyObjectsDynamic(Map<String, String> sequentialEvents) {
         ZonedDateTime now = ZonedDateTime.now(ZoneId.of(LocationService.getTimezone()));
+    }
+
+    private static CombinedAstronomyData.PlanetCoordinate body(String id) {
+        if (todaysApiData == null || todaysApiData.planetCoordinates == null || id == null) return null;
+        return todaysApiData.planetCoordinates.stream()
+                .filter(p -> p != null && id.equalsIgnoreCase(p.id()))
+                .findFirst().orElse(null);
+    }
+
+    private static boolean isPlanetObservable(CombinedAstronomyData.PlanetCoordinate p) {
+        WeatherService.SkyConditions sky = WeatherService.getCurrentSkyConditions();
+        if (sky == null) return true;
+        double magnitude = p.hasPhotometry() ? p.magnitude() : 2.0;
+        if (sky.cloudCoverPercent() >= config.getInt("astronomy.noObjectCloudCoverPercent", 90)
+                || (Double.isFinite(sky.visibilityKm()) && sky.visibilityKm() < config.getDouble("astronomy.noObjectVisibilityKm", 1.5))) return false;
+        if (sky.cloudCoverPercent() >= config.getInt("astronomy.brightOnlyCloudCoverPercent", 75) && magnitude > -1.0) return false;
+        return !(sky.cloudCoverPercent() >= config.getInt("astronomy.nakedEyeCloudCoverPercent", 60) && magnitude > 2.0);
+    }
+
+    private static String dynamicBodyDetail(CombinedAstronomyData.PlanetCoordinate p, double altitude) {
+        StringBuilder english = new StringBuilder(" It is about ").append(Math.round(altitude)).append(" degrees above the horizon");
+        if (p.hasPhotometry()) english.append(" and has an apparent magnitude near ")
+                .append(String.format(Locale.ROOT, "%.1f", p.magnitude()));
+        english.append(".");
+        return PhonoKana.getInstance().toKatakana(english.toString());
     }
 
     private static void checkVisiblePlanetsStatic(Map<String, String> sequentialEvents) {
@@ -304,10 +383,30 @@ public class AstronomyService {
     private static void checkConstellations(Map<String, String> sequentialEvents) {
         if (!config.enabled("show.constellations", true)) return;
         if (todaysApiData.prominentConstellationLines != null && !todaysApiData.prominentConstellationLines.isEmpty()) {
-            sequentialEvents.put("constellations", todaysApiData.prominentConstellationLines.get(0));
+            List<String> candidates = todaysApiData.prominentConstellationLines.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(line -> !line.isBlank())
+                .distinct()
+                .toList();
+            if (candidates.isEmpty()) return;
+            // Keep the report concise but use more than the first API row. A
+            // date-based rotation prevents the same ordering from dominating
+            // every report while remaining deterministic for troubleshooting.
+            int count = Math.min(3, candidates.size());
+            int start = Math.floorMod(LocalDate.now(ZoneId.of(LocationService.getTimezone())).getDayOfYear(), candidates.size());
+            List<String> selected = new ArrayList<>();
+            for (int i = 0; i < count; i++) {
+                String line = candidates.get((start + i) % candidates.size());
+                sequentialEvents.put("constellation_" + i, line);
+                selected.add(line);
+            }
+            System.out.println("Ciel Debug (Astronomy): Selected " + selected.size()
+                + " time/location-aware constellation entries from API: " + String.join(" | ", selected));
         } else {
             String constellations = Constellations.forMonth(LocalDate.now().getMonth());
             sequentialEvents.put("constellations", "ヴィジブル コンステレーションズ インクルード " + constellations + "。");
+            System.out.println("Ciel Debug (Astronomy): Using monthly constellation fallback: " + constellations);
         }
     }
 
@@ -315,6 +414,25 @@ public class AstronomyService {
         if (!config.enabled("show.moonPhase", true) || todaysApiData.moonPhase == null) return;
         String simplifiedPhase = todaysApiData.moonPhase.toLowerCase().replace(" ", "").replace("_", "");
         LineManager.getMoonPhaseLine(simplifiedPhase).ifPresent(line -> ambientLines.add(line.text()));
+    }
+
+    private static void checkMoonVisibility(List<String> ambientLines) {
+        if (!config.enabled("show.moonVisibility", true)) return;
+        CombinedAstronomyData.PlanetCoordinate moon = body("moon");
+        if (moon == null || !moon.hasHorizontalPosition() || moon.altitudeDeg() < 5.0 || skyTooObscured()) return;
+        StringBuilder english = new StringBuilder("The Moon is currently ")
+                .append(Math.round(moon.altitudeDeg())).append(" degrees above the horizon");
+        if (Double.isFinite(moon.phaseFraction())) {
+            english.append(" with about ").append(Math.round(moon.phaseFraction() * 100.0)).append(" percent illumination");
+        }
+        english.append(".");
+        ambientLines.add(PhonoKana.getInstance().toKatakana(english.toString()));
+    }
+
+    private static boolean skyTooObscured() {
+        WeatherService.SkyConditions sky = WeatherService.getCurrentSkyConditions();
+        return sky != null && (sky.cloudCoverPercent() >= config.getInt("astronomy.noObjectCloudCoverPercent", 90)
+                || (Double.isFinite(sky.visibilityKm()) && sky.visibilityKm() < config.getDouble("astronomy.noObjectVisibilityKm", 1.5)));
     }
 
     private static void checkSeasonal(List<String> ambientLines) {
@@ -326,6 +444,10 @@ public class AstronomyService {
     
     private static void checkMeteorShowers(List<String> ambientLines) {
         if (!config.enabled("show.meteorShowers", true)) return;
+        // Meteor showers are night-sky events. This ambient path used to bypass
+        // the report's daylight gate and could announce a shower while the sun
+        // was up.
+        if (!isNightTime()) return;
         try {
             ZoneId zone = ZoneId.of(LocationService.getTimezone());
             List<MeteorShowers.Candidate> showers = MeteorShowers.visibleFrom(
@@ -360,3 +482,5 @@ public class AstronomyService {
         });
     }
 }
+
+

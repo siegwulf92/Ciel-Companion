@@ -39,14 +39,32 @@ public class AstronomyApi {
             public String id;
             public String name;
             public Position position;
+            public ExtraInfo extraInfo;
         }
-        public static class Position { public Equatorial equatorial; }
+        public static class Position {
+            public Equatorial equatorial;
+            // Astronomy API spells this correctly in current responses.  The
+            // misspelled alias is retained because older responses used it.
+            public Horizontal horizontal;
+            public Horizontal horizonal;
+        }
+        public static class Horizontal { public Angle altitude; public Angle azimuth; }
+        public static class Angle { public String degrees; }
         public static class Equatorial {
             public RightAscension rightAscension;
             public Declination declination;
         }
         public static class RightAscension { public String string; }
         public static class Declination { public String string; }
+        public static class ExtraInfo {
+            public Double magnitude;
+            public Double elongation;
+            public Phase phase;
+        }
+        public static class Phase {
+            public String string;
+            public String fraction;
+        }
         // Cell class for meteor showers (compilation fix)
         public static class MeteorCell { public String id; }
     }
@@ -125,13 +143,23 @@ public class AstronomyApi {
      * Does NOT calculate visibility here; that is done dynamically by the Service.
      */
     public static List<CombinedAstronomyData.PlanetCoordinate> fetchPlanetCoordinates(LocalDate date) {
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.of(LocationService.getTimezone()));
+        return fetchPlanetCoordinates(date, now.toLocalTime());
+    }
+
+    /**
+     * Fetch observer-time positions.  Sampling at noon and recalculating later
+     * was the main source of stale or plainly wrong visibility statements.
+     */
+    public static List<CombinedAstronomyData.PlanetCoordinate> fetchPlanetCoordinates(LocalDate date, LocalTime time) {
         List<CombinedAstronomyData.PlanetCoordinate> coordinates = new ArrayList<>();
         String dateString = date.format(DateTimeFormatter.ISO_LOCAL_DATE);
-        // Use Noon as the reference time for daily coordinates (positions shift very little)
-        String timeString = "12:00:00"; 
+        String timeString = time == null ? "12:00:00" : time.withNano(0).toString();
+        long capturedAt = ZonedDateTime.of(date, time == null ? LocalTime.NOON : time,
+                ZoneId.of(LocationService.getTimezone())).toEpochSecond();
 
         String url = String.format(Locale.US,
-            "%s/bodies/positions?latitude=%.4f&longitude=%.4f&elevation=0&from_date=%s&to_date=%s&time=%s&bodies=venus,mars,jupiter,saturn,uranus,neptune",
+            "%s/bodies/positions?latitude=%.4f&longitude=%.4f&elevation=0&from_date=%s&to_date=%s&time=%s&bodies=sun,moon,mercury,venus,mars,jupiter,saturn,uranus,neptune",
             BASE_URL, LocationService.getLatitude(), LocationService.getLongitude(), dateString, dateString, timeString
         );
 
@@ -152,8 +180,32 @@ public class AstronomyApi {
                                 double ra = parseRaToDegrees(cell.position.equatorial.rightAscension.string);
                                 double dec = parseDecToDegrees(cell.position.equatorial.declination.string);
                                 
-                                // Store raw data for later calculation
-                                coordinates.add(new CombinedAstronomyData.PlanetCoordinate(cell.id, cell.name, ra, dec));
+                                double altitude = Double.NaN;
+                                double azimuth = Double.NaN;
+                                CelestialBodyData.Horizontal horizontal = cell.position.horizontal != null
+                                        ? cell.position.horizontal : cell.position.horizonal;
+                                if (horizontal != null) {
+                                    altitude = parseDouble(horizontal.altitude == null ? null : horizontal.altitude.degrees);
+                                    azimuth = parseDouble(horizontal.azimuth == null ? null : horizontal.azimuth.degrees);
+                                }
+                                // Gson maps extraInfo on the cell in current
+                                // responses; malformed/older responses simply
+                                // leave these values as unknown.
+                                double magnitude = Double.NaN;
+                                double elongation = Double.NaN;
+                                String phaseName = null;
+                                double phaseFraction = Double.NaN;
+                                if (cell.extraInfo != null) {
+                                    magnitude = cell.extraInfo.magnitude == null ? Double.NaN : cell.extraInfo.magnitude;
+                                    elongation = cell.extraInfo.elongation == null ? Double.NaN : cell.extraInfo.elongation;
+                                    if (cell.extraInfo.phase != null) {
+                                        phaseName = cell.extraInfo.phase.string;
+                                        phaseFraction = parseDouble(cell.extraInfo.phase.fraction);
+                                    }
+                                }
+                                coordinates.add(new CombinedAstronomyData.PlanetCoordinate(
+                                        cell.id, cell.name, ra, dec, altitude, azimuth,
+                                        magnitude, elongation, phaseName, phaseFraction, capturedAt));
                             }
                         } catch (Exception e) { /* Ignore parse errors */ }
                     }
@@ -162,9 +214,16 @@ public class AstronomyApi {
                  System.err.println("Ciel Warning (AstronomyApi): Planet fetch failed (" + response.getStatusLine().getStatusCode() + ").");
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            System.err.println("Ciel Warning (AstronomyApi): Planet position request unavailable: "
+                    + e.getClass().getSimpleName());
         }
         return coordinates;
+    }
+
+    private static double parseDouble(String value) {
+        if (value == null || value.isBlank()) return Double.NaN;
+        try { return Double.parseDouble(value.trim()); }
+        catch (NumberFormatException ignored) { return Double.NaN; }
     }
 
     public static List<String> getProminentConstellationLines(LocalDate date) {
@@ -245,3 +304,5 @@ public class AstronomyApi {
         } catch (Exception e) { return 0.0; }
     }
 }
+
+
