@@ -37,7 +37,11 @@ public class AstronomyService {
     }
     
     private static CombinedAstronomyData todaysApiData = null;
-    private static final long LIVE_POSITION_REFRESH_SECONDS = 30 * 60;
+    // One consolidated Astronomy API request per day is the normal path.
+    // A six-hour refresh is only a recovery path when Ciel has remained up
+    // across a location/time-zone change or a long-running session.  Between
+    // refreshes altitude is recomputed locally from the captured RA/Dec.
+    private static final long LIVE_POSITION_REFRESH_SECONDS = 6 * 60 * 60;
 
     public record AstronomyReport(Map<String, String> sequentialEvents, List<String> reportAmbientLines, List<String> idleAmbientLines) {}
 
@@ -121,12 +125,13 @@ public class AstronomyService {
      */
     private static boolean isNightTime() {
         CombinedAstronomyData.PlanetCoordinate sun = body("sun");
-        if (sun != null && sun.hasHorizontalPosition()) {
+        if (sun != null) {
             long age = Math.max(0L, Instant.now().getEpochSecond() - sun.capturedAtEpochSeconds());
             if (age <= LIVE_POSITION_REFRESH_SECONDS * 2) {
                 // Civil twilight is still too bright for dependable
                 // constellation or meteor claims.
-                return sun.altitudeDeg() < -6.0;
+                double altitude = currentAltitude(sun, ZonedDateTime.now(ZoneId.of(LocationService.getTimezone())));
+                if (Double.isFinite(altitude)) return altitude < -6.0;
             }
         }
         LocalTime now = LocalTime.now(ZoneId.of(LocationService.getTimezone()));
@@ -306,8 +311,7 @@ public class AstronomyService {
             
             for (CombinedAstronomyData.PlanetCoordinate p : todaysApiData.planetCoordinates) {
                 if (p == null || p.id() == null || p.id().equalsIgnoreCase("sun") || p.id().equalsIgnoreCase("moon")) continue;
-                double alt = p.hasHorizontalPosition() ? p.altitudeDeg()
-                        : AstroUtils.getAltitude(p.ra(), p.dec(), LocationService.getLatitude(), LocationService.getLongitude(), now);
+                double alt = currentAltitude(p, now);
                 if (alt < config.getDouble("astronomy.minPlanetAltitudeDeg", 10.0) || !isPlanetObservable(p)) continue;
                 LineManager.getPlanetLine(p.id().toLowerCase(Locale.ROOT)).ifPresent(line ->
                         visibleLines.add(line.text() + dynamicBodyDetail(p, alt)));
@@ -337,6 +341,14 @@ public class AstronomyService {
         return todaysApiData.planetCoordinates.stream()
                 .filter(p -> p != null && id.equalsIgnoreCase(p.id()))
                 .findFirst().orElse(null);
+    }
+
+    private static double currentAltitude(CombinedAstronomyData.PlanetCoordinate p, ZonedDateTime now) {
+        if (p == null) return Double.NaN;
+        if (Double.isFinite(p.ra()) && Double.isFinite(p.dec())) {
+            return AstroUtils.getAltitude(p.ra(), p.dec(), LocationService.getLatitude(), LocationService.getLongitude(), now);
+        }
+        return p.hasHorizontalPosition() ? p.altitudeDeg() : Double.NaN;
     }
 
     private static boolean isPlanetObservable(CombinedAstronomyData.PlanetCoordinate p) {
@@ -419,9 +431,10 @@ public class AstronomyService {
     private static void checkMoonVisibility(List<String> ambientLines) {
         if (!config.enabled("show.moonVisibility", true)) return;
         CombinedAstronomyData.PlanetCoordinate moon = body("moon");
-        if (moon == null || !moon.hasHorizontalPosition() || moon.altitudeDeg() < 5.0 || skyTooObscured()) return;
+        double moonAltitude = currentAltitude(moon, ZonedDateTime.now(ZoneId.of(LocationService.getTimezone())));
+        if (moon == null || !Double.isFinite(moonAltitude) || moonAltitude < 5.0 || skyTooObscured()) return;
         StringBuilder english = new StringBuilder("The Moon is currently ")
-                .append(Math.round(moon.altitudeDeg())).append(" degrees above the horizon");
+                .append(Math.round(moonAltitude)).append(" degrees above the horizon");
         if (Double.isFinite(moon.phaseFraction())) {
             english.append(" with about ").append(Math.round(moon.phaseFraction() * 100.0)).append(" percent illumination");
         }
