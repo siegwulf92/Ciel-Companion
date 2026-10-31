@@ -523,9 +523,11 @@ public class AstronomyService {
         Map<String, CombinedAstronomyData.SkyEvent> best = new LinkedHashMap<>();
         for (Map.Entry<LocalDate, List<CombinedAstronomyData.PlanetCoordinate>> entry : forecast.entrySet()) {
             LocalDate date = entry.getKey();
-            ZonedDateTime viewing = ZonedDateTime.of(date, viewingTime, ZoneId.of(LocationService.getTimezone()));
             CombinedAstronomyData.PlanetCoordinate sun = entry.getValue().stream().filter(p -> p != null && "sun".equalsIgnoreCase(p.id())).findFirst().orElse(null);
-            if (sun == null || currentAltitude(sun, viewing) >= -6.0) continue;
+            if (sun == null) continue;
+            LocalTime dateViewingTime = recommendedViewingTime(date, sun, viewingTime);
+            ZonedDateTime viewing = ZonedDateTime.of(date, dateViewingTime, ZoneId.of(LocationService.getTimezone()));
+            if (currentAltitude(sun, viewing) >= -6.0) continue;
             CombinedAstronomyData.PlanetCoordinate moon = entry.getValue().stream().filter(p -> p != null && "moon".equalsIgnoreCase(p.id())).findFirst().orElse(null);
             if (moon == null || currentAltitude(moon, viewing) < 10.0) continue;
             for (String id : List.of("venus", "mars", "jupiter", "saturn")) {
@@ -533,8 +535,17 @@ public class AstronomyService {
                 if (planet == null || currentAltitude(planet, viewing) < 10.0) continue;
                 double separation = angularSeparation(moon.ra(), moon.dec(), planet.ra(), planet.dec());
                 if (Double.isFinite(separation) && separation <= 8.0) {
-                    CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), viewingTime.toString(), "Moon", planet.name() == null ? id : planet.name(), separation, currentAltitude(moon, viewing), currentAzimuth(moon, viewing), currentAltitude(planet, viewing), currentAzimuth(planet, viewing));
+                    CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), dateViewingTime.toString(), "Moon", planet.name() == null ? id : planet.name(), separation, currentAltitude(moon, viewing), currentAzimuth(moon, viewing), currentAltitude(planet, viewing), currentAzimuth(planet, viewing));
                     best.merge("moon-" + id, candidate, (a, b) -> a.separationDeg() <= b.separationDeg() ? a : b);
+                }
+            }
+            List<CombinedAstronomyData.PlanetCoordinate> brightBodies = entry.getValue().stream().filter(p -> p != null && List.of("venus", "mars", "jupiter", "saturn", "uranus").contains(p.id().toLowerCase(Locale.ROOT))).filter(p -> currentAltitude(p, viewing) >= 10.0).toList();
+            for (int i = 0; i < brightBodies.size(); i++) for (int j = i + 1; j < brightBodies.size(); j++) {
+                CombinedAstronomyData.PlanetCoordinate a = brightBodies.get(i), b = brightBodies.get(j);
+                double separation = angularSeparation(a.ra(), a.dec(), b.ra(), b.dec());
+                if (Double.isFinite(separation) && separation <= 6.0) {
+                    CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), dateViewingTime.toString(), a.name() == null ? a.id() : a.name(), b.name() == null ? b.id() : b.name(), separation, currentAltitude(a, viewing), currentAzimuth(a, viewing), currentAltitude(b, viewing), currentAzimuth(b, viewing));
+                    best.merge("pair-" + a.id() + "-" + b.id(), candidate, (x, y) -> x.separationDeg() <= y.separationDeg() ? x : y);
                 }
             }
             double pleiadesAltitude = AstroUtils.getAltitude(56.75, 24.1167, LocationService.getLatitude(), LocationService.getLongitude(), viewing);
@@ -545,6 +556,17 @@ public class AstronomyService {
             }
         }
         return new ArrayList<>(best.values());
+    }
+
+    private static LocalTime recommendedViewingTime(LocalDate date, CombinedAstronomyData.PlanetCoordinate sun, LocalTime fallback) {
+        ZoneId zone = ZoneId.of(LocationService.getTimezone());
+        double twilight = config.getDouble("astronomy.viewingTwilightAltitudeDeg", -12.0);
+        int offset = config.getInt("astronomy.viewingOffsetMinutes", 15);
+        for (int minute = 16 * 60; minute <= 23 * 60 + 30; minute += 15) {
+            LocalTime candidate = LocalTime.of(minute / 60, minute % 60);
+            if (currentAltitude(sun, ZonedDateTime.of(date, candidate, zone)) <= twilight) return candidate.plusMinutes(offset);
+        }
+        return fallback;
     }
 
     private static void checkUpcomingSkyEvents(Map<String, String> sequentialEvents) {
