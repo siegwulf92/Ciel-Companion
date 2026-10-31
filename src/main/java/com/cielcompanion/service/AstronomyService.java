@@ -358,6 +358,12 @@ public class AstronomyService {
         return p.hasHorizontalPosition() ? p.altitudeDeg() : Double.NaN;
     }
 
+    private static double currentAzimuth(CombinedAstronomyData.PlanetCoordinate p, ZonedDateTime now) {
+        if (p == null) return Double.NaN;
+        if (Double.isFinite(p.ra()) && Double.isFinite(p.dec())) return AstroUtils.getAzimuth(p.ra(), p.dec(), LocationService.getLatitude(), LocationService.getLongitude(), now);
+        return p.hasHorizontalPosition() ? p.azimuthDeg() : Double.NaN;
+    }
+
     private static boolean isPlanetObservable(CombinedAstronomyData.PlanetCoordinate p) {
         WeatherService.SkyConditions sky = WeatherService.getCurrentSkyConditions();
         if (sky == null) return true;
@@ -369,7 +375,9 @@ public class AstronomyService {
     }
 
     private static String dynamicBodyDetail(CombinedAstronomyData.PlanetCoordinate p, double altitude) {
-        StringBuilder english = new StringBuilder(" It is about ").append(Math.round(altitude)).append(" degrees above the horizon");
+        double azimuth = currentAzimuth(p, ZonedDateTime.now(ZoneId.of(LocationService.getTimezone())));
+        StringBuilder english = new StringBuilder(" Look ").append(AstroUtils.compassDirection(azimuth)).append(", about ").append(Math.round(altitude)).append(" degrees above the horizon");
+        if (Double.isFinite(azimuth)) english.append(" at azimuth ").append(Math.round(azimuth)).append(" degrees");
         if (p.hasPhotometry()) english.append(" and has an apparent magnitude near ")
                 .append(String.format(Locale.ROOT, "%.1f", p.magnitude()));
         english.append(".");
@@ -441,7 +449,8 @@ public class AstronomyService {
         double moonAltitude = currentAltitude(moon, ZonedDateTime.now(ZoneId.of(LocationService.getTimezone())));
         if (moon == null || !Double.isFinite(moonAltitude) || moonAltitude < 5.0 || skyTooObscured()) return;
         StringBuilder english = new StringBuilder("The Moon is currently ")
-                .append(Math.round(moonAltitude)).append(" degrees above the horizon");
+                .append(Math.round(moonAltitude)).append(" degrees above the horizon toward ")
+                .append(AstroUtils.compassDirection(currentAzimuth(moon, ZonedDateTime.now(ZoneId.of(LocationService.getTimezone())))));
         if (Double.isFinite(moon.phaseFraction())) {
             english.append(" with about ").append(Math.round(moon.phaseFraction() * 100.0)).append(" percent illumination");
         }
@@ -501,14 +510,14 @@ public class AstronomyService {
                 if (planet == null || currentAltitude(planet, viewing) < 10.0) continue;
                 double separation = angularSeparation(moon.ra(), moon.dec(), planet.ra(), planet.dec());
                 if (Double.isFinite(separation) && separation <= 8.0) {
-                    CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), viewingTime.toString(), "Moon", planet.name() == null ? id : planet.name(), separation);
+                    CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), viewingTime.toString(), "Moon", planet.name() == null ? id : planet.name(), separation, currentAltitude(moon, viewing), currentAzimuth(moon, viewing), currentAltitude(planet, viewing), currentAzimuth(planet, viewing));
                     best.merge("moon-" + id, candidate, (a, b) -> a.separationDeg() <= b.separationDeg() ? a : b);
                 }
             }
             double pleiadesAltitude = AstroUtils.getAltitude(56.75, 24.1167, LocationService.getLatitude(), LocationService.getLongitude(), viewing);
             double pleiadesSeparation = angularSeparation(moon.ra(), moon.dec(), 56.75, 24.1167);
             if (pleiadesAltitude >= 10.0 && Double.isFinite(pleiadesSeparation) && pleiadesSeparation <= 8.0) {
-                CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), viewingTime.toString(), "Moon", "the Pleiades (Seven Sisters)", pleiadesSeparation);
+                CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), viewingTime.toString(), "Moon", "the Pleiades (Seven Sisters)", pleiadesSeparation, currentAltitude(moon, viewing), currentAzimuth(moon, viewing), pleiadesAltitude, AstroUtils.getAzimuth(56.75, 24.1167, LocationService.getLatitude(), LocationService.getLongitude(), viewing));
                 best.merge("moon-pleiades", candidate, (a, b) -> a.separationDeg() <= b.separationDeg() ? a : b);
             }
         }
@@ -526,7 +535,7 @@ public class AstronomyService {
                 if (date.isBefore(today) || date.isAfter(today.plusDays(config.getInt("astronomy.forecastDays", 3) - 1L))) continue;
                 if (!WeatherService.isSkyLikelyClear(date, time)) continue;
                 String when = date.equals(today) ? "Tonight around " + time.format(DateTimeFormatter.ofPattern("h:mm a")) : "On " + date.format(DateTimeFormatter.ofPattern("MMM d")) + " around " + time.format(DateTimeFormatter.ofPattern("h:mm a"));
-                String english = when + ", the " + event.primary() + " will be close to " + event.secondary() + ", about " + Math.round(event.separationDeg()) + " degrees apart.";
+                String english = when + ", the " + event.primary() + " will be close to " + event.secondary() + ", about " + Math.round(event.separationDeg()) + " degrees apart. Look toward " + AstroUtils.compassDirection(event.primaryAzimuthDeg()) + ", roughly " + Math.round(event.primaryAltitudeDeg()) + " degrees above the horizon.";
                 sequentialEvents.put("upcoming_sky_" + added++, PhonoKana.getInstance().toKatakana(english));
                 if (added >= 2) break;
             } catch (Exception ignored) { }

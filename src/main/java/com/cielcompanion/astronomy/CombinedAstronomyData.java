@@ -35,7 +35,12 @@ public class CombinedAstronomyData implements Serializable {
     }
 
     public record SkyEvent(String date, String time, String primary, String secondary,
-                           double separationDeg) implements Serializable {}
+                           double separationDeg, double primaryAltitudeDeg, double primaryAzimuthDeg,
+                           double secondaryAltitudeDeg, double secondaryAzimuthDeg) implements Serializable {
+        public SkyEvent(String date, String time, String primary, String secondary, double separationDeg) {
+            this(date, time, primary, secondary, separationDeg, Double.NaN, Double.NaN, Double.NaN, Double.NaN);
+        }
+    }
 
     /**
      * Inner record to store celestial coordinates.

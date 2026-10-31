@@ -26,6 +26,22 @@ public class AstroUtils {
         return toDegrees(asin(sinAlt));
     }
 
+    public static double getAzimuth(double raDeg, double decDeg, double latDeg, double lonDeg, ZonedDateTime t) {
+        double lstDeg = localSiderealTimeDeg(t, lonDeg);
+        double haR = toRadians(normalizeDegrees(lstDeg - raDeg));
+        double latR = toRadians(latDeg), decR = toRadians(decDeg);
+        double altR = toRadians(getAltitude(raDeg, decDeg, latDeg, lonDeg, t));
+        double sinAz = -sin(haR) * cos(decR) / Math.max(1e-9, cos(altR));
+        double cosAz = (sin(decR) - sin(altR) * sin(latR)) / Math.max(1e-9, cos(altR) * cos(latR));
+        return normalizeDegrees(toDegrees(atan2(sinAz, cosAz)));
+    }
+
+    public static String compassDirection(double azimuthDeg) {
+        if (!Double.isFinite(azimuthDeg)) return "an unknown direction";
+        String[] points = {"north", "north-northeast", "northeast", "east-northeast", "east", "east-southeast", "southeast", "south-southeast", "south", "south-southwest", "southwest", "west-southwest", "west", "west-northwest", "northwest", "north-northwest"};
+        return points[(int) Math.floor((normalizeDegrees(azimuthDeg) + 11.25) / 22.5) % points.length];
+    }
+
     /**
      * Calculates the Local Sidereal Time (LST).
      * @param t The time of observation.
