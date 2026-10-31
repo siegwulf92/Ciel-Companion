@@ -54,23 +54,25 @@ public class CielController {
     // Give the Python router time to finish bringing up its chat endpoint before
     // the first background poll. A reachable /docs page alone is not sufficient
     // during the short JVM/Python startup handoff.
-    private static long lastEmotionPollTime = System.currentTimeMillis();
-    private static long lastEmotionPollFailureLog;
-    private static int suppressedEmotionPollFailures;
+    private static volatile long lastEmotionPollTime = System.currentTimeMillis();
+    private static volatile long lastEmotionPollFailureLog;
+    private static volatile int suppressedEmotionPollFailures;
     
     // Diagnostic flags for logs
-    private static boolean loggedWaitingFor5s = false;
-    private static boolean loggedWaitingFor2m = false;
-    private static long lastAudioIdleDiagnostic;
-    private static String lastAudioIdleSignature = "";
-    private static boolean sessionWasLocked;
-    private static boolean laptopLockRequested;
+    private static volatile boolean loggedWaitingFor5s = false;
+    private static volatile boolean loggedWaitingFor2m = false;
+    private static volatile long lastAudioIdleDiagnostic;
+    private static volatile String lastAudioIdleSignature = "";
+    private static volatile boolean sessionWasLocked;
+    private static volatile boolean laptopLockRequested;
     private static final java.util.concurrent.ConcurrentLinkedQueue<String> majorAwayEvents =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
 
     public static void noteMajorBackgroundActivity(String event) {
-        if (event != null && !event.isBlank() && (sessionWasLocked || WindowsApiService.isSessionLocked())
-                && majorAwayEvents.size() < 8) majorAwayEvents.add(event);
+        if (event == null || event.isBlank() || (!sessionWasLocked && !WindowsApiService.isSessionLocked())) return;
+        synchronized (majorAwayEvents) {
+            if (majorAwayEvents.size() < 8) majorAwayEvents.add(event);
+        }
     }
 
     public static void checkAndSpeak() {
@@ -83,7 +85,7 @@ public class CielController {
             if (WindowsApiService.isSessionLocked()) {
                 if (!sessionWasLocked) {
                     sessionWasLocked = true;
-                    majorAwayEvents.clear();
+                    synchronized (majorAwayEvents) { majorAwayEvents.clear(); }
                     CielState.setBootGreetingPlayed(true);
                     CielState.setLoginGreetingPlayed(true);
                     idleReportGeneration.incrementAndGet();
@@ -102,9 +104,14 @@ public class CielController {
                 CielState.setFinalPlayed(false);
                 CielState.setNextSpeakAt(System.currentTimeMillis() + 60_000);
                 System.out.println("[Session] Windows unlocked; background monitoring resumed without an idle-return greeting.");
-                if (!majorAwayEvents.isEmpty()) {
-                    String summary = String.join("; ", majorAwayEvents);
-                    majorAwayEvents.clear();
+                String summary = null;
+                synchronized (majorAwayEvents) {
+                    if (!majorAwayEvents.isEmpty()) {
+                        summary = String.join("; ", majorAwayEvents);
+                        majorAwayEvents.clear();
+                    }
+                }
+                if (summary != null) {
                     SpeechService.speakPreformatted("[Focused] Master, while you were away: " + summary + ".",
                             "session_return", false, false);
                 }

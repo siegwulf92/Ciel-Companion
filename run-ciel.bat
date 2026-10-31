@@ -11,9 +11,11 @@ REM Set the project directory to the location of this script
 set "PROJECT_DIR=%~dp0"
 echo [DEBUG] Project Directory set to: %PROJECT_DIR%
 
-REM Set the path to the JAR file
-set "JAR_PATH=%PROJECT_DIR%target\ciel-idle-companion-1.0-SNAPSHOT-breeze.jar"
+REM Set the path to the newest runnable JAR. The shaded artifact is the
+REM release output; do not prefer the older Breeze-only compatibility JAR.
+set "JAR_PATH=%PROJECT_DIR%target\ciel-idle-companion-1.0-SNAPSHOT-shaded.jar"
 if not exist "%JAR_PATH%" set "JAR_PATH=%PROJECT_DIR%target\ciel-idle-companion-1.0-SNAPSHOT.jar"
+if not exist "%JAR_PATH%" set "JAR_PATH=%PROJECT_DIR%target\ciel-idle-companion-1.0-SNAPSHOT-breeze.jar"
 if not exist "%JAR_PATH%" set "JAR_PATH=%PROJECT_DIR%target\ciel-idle-companion-1.0-SNAPSHOT-codex.jar"
 echo [DEBUG] JAR Path set to: %JAR_PATH%
 

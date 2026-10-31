@@ -962,7 +962,34 @@ public class VaultService {
                         if (result != null && !result.isBlank() && !isErrorResponse(result)) {
                             // Validate before checkpointing: malformed JSON must never
                             // become a phase-3 checkpoint that every retry reparses.
-                            JsonObject validated = parseLoreChunkResult(result);
+                            JsonObject validated;
+                            try {
+                                validated = parseLoreChunkResult(result);
+                            } catch (IOException malformedResponse) {
+                                // Models occasionally return a prose wrapper or omit
+                                // one required key even when the source pass succeeded.
+                                // Spend one bounded repair request for this chunk, then
+                                // keep the strict validator as the final authority.
+                                String repairPrompt = "Repair the model response below into exactly one JSON object with keys cleaned_text and lore_facts. "
+                                        + "Do not summarize, invent facts, or change the source. cleaned_text must preserve every sentence from SOURCE TEXT; lore_facts must be an array (it may be empty). "
+                                        + "Return JSON only, with no markdown fences.\n\nSOURCE TEXT:\n" + state.currentDraft
+                                        + "\n\nINVALID MODEL RESPONSE:\n" + result.substring(0, Math.min(result.length(), 12000));
+                                String repaired = awaitLorePhase(repairPrompt,
+                                        "You are a strict JSON repair pass for a source archivist. Preserve source fidelity.",
+                                        "proofread-and-extract-repair", state, c);
+                                if (repaired == null || repaired.isBlank() || isErrorResponse(repaired)) {
+                                    throw new IOException("Model response schema invalid and repair returned no usable response", malformedResponse);
+                                }
+                                try {
+                                    validated = parseLoreChunkResult(repaired);
+                                    result = repaired;
+                                    System.out.println("Ciel Lore Pipeline: repaired malformed JSON for file="
+                                            + state.fileName + " chunk=" + (c + 1));
+                                } catch (IOException repairFailure) {
+                                    repairFailure.addSuppressed(malformedResponse);
+                                    throw repairFailure;
+                                }
+                            }
                             if (validated.get("cleaned_text").getAsString().isBlank())
                                 throw new IOException("Model returned empty cleaned transcript for chunk " + (c + 1));
                             state.currentDraft = result;

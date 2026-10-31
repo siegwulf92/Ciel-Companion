@@ -15,6 +15,7 @@ import com.cielcompanion.mood.Emotion;
 import java.awt.AWTException;
 import java.awt.Robot;
 import java.awt.event.KeyEvent;
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Comparator;
@@ -49,6 +50,7 @@ public class SpeechService {
     private static final AtomicReference<Process> activeProcess = new AtomicReference<>();
     private static VoiceListener voiceListener;
     private static final Random random = new Random();
+    private static boolean providersInitialized = false;
 
     private static final AtomicInteger speechQueueCount = new AtomicInteger(0);
     private static volatile boolean mediaWasPausedForSpeech = false;
@@ -59,10 +61,28 @@ public class SpeechService {
     // lines from resuming playback between utterances.
     private static final long SPEECH_HANDOFF_SETTLE_MS = 180L;
 
-    public static void initialize(VoiceListener listener) {
+    /**
+     * Boot invokes this once for the priority path and once after the heavy
+     * services bind their command listener.  Reinitializing providers on the
+     * second call can race cache loading and duplicate warm-up work, so keep
+     * the listener binding idempotent while initializing providers once.
+     */
+    public static synchronized void initialize(VoiceListener listener) {
         voiceListener = listener;
-        AzureSpeechService.initialize();
-        BreezeSpeechService.initialize();
+        if (!providersInitialized) {
+            try {
+                AzureSpeechService.initialize();
+                BreezeSpeechService.initialize();
+                providersInitialized = true;
+            } catch (RuntimeException failure) {
+                // Allow the next boot phase to retry if a provider was still
+                // unavailable during startup.
+                providersInitialized = false;
+                throw failure;
+            }
+        } else {
+            System.out.println("Ciel Debug: Speech providers already initialized; refreshed listener binding.");
+        }
         System.out.println("Ciel Debug: SpeechService initialized.");
     }
 
@@ -76,6 +96,7 @@ public class SpeechService {
 
     private static boolean enqueueSpeech() {
         synchronized (pauseLock) {
+            boolean mediaActiveForQueue = false;
             if (speechQueueCount.getAndIncrement() == 0) {
                 SystemMonitor.SystemMetrics metrics = SystemMonitor.getSystemMetrics();
                 String currentCategory = HabitTrackerService.getCurrentCategory();
@@ -86,6 +107,7 @@ public class SpeechService {
                         HabitTrackerService.isMediaTitle(metrics.activeWindowTitle()) ||
                         activeProcLower.contains("stremio") ||
                         activeProcLower.contains("crunchyroll");
+                mediaActiveForQueue = isMediaActive;
 
                 boolean isGamingActive = ShortTermMemoryService.getMemory().isInGamingSession() || "Gaming".equalsIgnoreCase(currentCategory);
 
@@ -107,13 +129,33 @@ public class SpeechService {
                         AzureSpeechService.isSimulatingKeystroke = false;
                     } catch (AWTException | InterruptedException ignored) {}
                 }
+            } else {
+                // A chained line inherits the first line's media ownership
+                // decision; do not accidentally treat it as non-media.
+                mediaActiveForQueue = mediaWasPausedForSpeech || HabitTrackerService.isMediaPlaybackPaused();
             }
-            return mediaWasPausedForSpeech;
+            // A player that was already paused is safe to speak over even
+            // though no pause transition occurred.  Previously this returned
+            // false and media commentary was discarded as an unconfirmed
+            // pause, which made paused YouTube videos appear silently ignored.
+            return !mediaActiveForQueue || mediaWasPausedForSpeech || HabitTrackerService.isMediaPlaybackPaused();
         }
     }
 
     private static void dequeueSpeech() {
-        if (speechQueueCount.decrementAndGet() == 0) {
+        boolean becameEmpty;
+        synchronized (pauseLock) {
+            int queued = speechQueueCount.get();
+            if (queued <= 0) {
+                // A cancelled task can reach its finally block after the
+                // queue was already drained. Never let the counter go
+                // negative and accidentally restore media/game state early.
+                speechQueueCount.set(0);
+                return;
+            }
+            becameEmpty = speechQueueCount.decrementAndGet() == 0;
+        }
+        if (becameEmpty) {
             CompletableFuture.delayedExecutor(SPEECH_HANDOFF_SETTLE_MS, TimeUnit.MILLISECONDS).execute(() -> {
                 synchronized (pauseLock) {
                     if (speechQueueCount.get() == 0) {
@@ -560,31 +602,49 @@ public class SpeechService {
                 System.out.println("Ciel Debug: SAPI Speaking (Clean Fallback): \"" + text + "\"");
 
                 String safeSsml = AzureSpeechService.buildFallbackSsml(text, langCode).replace("'", "''");
-                
+                File fallbackWav = null;
                 String psScript = "$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
                         + "Add-Type -AssemblyName System.Speech; "
                         + "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-                        + "$s.SetOutputToDefaultAudioDevice(); "
+                        + "$s.SetOutputToWaveFile('";
+                try {
+                    File localDir = new File(".local");
+                    if (!localDir.exists()) localDir.mkdirs();
+                    fallbackWav = File.createTempFile("ciel_sapi_fallback_", ".wav", localDir);
+                    String safeWavPath = fallbackWav.getAbsolutePath().replace("'", "''");
+                    psScript += safeWavPath + "'); "
                         + "try { $s.SelectVoice('Microsoft Haruka Desktop'); } catch { try { $s.SelectVoiceByHints('Female') } catch {} } "
                         + "$s.Rate = 0; "
                         + "$s.SpeakSsml('" + safeSsml + "'); "
                         + "$s.Dispose();";
-                
-                String encodedCommand = Base64.getEncoder().encodeToString(psScript.getBytes(StandardCharsets.UTF_16LE));
-
-                ProcessBuilder pb = new ProcessBuilder(com.cielcompanion.util.ProjectPaths.windowlessCommand(java.util.List.of(
-                        "pwsh.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand)))
-                        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                        .redirectError(ProcessBuilder.Redirect.DISCARD);
-                try {
-                    Process p = pb.start();
-                    activeProcess.set(p);
-                    long sapiTimeoutSeconds = Math.max(15, Math.min(90, (estimateSpeechDuration(text) / 1000) + 10));
-                    if (p.waitFor(sapiTimeoutSeconds, TimeUnit.SECONDS)) sapiSuccess = p.exitValue() == 0;
-                    else p.destroyForcibly();
-                } catch (Exception ignored) {
-                } finally {
-                    activeProcess.set(null);
+                } catch (Exception e) {
+                    System.err.println("Ciel Warning: Could not prepare the SAPI WAV fallback: " + e.getMessage());
+                    psScript = null;
+                }
+                if (psScript != null && fallbackWav != null) {
+                    String encodedCommand = Base64.getEncoder().encodeToString(psScript.getBytes(StandardCharsets.UTF_16LE));
+                    ProcessBuilder pb = new ProcessBuilder(com.cielcompanion.util.ProjectPaths.windowlessCommand(java.util.List.of(
+                            "pwsh.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand)))
+                            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                            .redirectError(ProcessBuilder.Redirect.DISCARD);
+                    try {
+                        Process p = pb.start();
+                        activeProcess.set(p);
+                        long sapiTimeoutSeconds = Math.max(15, Math.min(90, (estimateSpeechDuration(text) / 1000) + 10));
+                        if (p.waitFor(sapiTimeoutSeconds, TimeUnit.SECONDS) && p.exitValue() == 0) {
+                            // Reuse the exact provider playback loop so SAPI
+                            // speech gets the same PCM envelope, word timing,
+                            // GUI state, and media handoff as Breeze/Azure.
+                            sapiSuccess = AzureSpeechService.playProviderWavFile(fallbackWav, "SapiFallback", false, text);
+                        } else if (p.isAlive()) {
+                            p.destroyForcibly();
+                        }
+                    } catch (Exception ignored) {
+                    } finally {
+                        activeProcess.set(null);
+                        try { java.nio.file.Files.deleteIfExists(fallbackWav.toPath()); }
+                        catch (Exception ignored) { fallbackWav.deleteOnExit(); }
+                    }
                 }
             }
             return azureSuccess || breezeSuccess || sapiSuccess;

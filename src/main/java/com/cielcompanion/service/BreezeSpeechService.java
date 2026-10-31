@@ -38,12 +38,23 @@ public final class BreezeSpeechService {
     private static volatile String apiKey;
     private static volatile String voiceId;
     private static volatile SSLSocketFactory windowsTrustSocketFactory;
-    private static final Path CACHE_DIR = Path.of(".local", "breeze_voice_cache");
+    private static final Path CACHE_ROOT = Path.of("voice_cache");
     // Bump this whenever speech normalization or delivery semantics change so
     // an older malformed WAV cannot silently win over the corrected source.
     private static final String CACHE_PROFILE_VERSION = "breeze-cache-v2-phonetic";
 
     private BreezeSpeechService() {}
+
+    private static Path cacheDir() {
+        return CACHE_ROOT.resolve(voiceFolderName(voiceId));
+    }
+
+    /** Human-readable folder names while retaining the provider voice IDs. */
+    private static String voiceFolderName(String id) {
+        if ("voc_8uk5x56zhde3".equalsIgnoreCase(id)) return "Breeze-Ciel-Primary-voc_8uk5x56zhde3";
+        if ("voc_yb6gdme2h3eh".equalsIgnoreCase(id)) return "Breeze-Legacy-voc_yb6gdme2h3eh";
+        return "Breeze-Voice-" + safeToken(id);
+    }
 
     public static void initialize() {
         if (initialized) return;
@@ -65,9 +76,44 @@ public final class BreezeSpeechService {
                 System.err.println("[Breeze TTS] No suitable voice found; Azure fallback will be used.");
                 return;
             }
+            migrateLegacyVoiceCache();
             available = true;
             System.out.println("[Breeze TTS] Ready (voice discovery/configuration complete; key withheld).");
         }
+    }
+
+    /** Copy the prior Breeze cache into the selected voice folder, preserving the old files. */
+    private static void migrateLegacyVoiceCache() {
+        try {
+            Path target = cacheDir();
+            Files.createDirectories(target);
+            Path priorVoiceDir = CACHE_ROOT.resolve(safeToken(voiceId));
+            if (!priorVoiceDir.equals(target) && Files.isDirectory(priorVoiceDir)) {
+                try (java.util.stream.Stream<Path> files = Files.list(priorVoiceDir)) {
+                    files.filter(Files::isRegularFile).forEach(path -> {
+                        try {
+                            Path destination = target.resolve(path.getFileName().toString());
+                            if (!Files.exists(destination)) Files.copy(path, destination);
+                        } catch (Exception ignored) { }
+                    });
+                }
+            }
+            Path legacy = Path.of(".local", "breeze_voice_cache");
+            if (!Files.isDirectory(legacy)) return;
+            try (java.util.stream.Stream<Path> files = Files.list(legacy)) {
+                files.filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".wav"))
+                        .forEach(path -> {
+                            try {
+                                Path destination = target.resolve(path.getFileName().toString());
+                                if (!Files.exists(destination)) Files.copy(path, destination);
+                            } catch (Exception ignored) { }
+                        });
+            }
+            Path legacyIndex = legacy.resolve("index.jsonl");
+            Path targetIndex = target.resolve("index.jsonl");
+            if (Files.exists(legacyIndex) && !Files.exists(targetIndex)) Files.copy(legacyIndex, targetIndex);
+        } catch (Exception ignored) { }
     }
 
     /**
@@ -111,7 +157,7 @@ public final class BreezeSpeechService {
     public static boolean isWarmupComplete() {
         long target = Settings.getBreezeWarmupMinEntries();
         if (target <= 0) return true;
-        try (java.util.stream.Stream<Path> files = Files.list(CACHE_DIR)) {
+        try (java.util.stream.Stream<Path> files = Files.list(cacheDir())) {
             String prefix = ("breeze_" + safeToken(Settings.getBreezeModel()) + "_"
                     + safeToken(voiceId) + "_").toLowerCase(Locale.ROOT);
             return files.filter(path -> {
@@ -125,20 +171,28 @@ public final class BreezeSpeechService {
     private static boolean speak(String text, String key, String style, String pitch, String languageCode,
                                  boolean playAudio) {
         if (!available || text == null || text.isBlank()) return false;
-        Path cached = cachePath(key, text, style, pitch, languageCode);
-        Path reusable = findCachedPath(key, text, style, pitch, languageCode);
+        boolean dynamic = isDynamicKey(key);
+        // Media/game commentary is intentionally synthesized on demand.  It
+        // must not replay an earlier observation merely because the key is the
+        // same; only fixed dialogue gets reusable Breeze cache entries.
+        Path cached = dynamic ? null : cachePath(key, text, style, pitch, languageCode);
+        Path reusable = dynamic ? null : findCachedPath(key, text, style, pitch, languageCode);
         if (Settings.isBreezeCacheEnabled() && reusable != null) {
             if (!playAudio) return true;
             boolean played = AzureSpeechService.playProviderWavFile(reusable.toFile(), key == null ? "BreezeCached" : key,
-                    Settings.isBreezePrimeOutput());
-            if (played) System.out.println("[Breeze TTS] Cache hit; no credits consumed.");
+                    Settings.isBreezePrimeOutput(), text);
+            if (played) {
+                System.out.println("[Breeze TTS] Cache hit; no credits consumed (key="
+                        + (key == null ? "Dynamic" : key) + ", voice=" + voiceId
+                        + ", model=" + Settings.getBreezeModel() + ").");
+            }
             return played;
         }
-        Path legacy = legacyCachePath(text, style, pitch, languageCode);
+        Path legacy = dynamic ? null : legacyCachePath(text, style, pitch, languageCode);
         if (Settings.isBreezeCacheEnabled() && Files.isRegularFile(legacy)) {
             if (!playAudio) return true;
             boolean played = AzureSpeechService.playProviderWavFile(legacy.toFile(), key == null ? "BreezeLegacyCached" : key,
-                    Settings.isBreezePrimeOutput());
+                    Settings.isBreezePrimeOutput(), text);
             if (played) System.out.println("[Breeze TTS] Legacy cache hit; no credits consumed.");
             return played;
         }
@@ -177,23 +231,23 @@ public final class BreezeSpeechService {
                 System.err.println("[Breeze TTS] Generation failed (HTTP " + status + "); Azure fallback scheduled.");
                 return false;
             }
-            if (Settings.isBreezeCacheEnabled()) {
-                Files.createDirectories(CACHE_DIR);
-                temp = CACHE_DIR.resolve("." + cached.getFileName() + "." + UUID.randomUUID() + ".tmp");
+            if (Settings.isBreezeCacheEnabled() && !dynamic) {
+                Files.createDirectories(cacheDir());
+                temp = cacheDir().resolve("." + cached.getFileName() + "." + UUID.randomUUID() + ".tmp");
             } else {
                 Files.createDirectories(Path.of(".local"));
                 temp = Path.of(".local", "breeze-" + UUID.randomUUID() + ".wav");
             }
             Files.write(temp, audio);
-            if (Settings.isBreezeCacheEnabled()) {
+            if (Settings.isBreezeCacheEnabled() && !dynamic) {
                 Files.move(temp, cached, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
                 temp = null;
             }
-            recordCache(cached, key, text, languageCode);
+            if (!dynamic) recordCache(cached, key, text, languageCode);
             if (!playAudio) return true;
-            Path playable = Settings.isBreezeCacheEnabled() ? cached : temp;
+            Path playable = Settings.isBreezeCacheEnabled() && !dynamic ? cached : temp;
             boolean played = AzureSpeechService.playProviderWavFile(playable.toFile(), key == null ? "BreezeDynamic" : key,
-                    Settings.isBreezePrimeOutput());
+                    Settings.isBreezePrimeOutput(), text);
             if (!played) System.err.println("[Breeze TTS] Audio generated but playback failed; Azure fallback scheduled.");
             return played;
         } catch (Exception e) {
@@ -218,9 +272,9 @@ public final class BreezeSpeechService {
             for (byte b : digest) hex.append(String.format("%02x", b));
             String prefix = "breeze_" + safeToken(Settings.getBreezeModel()) + "_"
                     + safeToken(voiceId) + "_" + safeToken(key) + "_" + safeToken(style);
-            return CACHE_DIR.resolve(prefix + "_" + hex + ".wav");
+            return cacheDir().resolve(prefix + "_" + hex + ".wav");
         } catch (Exception e) {
-            return CACHE_DIR.resolve("breeze_" + safeToken(Settings.getBreezeModel()) + "_"
+            return cacheDir().resolve("breeze_" + safeToken(Settings.getBreezeModel()) + "_"
                     + safeToken(voiceId) + "_" + safeToken(key) + "_" + safeToken(style) + "_"
                     + Integer.toHexString(material.hashCode()) + ".wav");
         }
@@ -238,9 +292,9 @@ public final class BreezeSpeechService {
             for (byte b : digest) hex.append(String.format("%02x", b));
             String prefix = "breeze_" + safeToken(Settings.getBreezeModel()) + "_"
                     + safeToken(voiceId) + "_" + safeToken(key);
-            return CACHE_DIR.resolve(prefix + "_" + hex + ".wav");
+            return cacheDir().resolve(prefix + "_" + hex + ".wav");
         } catch (Exception e) {
-            return CACHE_DIR.resolve("breeze_" + safeToken(Settings.getBreezeModel()) + "_"
+            return cacheDir().resolve("breeze_" + safeToken(Settings.getBreezeModel()) + "_"
                     + safeToken(voiceId) + "_" + safeToken(key) + "_" + Integer.toHexString(material.hashCode()) + ".wav");
         }
     }
@@ -255,16 +309,24 @@ public final class BreezeSpeechService {
         if (!Settings.isBreezeCacheEnabled() || key == null || key.isBlank()) {
             return null;
         }
+        if (isDynamicKey(key)) return null;
         Path exact = cachePath(key, text, style, pitch, languageCode);
         if (Files.isRegularFile(exact)) return exact;
         Path prior = priorCachePath(key, text, style, pitch, languageCode);
         if (Files.isRegularFile(prior)) return prior;
-        if (key.equals("media_commentary") || key.equals("game_launch") || key.startsWith("dynamic")) {
-            return null;
+        // A neutral fixed-line recording is the safe fallback when the
+        // requested emotional variant has not been generated yet.  This keeps
+        // ordinary dialogue on Breeze instead of falling through to Azure
+        // merely because a mood-specific cache entry is missing.
+        if (!"default".equalsIgnoreCase(style) || !"+0%".equals(pitch)) {
+            Path neutral = cachePath(key, text, "default", "+0%", languageCode);
+            if (Files.isRegularFile(neutral)) return neutral;
+            Path neutralPrior = priorCachePath(key, text, "default", "+0%", languageCode);
+            if (Files.isRegularFile(neutralPrior)) return neutralPrior;
         }
         String prefix = "breeze_" + safeToken(Settings.getBreezeModel()) + "_"
                 + safeToken(voiceId) + "_" + safeToken(key) + "_" + safeToken(style) + "_";
-        try (java.util.stream.Stream<Path> files = Files.list(CACHE_DIR)) {
+        try (java.util.stream.Stream<Path> files = Files.list(cacheDir())) {
             return files.filter(path -> path.getFileName().toString().startsWith(prefix)
                             && path.getFileName().toString().endsWith(".wav"))
                     .max(java.util.Comparator.comparingLong(path -> {
@@ -277,6 +339,13 @@ public final class BreezeSpeechService {
         }
     }
 
+    private static boolean isDynamicKey(String key) {
+        // Unkeyed dialogue is dynamic: without a stable key it must not be
+        // replayed after the observed context changes. Match Azure's policy.
+        return key == null || key.isBlank() || key.equals("media_commentary")
+                || key.equals("game_launch") || key.startsWith("dynamic");
+    }
+
     private static Path legacyCachePath(String text, String style, String pitch, String languageCode) {
         String material = voiceId + "\n" + Settings.getBreezeModel() + "\n"
                 + Settings.getBreezeLanguageCode() + "\n" + languageCode + "\n"
@@ -285,9 +354,9 @@ public final class BreezeSpeechService {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(material.getBytes(StandardCharsets.UTF_8));
             StringBuilder hex = new StringBuilder();
             for (byte b : digest) hex.append(String.format("%02x", b));
-            return CACHE_DIR.resolve(hex + ".wav");
+            return cacheDir().resolve(hex + ".wav");
         } catch (Exception e) {
-            return CACHE_DIR.resolve(Integer.toHexString(material.hashCode()) + ".wav");
+            return cacheDir().resolve(Integer.toHexString(material.hashCode()) + ".wav");
         }
     }
 
@@ -298,8 +367,8 @@ public final class BreezeSpeechService {
 
     private static void recordCache(Path file, String key, String text, String languageCode) {
         try {
-            Files.createDirectories(CACHE_DIR);
-            Path index = CACHE_DIR.resolve("index.jsonl");
+            Files.createDirectories(cacheDir());
+            Path index = cacheDir().resolve("index.jsonl");
             JsonObject row = new JsonObject();
             row.addProperty("provider", "breeze");
             row.addProperty("model", Settings.getBreezeModel());
@@ -309,7 +378,7 @@ public final class BreezeSpeechService {
             row.addProperty("file", file.toString());
             row.addProperty("characters", text == null ? 0 : text.length());
             row.addProperty("created_at_ms", System.currentTimeMillis());
-            synchronized (CACHE_DIR.toString().intern()) {
+            synchronized (cacheDir().toString().intern()) {
                 Files.writeString(index, row + System.lineSeparator(), StandardCharsets.UTF_8,
                         java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
             }

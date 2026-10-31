@@ -33,7 +33,7 @@ public class AzureSpeechService {
     // --- CRITICAL FLAG FOR SAPI ROUTING ---
     public static volatile boolean isIntentionalCancellation = false;
     
-    private static final String CACHE_DIR_PATH = "voice_cache";
+    private static final String CACHE_DIR_PATH = "voice_cache\\ja-JP-NanamiNeural";
     private static final String DND_CACHE_DIR_PATH = "dnd_voice_cache";
     // Rebuild old neutral WAVs after correcting Nanami's supported style mapping.
     private static final String VOICE_PROFILE_VERSION = "nanami_conversational_v3";
@@ -58,6 +58,7 @@ public class AzureSpeechService {
                 config.setSpeechSynthesisLanguage("ja-JP"); 
                 
                 new File(CACHE_DIR_PATH).mkdirs();
+                migrateLegacyVoiceCache();
                 new File(DND_CACHE_DIR_PATH).mkdirs();
                 
                 isInitialized = true;
@@ -70,6 +71,32 @@ public class AzureSpeechService {
             System.out.println("[Azure Init] Skipped. Key or Region missing.");
             isInitialized = false;
         }
+    }
+
+    /** Copy legacy root-cache WAVs into the Nanami folder without deleting backups. */
+    private static void migrateLegacyVoiceCache() {
+        try {
+            java.nio.file.Path target = java.nio.file.Path.of(CACHE_DIR_PATH);
+            java.nio.file.Path root = java.nio.file.Path.of("voice_cache");
+            java.nio.file.Path unknown = root.resolve("legacy-unidentified");
+            if (!java.nio.file.Files.isDirectory(root)) return;
+            java.nio.file.Files.createDirectories(unknown);
+            try (java.util.stream.Stream<java.nio.file.Path> files = java.nio.file.Files.list(root)) {
+                files.filter(java.nio.file.Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".wav"))
+                        .forEach(path -> {
+                            try {
+                                String name = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+                                java.nio.file.Path destination = (name.startsWith("azure_") || name.contains("nanami"))
+                                        ? target.resolve(path.getFileName().toString())
+                                        : unknown.resolve(path.getFileName().toString());
+                                if (!java.nio.file.Files.exists(destination)) {
+                                    java.nio.file.Files.copy(path, destination);
+                                }
+                            } catch (Exception ignored) { }
+                        });
+            }
+        } catch (Exception ignored) { }
     }
 
     public static boolean isAvailable() {
@@ -133,13 +160,13 @@ public class AzureSpeechService {
 
             if (cachedFile.exists()) {
                 System.out.println("[Azure TTS] Cache hit (Static): " + safeFilename);
-                return playWav(cachedFile, key);
+                return playWav(cachedFile, key, true, text);
             }
 
             File legacyFile = new File(targetCacheDir, legacyCacheFilename(key, safeStyle, safeLang));
             if (legacyFile.exists()) {
                 System.out.println("[Azure TTS] Legacy Nanami cache hit: " + legacyFile.getName());
-                return playWav(legacyFile, key);
+                return playWav(legacyFile, key, true, text);
             }
 
             return generateAndPlayFile(text, safeStyle, safePitch, safeLang, cachedFile, key);
@@ -234,7 +261,7 @@ public class AzureSpeechService {
                 fileOutput.close(); 
                 activeSynthesizer = null;
 
-                return playWav(destination, key);
+                return playWav(destination, key, true, text);
             } else if (result.getReason() == ResultReason.Canceled) {
                 SpeechSynthesisCancellationDetails cancellation = SpeechSynthesisCancellationDetails.fromResult(result);
                 if (cancellation.getReason() == CancellationReason.Error) {
@@ -401,10 +428,15 @@ public class AzureSpeechService {
     }
 
     private static boolean playWav(File file, String key) {
-        return playWav(file, key, true);
+        return playWav(file, key, true, null);
     }
 
     private static boolean playWav(File file, String key, boolean primeOutput) {
+        return playWav(file, key, primeOutput, null);
+    }
+
+    /** Play a WAV while retaining the source text for word-timed GUI cadence. */
+    private static boolean playWav(File file, String key, boolean primeOutput, String speechText) {
         Clip clip = null;
         byte[] analysisPcm = null;
         try (javax.sound.sampled.AudioInputStream audioStream = AudioSystem.getAudioInputStream(file)) {
@@ -457,15 +489,31 @@ public class AzureSpeechService {
             }
             long playbackDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(
                     Math.max(5000L, clip.getMicrosecondLength() / 1000L + 5000L));
+            long speechFrames = Math.max(0L, clip.getFrameLength() - prerollFrames);
+            int wordCount = countSpeechWords(speechText);
+            int nextWord = 1;
             while (clip.isRunning() && System.nanoTime() < playbackDeadline) {
+                long speechFrame = Math.max(0L, clip.getLongFramePosition() - prerollFrames);
+                while (wordCount > 0 && nextWord <= wordCount
+                        && speechFrame * (long) (wordCount + 1) >= speechFrames * (long) nextWord) {
+                    CielState.getCielGui().ifPresent(CielGui::markSpeechWord);
+                    nextWord++;
+                }
                 float level = 0.14f;
                 float pcmLevel = samplePcmLevel(analysisPcm, format,
                         clip.getLongFramePosition(), prerollFrames);
                 if (!Float.isNaN(pcmLevel)) level = pcmLevel;
                 try {
                     float db = clip.getLevel();
-                    if (Float.isNaN(pcmLevel) && !Float.isNaN(db) && !Float.isInfinite(db) && db > -60f) {
-                        level = Math.max(0.08f, Math.min(1.0f, (db + 60f) / 60f));
+                    if (!Float.isNaN(db) && !Float.isInfinite(db) && db > -60f) {
+                        float outputLevel = Math.max(0.08f, Math.min(1.0f, (db + 60f) / 60f));
+                        // Java Sound's line meter is the closest stable signal
+                        // to the final Windows output endpoint available to the
+                        // current runtime. Blend it with the source envelope so
+                        // a quiet hardware floor does not erase speech detail.
+                        level = Float.isNaN(pcmLevel)
+                                ? outputLevel
+                                : (pcmLevel * 0.45f + outputLevel * 0.55f);
                     }
                 } catch (RuntimeException ignored) {
                     // Some Windows mixers do not expose a peak level; the
@@ -497,6 +545,13 @@ public class AzureSpeechService {
         }
     }
 
+    private static int countSpeechWords(String text) {
+        if (text == null || text.isBlank()) return 0;
+        String normalized = text.trim().replaceAll("\\s+", " ");
+        if (normalized.isBlank()) return 0;
+        return Math.min(96, normalized.split(" ").length);
+    }
+
     /** Return a short RMS envelope synchronized to the WAV frame position. */
     private static float samplePcmLevel(byte[] pcm, AudioFormat format, long framePosition, long prerollFrames) {
         if (pcm == null || pcm.length == 0 || format.getEncoding() != AudioFormat.Encoding.PCM_SIGNED
@@ -504,10 +559,11 @@ public class AzureSpeechService {
         long speechFrame = Math.max(0L, framePosition - prerollFrames);
         int frameSize = format.getFrameSize();
         int start = (int) Math.min((long) pcm.length, speechFrame * frameSize);
-        int windowFrames = Math.max(1, Math.round(format.getFrameRate() * 0.055f));
+        int windowFrames = Math.max(1, Math.round(format.getFrameRate() * 0.032f));
         int end = Math.min(pcm.length, start + windowFrames * frameSize);
         if (end <= start + 1) return 0.08f;
         double sum = 0.0;
+        double peak = 0.0;
         long samples = 0;
         boolean bigEndian = format.isBigEndian();
         for (int offset = start; offset + 1 < end; offset += 2) {
@@ -517,11 +573,16 @@ public class AzureSpeechService {
             if (sample > 32767) sample -= 65536;
             double normalized = sample / 32768.0;
             sum += normalized * normalized;
+            peak = Math.max(peak, Math.abs(normalized));
             samples++;
         }
         if (samples == 0) return 0.08f;
         double rms = Math.sqrt(sum / samples);
-        double db = rms <= 0.000001 ? -60.0 : 20.0 * Math.log10(rms);
+        // Preserve short consonant transients instead of reducing the whole
+        // 32 ms window to a slow average. The peak is weighted below RMS so
+        // clicks cannot dominate, but real speech intensity remains visible.
+        double speechEnergy = Math.max(rms, peak * 0.72);
+        double db = speechEnergy <= 0.000001 ? -60.0 : 20.0 * Math.log10(speechEnergy);
         return (float) Math.max(0.08, Math.min(1.0, (db + 60.0) / 60.0));
     }
 
@@ -534,6 +595,10 @@ public class AzureSpeechService {
         return file != null && file.isFile() && playWav(file, key, true);
     }
 
+    public static boolean playWavFile(File file, String key, String speechText) {
+        return file != null && file.isFile() && playWav(file, key, true, speechText);
+    }
+
     /** Play provider-generated audio without injecting the Azure speaker wake cue. */
     public static boolean playProviderWavFile(File file, String key) {
         return file != null && file.isFile() && playWav(file, key, false);
@@ -542,6 +607,10 @@ public class AzureSpeechService {
     /** Play provider audio with an explicitly requested hardware warm-up. */
     public static boolean playProviderWavFile(File file, String key, boolean primeOutput) {
         return file != null && file.isFile() && playWav(file, key, primeOutput);
+    }
+
+    public static boolean playProviderWavFile(File file, String key, boolean primeOutput, String speechText) {
+        return file != null && file.isFile() && playWav(file, key, primeOutput, speechText);
     }
 
     /**

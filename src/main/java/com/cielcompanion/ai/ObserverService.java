@@ -32,14 +32,14 @@ public class ObserverService {
     private static final LinkedList<String> transcriptBuffer = new LinkedList<>();
     private static ScheduledExecutorService observerScheduler;
     
-    private static long lastSystemWarningTime = 0; 
-    private static String currentForegroundApp = "";
+    private static volatile long lastSystemWarningTime = 0;
+    private static volatile String currentForegroundApp = "";
     private static long appFocusStartTime = System.currentTimeMillis();
-    private static boolean hasWarnedForFatigue = false;
+    private static volatile boolean hasWarnedForFatigue = false;
     private static volatile CombatTrackerService combatTrackerService;
     private static final AtomicBoolean urgentEvaluationQueued = new AtomicBoolean(false);
-    private static String lastObserverSpeech = "";
-    private static long lastObserverSpeechAt;
+    private static volatile String lastObserverSpeech = "";
+    private static volatile long lastObserverSpeechAt;
 
     // Fatigue threshold set to 2 hours
     private static final long FATIGUE_THRESHOLD_MS = 2 * 60 * 60 * 1000L;

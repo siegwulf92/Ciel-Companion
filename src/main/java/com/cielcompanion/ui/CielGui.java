@@ -17,10 +17,13 @@ public class CielGui {
     // CRITICAL FIX: Added the THINKING state to the Enum
     public enum GuiState { IDLE, LISTENING, SPEAKING, THINKING }
 
-    private JFrame frame;
-    private CielPanel panel;
+    private volatile JFrame frame;
+    private volatile CielPanel panel;
     private Point mouseOffset;
     private volatile boolean isInitialized = false;
+    // Startup work can publish a visual state before Swing has created the
+    // panel. Keep the latest state so it is not lost during that handoff.
+    private volatile GuiState pendingState = GuiState.IDLE;
 
     public void initialize() {
         frame = new JFrame();
@@ -33,6 +36,7 @@ public class CielGui {
         frame.setFocusableWindowState(false);
 
         panel = new CielPanel();
+        panel.setCurrentState(pendingState);
         frame.setContentPane(panel);
 
         MouseAdapter mouseAdapter = new MouseAdapter() {
@@ -57,16 +61,20 @@ public class CielGui {
     }
 
     public void setState(GuiState state) { 
-        if (panel != null) {
-            panel.setCurrentState(state); 
-            if (state == GuiState.IDLE) panel.clearSpeechLevel();
+        if (state == null) state = GuiState.IDLE;
+        pendingState = state;
+        final GuiState appliedState = state;
+        CielPanel targetPanel = panel;
+        if (targetPanel != null) {
+            targetPanel.setCurrentState(state);
+            if (state == GuiState.IDLE) targetPanel.clearSpeechLevel();
 
             if (frame != null) {
-                final boolean visible = state != GuiState.IDLE || GuiSettings.isVisibleWhenIdle();
+                final boolean visible = appliedState != GuiState.IDLE || GuiSettings.isVisibleWhenIdle();
                 SwingUtilities.invokeLater(() -> {
                     frame.setVisible(visible);
                     // Force the window to the absolute front whenever she becomes active.
-                    if (visible && state != GuiState.IDLE) {
+                    if (visible && appliedState != GuiState.IDLE) {
                         frame.setAlwaysOnTop(false);
                         frame.setAlwaysOnTop(true);
                         frame.toFront();
@@ -79,6 +87,15 @@ public class CielGui {
     /** Feed the current output-envelope level (0..1) to the visualizer. */
     public void setSpeechLevel(float level) {
         if (panel != null) panel.setSpeechLevel(level);
+    }
+
+    /** Feed a peak level from the final Windows speaker endpoint. */
+    public void setOutputSpeechLevel(float level) {
+        if (panel != null) panel.setOutputSpeechLevel(level);
+    }
+
+    public boolean isSpeaking() {
+        return panel != null && panel.isSpeaking();
     }
 
     public void clearSpeechLevel() {
@@ -193,6 +210,14 @@ public class CielGui {
             if (Float.isNaN(level) || Float.isInfinite(level)) level = 0.12f;
             targetSpeechLevel = Math.max(0f, Math.min(1f, level));
         }
+        public void setOutputSpeechLevel(float level) {
+            if (Float.isNaN(level) || Float.isInfinite(level)) return;
+            // Endpoint meters include the quiet lead-in and hardware floor.
+            // Scale the useful range without replacing the deterministic
+            // cadence used when a provider or speaker reports no level.
+            setSpeechLevel(Math.max(0.08f, Math.min(1f, level * 1.75f)));
+        }
+        public boolean isSpeaking() { return currentState == GuiState.SPEAKING; }
         public void clearSpeechLevel() { targetSpeechLevel = 0f; }
         public void markSpeechWord() {
             lastSpeechWordNanos = System.nanoTime();
@@ -231,7 +256,10 @@ public class CielGui {
             
             // Animation Pulses
             float breath = (float) (Math.sin(animationTick * GuiSettings.getBreathingSpeed() * 2.0)) / 2.0f + 0.5f;
-            renderedSpeechLevel += (targetSpeechLevel - renderedSpeechLevel) * 0.28f;
+            // Attack quickly enough to catch consonants and syllable peaks;
+            // release more gently so short vowels do not make the orb blink.
+            float speechResponse = targetSpeechLevel > renderedSpeechLevel ? 0.52f : 0.22f;
+            renderedSpeechLevel += (targetSpeechLevel - renderedSpeechLevel) * speechResponse;
             
             // GUI SYNC FIX: Distinct rapid pulse logic for the THINKING state
             float pulse = breath;
@@ -244,18 +272,12 @@ public class CielGui {
                 long sinceWord = System.nanoTime() - lastSpeechWordNanos;
                 if (sinceWord >= 0 && sinceWord < 180_000_000L) cadence = Math.max(cadence, 0.92f);
                 float intensity = (float) Math.max(0.1, Math.min(1.0, GuiSettings.getSpeakingFlickerIntensity()));
-                // The audio envelope supplies most of the movement; the small
-                // cadence term keeps the orb alive when a provider cannot expose
-                // sample levels (for example, streamed Azure output).
-                // Keep a clearly visible cadence even when Windows is muted or
-                // a mixer reports no level. The measured envelope enhances the
-                // motion when available; it is never the sole source of motion.
-                // Keep the provider/mixer envelope as an accent, but make the
-                // deterministic cadence carry most of the range.  The previous
-                // 0.30 cadence contribution was visually indistinguishable
-                // from a color drift on the 150px orb.
-                pulse = Math.max(0.12f, Math.min(1.0f,
-                        0.18f + renderedSpeechLevel * (0.28f + intensity * 0.12f) + cadence * 0.65f));
+                // Let the measured output envelope drive most of the motion;
+                // retain only a small cadence floor when a provider or mixer
+                // cannot expose levels.  This tracks syllable energy instead
+                // of looking like a generic sinusoid.
+                pulse = Math.max(0.08f, Math.min(1.0f,
+                        0.06f + renderedSpeechLevel * (0.86f + intensity * 0.12f) + cadence * 0.06f));
             } else if (currentState == GuiState.THINKING) {
                 pulse = (float) (Math.sin(animationTick * 15.0) + 1) / 2.0f; // Rapid processing throb
             }
@@ -264,15 +286,15 @@ public class CielGui {
             // range was too subtle on small always-on-top windows, especially
             // when a mixer reported a quiet level. Keep the motion smooth but
             // give speech a clearly readable expansion/contraction.
-            float coreR = maxRadius * (0.58f + pulse * 0.24f);
-            float glowR = maxRadius * (0.78f + breath * 0.12f + pulse * 0.10f);
+            float coreR = maxRadius * (0.50f + pulse * 0.34f);
+            float glowR = maxRadius * (0.74f + breath * 0.10f + pulse * 0.16f);
             float displayBrightness = brightness;
             if (currentState == GuiState.SPEAKING) {
                 // Radius-only motion can look like a hue shift at a glance.
                 // Couple the same guaranteed cadence to luminance so speaking
                 // is unmistakable even when the output mixer is muted.
-                displayBrightness = Math.max(0.18f, Math.min(1.0f,
-                        brightness * (0.38f + pulse * 0.62f)));
+                displayBrightness = Math.max(0.16f, Math.min(1.0f,
+                        brightness * (0.24f + pulse * 0.76f)));
             }
 
             // --- LAYER 1: Outer Glow (Soft Halo) ---

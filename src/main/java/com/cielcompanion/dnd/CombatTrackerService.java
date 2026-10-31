@@ -30,14 +30,14 @@ public class CombatTrackerService {
     private static final Pattern INITIATIVE_LINE = Pattern.compile("(?i)^\\s*[-*]?\\s*(.+?)\\s+(?:initiative|init)\\s*(?:[:=]|is)?\\s*(\\d+).*$");
     private static final Pattern TURN_LINE = Pattern.compile("(?i)^\\s*(?:current\\s+turn|active\\s+turn|turn)\\s*[:=]\\s*(.+?)\\s*$");
 
-    public void startCombat() {
+    public synchronized void startCombat() {
         combatActive = true;
         combatants.clear();
         currentTurnIndex = 0;
         CielTriggerEngine.announce("Combat protocols initiated. Calculating threat levels.", CielTriggerEngine.Urgency.URGENT);
     }
 
-    public void endCombat() {
+    public synchronized void endCombat() {
         combatActive = false;
         combatants.clear();
         CielTriggerEngine.announce("Combat concluded. Returning to standard observation mode.", CielTriggerEngine.Urgency.NORMAL);
@@ -83,7 +83,7 @@ public class CombatTrackerService {
         AIEngine.chatFast(prompt, context, null);
     }
 
-    public void nextTurn() {
+    public synchronized void nextTurn() {
         if (combatants.isEmpty()) return;
         for (int checked = 0; checked < combatants.size(); checked++) {
             currentTurnIndex = (currentTurnIndex + 1) % combatants.size();

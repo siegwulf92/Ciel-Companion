@@ -57,8 +57,8 @@ public class Settings {
     private static String BROWSER_PROCESSES_REGEX;
     private static String STREAMING_TITLE_REGEX;
     private static String PLAYER_PROCESSES_REGEX;
-    private static List<String> HARD_MUTE_PROCS;
-    private static List<String> AWARENESS_EXCLUSIONS;
+    private static volatile List<String> HARD_MUTE_PROCS;
+    private static volatile List<String> AWARENESS_EXCLUSIONS;
     private static int MUTE_PERSISTENCE_THRESHOLD_MS;
 
     private static boolean HOTKEY_ENABLED;

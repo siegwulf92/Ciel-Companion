@@ -15,14 +15,18 @@ public class AppProfilerService {
 
     public record AppProfile(String processName, String displayName, String category, String shortName, Pattern windowTitleRegex, boolean isLauncher) {}
 
-    private static final Map<String, AppProfile> profiles = new HashMap<>();
+    // The foreground classifier can read profiles while heavy boot is still
+    // loading them. A plain HashMap can expose partial state or fail during a
+    // values() iteration; a concurrent map gives readers a safe snapshot-like
+    // view until initialization finishes.
+    private static final Map<String, AppProfile> profiles = new ConcurrentHashMap<>();
     
     // Caches dynamically identified apps to prevent log flooding during active gaming
     private static final Map<String, AppProfile> dynamicCache = new ConcurrentHashMap<>();
 
     public static void initialize() {
-        profiles.clear();
         dynamicCache.clear();
+        Map<String, AppProfile> loadedProfiles = new HashMap<>();
         Properties props = new Properties();
         try (InputStream is = AppProfilerService.class.getResourceAsStream("/app_profiles.properties")) {
             if (is == null) {
@@ -57,8 +61,10 @@ public class AppProfilerService {
                     shortName = name.substring(name.indexOf(":") + 1).trim();
                 }
 
-                profiles.put(processKey.toLowerCase(), new AppProfile(processKey, name, category, shortName, regex, isLauncher));
+                loadedProfiles.put(processKey.toLowerCase(), new AppProfile(processKey, name, category, shortName, regex, isLauncher));
             }
+            profiles.clear();
+            profiles.putAll(loadedProfiles);
             System.out.println("Ciel Debug: Loaded " + profiles.size() + " application profiles.");
         } catch (Exception e) {
             System.err.println("Ciel Error: Failed to load application profiles.");

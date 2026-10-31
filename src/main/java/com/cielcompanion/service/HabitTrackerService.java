@@ -32,12 +32,12 @@ public class HabitTrackerService {
     private static ScheduledExecutorService habitScheduler;
     private static ScheduledExecutorService tripwireScheduler;
 
-    private static Map<String, Long> dailyHabits = new HashMap<>();
-    private static String currentCategory = "Idle";
-    private static LocalDate currentDate = LocalDate.now();
+    private static final Map<String, Long> dailyHabits = new ConcurrentHashMap<>();
+    private static volatile String currentCategory = "Idle";
+    private static volatile LocalDate currentDate = LocalDate.now();
 
-    private static boolean proactiveTriggeredToday = false;
-    private static boolean queueFlushedThisSession = true; 
+    private static volatile boolean proactiveTriggeredToday = false;
+    private static volatile boolean queueFlushedThisSession = true;
 
     private static final Map<String, String> processCategoryCache = new ConcurrentHashMap<>();
     private static final Path PROCESS_CACHE_PATH = ProjectPaths.ciel().resolve("process_categories.json");
@@ -51,29 +51,31 @@ public class HabitTrackerService {
     );
 
     private static final Path MEDIA_LIST_PATH = ProjectPaths.ciel().resolve("media_whitelist.txt");
-    private static final Set<String> MEDIA_KEYWORDS = new HashSet<>();
-    private static final Map<String, Integer> mediaThresholds = new HashMap<>();
+    private static final Set<String> MEDIA_KEYWORDS = ConcurrentHashMap.newKeySet();
+    private static final Map<String, Integer> mediaThresholds = new ConcurrentHashMap<>();
 
-    private static String currentMediaTitle = "";
-    private static String currentGameTitle = ""; 
+    private static volatile String currentMediaTitle = "";
+    private static volatile String currentGameTitle = "";
     
     private static final Map<String, Integer> episodeExposureMinutes = new ConcurrentHashMap<>();
     private static final Set<String> loggedMediaToday = ConcurrentHashMap.newKeySet();
     private static final Set<String> unverifiedMediaAcknowledgedToday = ConcurrentHashMap.newKeySet();
+    /** One spoiler-safe recognition line per identified media item, even while paused. */
+    private static final Set<String> mediaRecognitionAcknowledgedToday = ConcurrentHashMap.newKeySet();
     private static final Set<String> mediaCommentaryInFlight = ConcurrentHashMap.newKeySet();
     private static final Map<String, Long> mediaCommentaryRetryAfter = new ConcurrentHashMap<>();
 
-    private static final Queue<String> deferredSpeechQueue = new LinkedList<>();
-    private static boolean currentGamePausable = false;
+    private static final Queue<String> deferredSpeechQueue = new ConcurrentLinkedQueue<>();
+    private static volatile boolean currentGamePausable = false;
 
     private static volatile String cachedActiveUrl = "";
     private static volatile String cachedDomText = "";
-    private static String lastTripwireTitle = "";
-    private static String lastTripwirePlatform = "";
-    private static int consecutiveDomFailures = 0;
+    private static volatile String lastTripwireTitle = "";
+    private static volatile String lastTripwirePlatform = "";
+    private static volatile int consecutiveDomFailures = 0;
     
-    private static String cachedStreamLink = null;
-    private static String cachedMagnetLink = null;
+    private static volatile String cachedStreamLink = null;
+    private static volatile String cachedMagnetLink = null;
     private static volatile int cachedDurationMinutes = -1;
     private static volatile int cachedCurrentTimeSec = -1;
 
@@ -82,15 +84,15 @@ public class HabitTrackerService {
     private static volatile long lastPlaybackEvidenceAt = 0;
     private static volatile long lastMediaDeferredLogAt = 0;
     
-    private static long lastExceptionLogTime = 0;
-    private static String lastExceptionMessage = "";
+    private static volatile long lastExceptionLogTime = 0;
+    private static volatile String lastExceptionMessage = "";
 
-    private static final LinkedList<String> recentMediaHistory = new LinkedList<>();
-    private static int currentBingeCount = 0;
+    private static final ConcurrentLinkedDeque<String> recentMediaHistory = new ConcurrentLinkedDeque<>();
+    private static volatile int currentBingeCount = 0;
     
-    private static String activeSeriesName = "";
-    private static String activeSeriesDom = "";
-    private static final List<String> activeSeriesEpisodes = new ArrayList<>();
+    private static volatile String activeSeriesName = "";
+    private static volatile String activeSeriesDom = "";
+    private static final List<String> activeSeriesEpisodes = new CopyOnWriteArrayList<>();
     
     private static volatile String currentEpisodeHash = "";
     private static volatile boolean hasAcquiredEpisodeMetadata = false;
@@ -131,7 +133,7 @@ public class HabitTrackerService {
         }
     }
 
-    private static void saveProcessCategories() {
+    private static synchronized void saveProcessCategories() {
         try {
             JsonObject json = new JsonObject();
             for (Map.Entry<String, String> entry : processCategoryCache.entrySet()) {
@@ -140,7 +142,15 @@ public class HabitTrackerService {
                 }
             }
             Files.createDirectories(PROCESS_CACHE_PATH.getParent());
-            Files.writeString(PROCESS_CACHE_PATH, json.toString(), StandardCharsets.UTF_8);
+            Path temporary = PROCESS_CACHE_PATH.resolveSibling(PROCESS_CACHE_PATH.getFileName() + ".tmp");
+            Files.writeString(temporary, json.toString(), StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            try {
+                Files.move(temporary, PROCESS_CACHE_PATH, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temporary, PROCESS_CACHE_PATH, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (Exception e) {}
     }
 
@@ -164,16 +174,24 @@ public class HabitTrackerService {
             }
         } catch (Exception e) {
             MEDIA_KEYWORDS.clear();
-            MEDIA_KEYWORDS.addAll(Arrays.asList("youtube", "netflix", "hulu", "disney+", "prime video", "crunchyroll", "hidive", "stremio"));
+            MEDIA_KEYWORDS.addAll(Arrays.asList("youtube", "netflix", "hulu", "disney+", "disneyplus", "prime video", "primevideo", "crunchyroll", "hidive", "stremio", "twitch", "max", "hbo max", "peacock", "paramount+", "paramountplus", "apple tv", "tubi"));
         }
     }
 
-    private static void saveMediaList() {
+    private static synchronized void saveMediaList() {
         try {
             Files.createDirectories(MEDIA_LIST_PATH.getParent());
             List<String> lines = new ArrayList<>(MEDIA_KEYWORDS);
             Collections.sort(lines);
-            Files.write(MEDIA_LIST_PATH, lines, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            Path temporary = MEDIA_LIST_PATH.resolveSibling(MEDIA_LIST_PATH.getFileName() + ".tmp");
+            Files.write(temporary, lines, StandardCharsets.UTF_8, StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            try {
+                Files.move(temporary, MEDIA_LIST_PATH, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temporary, MEDIA_LIST_PATH, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (Exception e) {}
     }
 
@@ -214,13 +232,19 @@ public class HabitTrackerService {
         if (lower.contains("netflix")) return "netflix";
         if (lower.contains("hulu")) return "hulu";
         if (lower.contains("disney")) return "disneyplus";
-        if (lower.contains("prime video")) return "prime video";
+        if (lower.contains("prime video") || lower.contains("primevideo")) return "prime video";
         if (lower.contains("viz")) return "viz";
         if (lower.contains("hidive")) return "hidive";
+        if (lower.contains("twitch")) return "twitch";
+        if (lower.contains("paramount")) return "paramountplus";
+        if (lower.contains("peacock")) return "peacock";
+        if (lower.contains("apple tv")) return "appletv";
+        if (lower.contains("tubi")) return "tubi";
+        if (lower.contains("max") || lower.contains("hbo max")) return "max";
         return "unknown";
     }
 
-    private static void tripwireCheck() {
+    private static synchronized void tripwireCheck() {
         if (!isTripwireActive.compareAndSet(false, true)) return;
 
         try {
@@ -322,6 +346,7 @@ public class HabitTrackerService {
                 if (doDeepScrape) stremioNextDeepScrapeTime = now + 60_000;
                 
                 CompletableFuture.runAsync(() -> {
+                    synchronized (HabitTrackerService.class) {
                     try {
                         if(doDeepScrape) {
                             JsonObject identity=getActiveMediaData(activeTitle,currentPlatform,true,true);
@@ -471,6 +496,7 @@ public class HabitTrackerService {
                         }
                     } finally {
                         isTripwireActive.set(false);
+                    }
                     }
                 });
             } else if (!isMedia && !lastTripwireTitle.isEmpty()) {
@@ -632,6 +658,8 @@ public class HabitTrackerService {
 
     public static boolean pauseMediaForSpeech() { return mediaTransport("pause",true); }
     public static void resumeMediaAfterSpeech() { mediaTransport("resume",false); }
+    /** True when the latest media observation already confirms the player is paused. */
+    public static boolean isMediaPlaybackPaused() { return "PAUSED".equalsIgnoreCase(cachedPlaybackState); }
 
     private static boolean mediaTransport(String action,boolean requireChanged) {
         Process process=null;
@@ -700,12 +728,13 @@ public class HabitTrackerService {
         return clean.trim();
     }
 
-    private static void pollAndTrack() {
+    private static synchronized void pollAndTrack() {
         if (!LocalDate.now().equals(currentDate)) {
             summarizeAndSaveToMemory();
             dailyHabits.clear();
             loggedMediaToday.clear();
             unverifiedMediaAcknowledgedToday.clear();
+            mediaRecognitionAcknowledgedToday.clear();
             episodeExposureMinutes.clear();
             recentMediaHistory.clear();
             mediaThresholds.clear();
@@ -796,6 +825,19 @@ public class HabitTrackerService {
                 if (playbackFresh && exposure > 0 && exposure % 120 == 0) triggerFatigueWarning(exposure);
 
                 long retryAfter = mediaCommentaryRetryAfter.getOrDefault(currentEpisodeHash, 0L);
+                // A paused player still needs a useful recognition response. Do
+                // not advance exposure or perform timed plot commentary until
+                // playback resumes, but acknowledge the verified title once so
+                // opening a video is not met with silence.
+                if (!playbackFresh && "PAUSED".equalsIgnoreCase(cachedPlaybackState)
+                        && !currentEpisodeHash.isEmpty()
+                        && !mediaRecognitionAcknowledgedToday.contains(currentEpisodeHash)
+                        && !mediaCommentaryInFlight.contains(currentEpisodeHash)
+                        && hasAcquiredEpisodeMetadata
+                        && System.currentTimeMillis() >= retryAfter) {
+                    triggerPausedMediaRecognition(currentMediaTitle, activeTitle, cachedActiveUrl,
+                            cachedDomText, currentEpisodeHash);
+                }
                 if (playbackFresh && !currentEpisodeHash.isEmpty() && !loggedMediaToday.contains(currentEpisodeHash)
                         && !mediaCommentaryInFlight.contains(currentEpisodeHash) && hasAcquiredEpisodeMetadata
                         && System.currentTimeMillis() >= retryAfter) {
@@ -936,7 +978,7 @@ public class HabitTrackerService {
             queueFlushedThisSession = false; 
         }
 
-        dailyHabits.put(currentCategory, dailyHabits.getOrDefault(currentCategory, 0L) + 1);
+        dailyHabits.merge(currentCategory, 1L, Long::sum);
         evaluateEmotionalResonance();
     }
     
@@ -958,6 +1000,58 @@ public class HabitTrackerService {
         });
     }
     
+    private static void triggerPausedMediaRecognition(String cleanTitle, String fullWindowTitle, String activeUrl,
+                                                      String datText, String hashToLog) {
+        if (!mediaCommentaryInFlight.add(hashToLog)) return;
+        CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
+        System.out.println("[HabitTracker] Verified paused media identity for " + cleanTitle
+                + "; requesting one spoiler-safe recognition line.");
+        String prompt = "[MEDIA_RECOGNITION] [QUERY: " + fullWindowTitle + "|||" + activeUrl + "]\n"
+                + "The player is paused. Use the verified title and publisher metadata below to acknowledge what the Master opened.\n"
+                + datText + "\nOUTPUT CONTRACT: Write exactly one concise, natural English sentence. "
+                + "Mention the identified title naturally and say you will wait for playback; do not summarize plot, "
+                + "invent details, or use Japanese script. Latin letters only.";
+        try {
+            AIEngine.generateSilentLogicWithModel(prompt, "You are Manas: Ciel.", CielTools.getBackgroundModel(),
+                    0.5, "Paused Media Recognition").whenComplete((response, error) -> {
+                boolean handedToSpeech = false;
+                try {
+                    if (error != null || response == null || response.isBlank()
+                            || response.contains("ABORT") || response.contains("DATA_DEFICIT")
+                            || containsJapaneseScript(response)) {
+                        mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(10));
+                        System.err.println("[HabitTracker] Paused media recognition unavailable for '" + cleanTitle + "'; retry deferred.");
+                    } else if (!hashToLog.equals(currentEpisodeHash)) {
+                        System.out.println("[HabitTracker] Paused media recognition became stale; suppressing response.");
+                    } else {
+                        SpeechService.speakMediaCommentary(response.trim(), spoken -> {
+                            if (spoken) {
+                                mediaRecognitionAcknowledgedToday.add(hashToLog);
+                                mediaCommentaryRetryAfter.remove(hashToLog);
+                                recentMediaHistory.add(cleanTitle);
+                                if (recentMediaHistory.size() > 5) recentMediaHistory.removeFirst();
+                            } else {
+                                mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(3));
+                            }
+                            mediaCommentaryInFlight.remove(hashToLog);
+                        });
+                        handedToSpeech = true;
+                    }
+                } finally {
+                    if (!handedToSpeech) {
+                        mediaCommentaryInFlight.remove(hashToLog);
+                        CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
+                    }
+                }
+            });
+        } catch (Exception error) {
+            mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(10));
+            mediaCommentaryInFlight.remove(hashToLog);
+            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
+            System.err.println("[HabitTracker] Could not start paused media recognition for '" + cleanTitle + "': " + error.getMessage());
+        }
+    }
+
     private static void triggerSequentialMediaCommentary(String cleanTitle, String fullWindowTitle, String activeUrl, String datText, String hashToLog) {
         if (!mediaCommentaryInFlight.add(hashToLog)) return;
         CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));

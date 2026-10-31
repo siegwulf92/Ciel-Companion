@@ -1,35 +1,35 @@
 package com.cielcompanion.memory.stwm;
 
 import com.cielcompanion.service.conversation.ConversationTopic;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * V3: Adds state tracking for gaming sessions, CPU alerts, and Pending Skills.
  */
 public class ShortTermMemory {
 
-    private int currentPhase = 0;
+    private volatile int currentPhase = 0;
     private volatile boolean isProcessingCommand = false;
-    private boolean inPhase4Monologue = false;
-    private String currentlyTrackedGameProcess = null;
-    private long gameSessionGracePeriodEnd = 0;
-    private ConversationTopic conversationTopic = ConversationTopic.NONE;
-    private long privilegedModeEndTime = 0;
-    private long searchQueryEndTime = 0;
+    private volatile boolean inPhase4Monologue = false;
+    private volatile String currentlyTrackedGameProcess = null;
+    private volatile long gameSessionGracePeriodEnd = 0;
+    private volatile ConversationTopic conversationTopic = ConversationTopic.NONE;
+    private volatile long privilegedModeEndTime = 0;
+    private volatile long searchQueryEndTime = 0;
 
     private volatile long speechEndTime = 0;
 
     // New state variables for gaming mode and CPU alerts
-    private boolean inGamingSession = false;
-    private int highCpuAlertCountInSession = 0;
-    private long lastCpuAlertTimestamp = 0;
+    private volatile boolean inGamingSession = false;
+    private volatile int highCpuAlertCountInSession = 0;
+    private volatile long lastCpuAlertTimestamp = 0;
 
     // NEW: Holds unauthenticated skill creation requests
-    private String pendingSystemTask = null;
+    private volatile String pendingSystemTask = null;
 
     // NEW: Session text context for AI ingestion
-    private List<String> sessionContext = new ArrayList<>();
+    private final List<String> sessionContext = new CopyOnWriteArrayList<>();
 
     // --- Getters ---
     public int getCurrentPhase() { return currentPhase; }
