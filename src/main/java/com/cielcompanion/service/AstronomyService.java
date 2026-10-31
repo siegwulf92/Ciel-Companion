@@ -213,8 +213,9 @@ public class AstronomyService {
         CielState.incrementAstronomyFetchAttempts();
         System.out.printf("Ciel Debug: Performing daily API fetch for combined astronomy data... (Attempt %d/3)%n", CielState.getAstronomyFetchAttempts());
 
-        Map<String, String> sunMoonTimes = AstronomyApi.getSunMoonTimes(LocalDate.now());
-        String moonPhase = AstronomyApi.getMoonPhase(LocalDate.now());
+        AstronomyApi.SunMoonSnapshot sunMoon = AstronomyApi.fetchSunMoonSnapshot(LocalDate.now());
+        Map<String, String> sunMoonTimes = sunMoon == null ? null : sunMoon.sunMoonTimes();
+        String moonPhase = sunMoon == null ? null : sunMoon.moonPhase();
         ZoneId zone = ZoneId.of(LocationService.getTimezone());
         ZonedDateTime now = ZonedDateTime.now(zone);
         List<CombinedAstronomyData.PlanetCoordinate> planetCoords = AstronomyApi.fetchPlanetCoordinates(now.toLocalDate(), now.toLocalTime());

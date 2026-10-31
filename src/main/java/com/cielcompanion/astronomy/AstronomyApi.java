@@ -29,6 +29,9 @@ public class AstronomyApi {
     private static final Gson gson = new Gson();
     private static final Set<String> CIRCUMPOLAR_CONSTELLATIONS = Set.of("Ursa Minor", "Ursa Major", "Draco", "Cepheus", "Cassiopeia");
 
+    /** One IP-geolocation response supplies both solar times and moon phase. */
+    public record SunMoonSnapshot(Map<String, String> sunMoonTimes, String moonPhase) {}
+
     // --- DTOs ---
     public static class CelestialBodyData {
         public Data data;
@@ -100,30 +103,20 @@ public class AstronomyApi {
      * Delegates to IpGeoLocationApi for reliable Sunrise/Sunset times.
      */
     public static Map<String, String> getSunMoonTimes(LocalDate date) {
-        String apiKey = Settings.getIpGeolocationApiKey();
-        if (apiKey == null || apiKey.isBlank()) return null;
-
-        try {
-            IpGeoLocationApi.AstronomyData data = IpGeoLocationApi.fetchAstronomyData(
-                LocationService.getLatitude(), LocationService.getLongitude(), apiKey
-            );
-
-            if (data != null && data.sunrise() != null && data.sunset() != null) {
-                return Map.of(
-                    "sunrise", data.sunrise().format(DateTimeFormatter.ofPattern("HH:mm:ss")),
-                    "sunset", data.sunset().format(DateTimeFormatter.ofPattern("HH:mm:ss"))
-                );
-            }
-        } catch (Exception e) {
-            System.err.println("Ciel Error (AstronomyApi): Failed to fetch Sun/Moon times via IPGeo: " + e.getMessage());
-        }
-        return null;
+        SunMoonSnapshot snapshot = fetchSunMoonSnapshot(date);
+        return snapshot == null ? null : snapshot.sunMoonTimes();
     }
 
     /**
      * Delegates to IpGeoLocationApi for Moon Phase.
      */
     public static String getMoonPhase(LocalDate date) {
+        SunMoonSnapshot snapshot = fetchSunMoonSnapshot(date);
+        return snapshot == null ? null : snapshot.moonPhase();
+    }
+
+    /** Fetch sunrise, sunset, and moon phase together so one daily response is reused. */
+    public static SunMoonSnapshot fetchSunMoonSnapshot(LocalDate date) {
         String apiKey = Settings.getIpGeolocationApiKey();
         if (apiKey == null || apiKey.isBlank()) return null;
 
@@ -131,9 +124,17 @@ public class AstronomyApi {
             IpGeoLocationApi.AstronomyData data = IpGeoLocationApi.fetchAstronomyData(
                 LocationService.getLatitude(), LocationService.getLongitude(), apiKey
             );
-            if (data != null) return data.moonPhase();
+            if (data == null) return null;
+            Map<String, String> times = null;
+            if (data.sunrise() != null && data.sunset() != null) {
+                times = Map.of(
+                    "sunrise", data.sunrise().format(DateTimeFormatter.ofPattern("HH:mm:ss")),
+                    "sunset", data.sunset().format(DateTimeFormatter.ofPattern("HH:mm:ss"))
+                );
+            }
+            return new SunMoonSnapshot(times, data.moonPhase());
         } catch (Exception e) {
-            System.err.println("Ciel Error (AstronomyApi): Failed to fetch Moon Phase via IPGeo.");
+            System.err.println("Ciel Error (AstronomyApi): Failed to fetch Sun/Moon data via IPGeo: " + e.getClass().getSimpleName());
         }
         return null;
     }
