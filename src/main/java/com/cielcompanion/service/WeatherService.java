@@ -67,7 +67,7 @@ public class WeatherService {
                                 long fetchedAtEpochSeconds) {}
 
     public static SkyConditions getCurrentSkyConditions() {
-        if (cachedWeatherData == null) getCurrentWeather();
+        if (cachedWeatherData == null || Instant.now().getEpochSecond() - cachedWeatherData.fetchTimeEpochSeconds >= 15 * 60) getWeatherData(false);
         if (cachedWeatherData == null || cachedWeatherData.current == null) return null;
         Current current = cachedWeatherData.current;
         return new SkyConditions(
@@ -80,7 +80,7 @@ public class WeatherService {
 
     public static boolean isSkyLikelyClear(LocalDate date, LocalTime time) {
         if (date == null || time == null) return false;
-        if (cachedWeatherData == null) getCurrentWeather();
+        if (cachedWeatherData == null || Instant.now().getEpochSecond() - cachedWeatherData.fetchTimeEpochSeconds >= 15 * 60) getWeatherData(false);
         if (cachedWeatherData == null || cachedWeatherData.forecast == null || cachedWeatherData.forecast.forecastday == null) return false;
         for (ForecastDay day : cachedWeatherData.forecast.forecastday) {
             if (day == null || !date.toString().equals(day.date) || day.hour == null || day.hour.isEmpty()) continue;
