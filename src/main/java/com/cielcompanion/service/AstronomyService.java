@@ -42,6 +42,8 @@ public class AstronomyService {
     // across a location/time-zone change or a long-running session.  Between
     // refreshes altitude is recomputed locally from the captured RA/Dec.
     private static final long LIVE_POSITION_REFRESH_SECONDS = 6 * 60 * 60;
+    private static LocalDate peakRefinementDate;
+    private static int peakRefinementCalls;
 
     public record AstronomyReport(Map<String, String> sequentialEvents, List<String> reportAmbientLines, List<String> idleAmbientLines) {}
 
@@ -567,6 +569,7 @@ public class AstronomyService {
             CombinedAstronomyData.SkyEvent best = candidate;
             int window = config.getInt("astronomy.refinePeakMinutes", 60), step = Math.max(5, config.getInt("astronomy.refineStepMinutes", 15));
             for (int offset = -window; offset <= window; offset += step) {
+                if (!consumePeakRefinementBudget()) break;
                 LocalTime sample = center.plusMinutes(offset); Map<String, CombinedAstronomyData.PlanetCoordinate> bodies = new HashMap<>();
                 for (CombinedAstronomyData.PlanetCoordinate p : AstronomyApi.fetchPlanetCoordinates(date, sample)) if (p != null && p.id() != null) bodies.put(p.id().toLowerCase(Locale.ROOT), p);
                 CombinedAstronomyData.PlanetCoordinate a = bodies.get(firstId), b = bodies.get(secondId); if (a == null || b == null) continue;
@@ -578,6 +581,15 @@ public class AstronomyService {
             }
             return best;
         } catch (Exception ignored) { return candidate; }
+    }
+
+    private static synchronized boolean consumePeakRefinementBudget() {
+        LocalDate today = LocalDate.now(ZoneId.of(LocationService.getTimezone()));
+        if (!today.equals(peakRefinementDate)) { peakRefinementDate = today; peakRefinementCalls = 0; }
+        int limit = config.getInt("astronomy.maxPeakRefinementApiCallsPerDay", 12);
+        if (peakRefinementCalls >= Math.max(0, limit)) return false;
+        peakRefinementCalls++;
+        return true;
     }
 
     private static LocalTime recommendedViewingTime(LocalDate date, CombinedAstronomyData.PlanetCoordinate sun, LocalTime fallback) {
