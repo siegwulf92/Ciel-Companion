@@ -562,7 +562,7 @@ public class AstronomyService {
         ZoneId zone = ZoneId.of(LocationService.getTimezone());
         double twilight = config.getDouble("astronomy.viewingTwilightAltitudeDeg", -12.0);
         int offset = config.getInt("astronomy.viewingOffsetMinutes", 15);
-        for (int minute = 16 * 60; minute <= 23 * 60 + 30; minute += 15) {
+        for (int minute = 16 * 60; minute <= 23 * 60 + 30; minute++) {
             LocalTime candidate = LocalTime.of(minute / 60, minute % 60);
             if (currentAltitude(sun, ZonedDateTime.of(date, candidate, zone)) <= twilight) return candidate.plusMinutes(offset);
         }
