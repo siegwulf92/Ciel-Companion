@@ -249,8 +249,10 @@ public class AstronomyApi {
                 if (result != null && result.data != null && result.data.table != null && result.data.table.rows != null) {
                     List<String> names = result.data.table.rows.stream()
                         .map(row -> row.entry.name)
-                        .filter(name -> !CIRCUMPOLAR_CONSTELLATIONS.contains(name)) 
-                        .limit(3)
+                        .filter(Objects::nonNull)
+                        .filter(name -> !CIRCUMPOLAR_CONSTELLATIONS.contains(name))
+                        .distinct()
+                        .limit(12)
                         .map(name -> PhonoKana.getInstance().toKatakana(name))
                         .collect(Collectors.toList());
                     

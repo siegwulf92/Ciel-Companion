@@ -198,6 +198,7 @@ public class AstronomyService {
         
         checkMoonPhase(reportAmbientLines);
         checkMoonVisibility(reportAmbientLines);
+        if (isNight) checkNoteworthyAlignments(sequentialEvents);
         checkSeasonal(idleAmbientLines);  
         checkMeteorShowers(reportAmbientLines); 
         
@@ -441,6 +442,43 @@ public class AstronomyService {
         }
         english.append(".");
         ambientLines.add(PhonoKana.getInstance().toKatakana(english.toString()));
+    }
+
+    private static void checkNoteworthyAlignments(Map<String, String> sequentialEvents) {
+        if (!config.enabled("show.specialAlignments", true) || skyTooObscured()) return;
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.of(LocationService.getTimezone()));
+        CombinedAstronomyData.PlanetCoordinate moon = body("moon");
+        if (moon == null || !Double.isFinite(currentAltitude(moon, now)) || currentAltitude(moon, now) < 10.0) return;
+        List<String> closePlanets = new ArrayList<>();
+        for (String id : List.of("venus", "mars", "jupiter", "saturn")) {
+            CombinedAstronomyData.PlanetCoordinate planet = body(id);
+            if (planet == null || currentAltitude(planet, now) < 10.0) continue;
+            double separation = angularSeparation(moon.ra(), moon.dec(), planet.ra(), planet.dec());
+            if (Double.isFinite(separation) && separation <= 8.0) closePlanets.add(planet.name() == null ? id : planet.name());
+        }
+        if (!closePlanets.isEmpty()) {
+            String joined = String.join(" and ", closePlanets);
+            String english = closePlanets.size() > 1
+                    ? "The Moon is close to " + joined + " tonight, making a striking grouping."
+                    : "The Moon is close to " + joined + " tonight; look for them together. ";
+            sequentialEvents.put("special_alignment", PhonoKana.getInstance().toKatakana(english));
+            return;
+        }
+        double pleiadesAltitude = AstroUtils.getAltitude(56.75, 24.1167,
+                LocationService.getLatitude(), LocationService.getLongitude(), now);
+        double pleiadesSeparation = angularSeparation(moon.ra(), moon.dec(), 56.75, 24.1167);
+        if (pleiadesAltitude >= 10.0 && Double.isFinite(pleiadesSeparation) && pleiadesSeparation <= 8.0) {
+            sequentialEvents.put("special_alignment", PhonoKana.getInstance().toKatakana(
+                    "The Moon is close to the Pleiades, the Seven Sisters, tonight."));
+        }
+    }
+
+    private static double angularSeparation(double ra1, double dec1, double ra2, double dec2) {
+        if (!Double.isFinite(ra1) || !Double.isFinite(dec1) || !Double.isFinite(ra2) || !Double.isFinite(dec2)) return Double.NaN;
+        double r1 = Math.toRadians(ra1), r2 = Math.toRadians(ra2);
+        double d1 = Math.toRadians(dec1), d2 = Math.toRadians(dec2);
+        double cosine = Math.sin(d1) * Math.sin(d2) + Math.cos(d1) * Math.cos(d2) * Math.cos(r1 - r2);
+        return Math.toDegrees(Math.acos(Math.max(-1.0, Math.min(1.0, cosine))));
     }
 
     private static boolean skyTooObscured() {
