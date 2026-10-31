@@ -371,10 +371,10 @@ public class AstronomyService {
                 .toList();
         for (int i = 0; i < visible.size(); i++) {
             CombinedAstronomyData.PlanetCoordinate p = visible.get(i);
-            sequentialEvents.put("deep_sky_" + i, PhonoKana.getInstance().toKatakana(
-                    (p.name() == null ? p.id() : p.name()) + " is above the "
-                            + AstroUtils.compassDirection(currentAzimuth(p, now)) + " horizon."
-                            + dynamicBodyDetail(p, currentAltitude(p, now))));
+            sequentialEvents.put("deep_sky_" + i,
+                    PhonoKana.getInstance().toKatakana((p.name() == null ? p.id() : p.name())
+                            + " is above the " + AstroUtils.compassDirection(currentAzimuth(p, now))
+                            + " horizon.") + dynamicBodyDetail(p, currentAltitude(p, now)));
         }
     }
 
