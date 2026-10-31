@@ -536,6 +536,7 @@ public class AstronomyService {
                 double separation = angularSeparation(moon.ra(), moon.dec(), planet.ra(), planet.dec());
                 if (Double.isFinite(separation) && separation <= 8.0) {
                     CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), dateViewingTime.toString(), "Moon", planet.name() == null ? id : planet.name(), separation, currentAltitude(moon, viewing), currentAzimuth(moon, viewing), currentAltitude(planet, viewing), currentAzimuth(planet, viewing));
+                    candidate = refinePeak(candidate, "moon", id);
                     best.merge("moon-" + id, candidate, (a, b) -> a.separationDeg() <= b.separationDeg() ? a : b);
                 }
             }
@@ -545,6 +546,7 @@ public class AstronomyService {
                 double separation = angularSeparation(a.ra(), a.dec(), b.ra(), b.dec());
                 if (Double.isFinite(separation) && separation <= 6.0) {
                     CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), dateViewingTime.toString(), a.name() == null ? a.id() : a.name(), b.name() == null ? b.id() : b.name(), separation, currentAltitude(a, viewing), currentAzimuth(a, viewing), currentAltitude(b, viewing), currentAzimuth(b, viewing));
+                    candidate = refinePeak(candidate, a.id(), b.id());
                     best.merge("pair-" + a.id() + "-" + b.id(), candidate, (x, y) -> x.separationDeg() <= y.separationDeg() ? x : y);
                 }
             }
@@ -556,6 +558,26 @@ public class AstronomyService {
             }
         }
         return new ArrayList<>(best.values());
+    }
+
+    private static CombinedAstronomyData.SkyEvent refinePeak(CombinedAstronomyData.SkyEvent candidate, String firstId, String secondId) {
+        if (candidate == null || candidate.separationDeg() > config.getDouble("astronomy.refineThresholdDeg", 8.0)) return candidate;
+        try {
+            LocalDate date = LocalDate.parse(candidate.date()); LocalTime center = LocalTime.parse(candidate.time());
+            CombinedAstronomyData.SkyEvent best = candidate;
+            int window = config.getInt("astronomy.refinePeakMinutes", 60), step = Math.max(5, config.getInt("astronomy.refineStepMinutes", 15));
+            for (int offset = -window; offset <= window; offset += step) {
+                LocalTime sample = center.plusMinutes(offset); Map<String, CombinedAstronomyData.PlanetCoordinate> bodies = new HashMap<>();
+                for (CombinedAstronomyData.PlanetCoordinate p : AstronomyApi.fetchPlanetCoordinates(date, sample)) if (p != null && p.id() != null) bodies.put(p.id().toLowerCase(Locale.ROOT), p);
+                CombinedAstronomyData.PlanetCoordinate a = bodies.get(firstId), b = bodies.get(secondId); if (a == null || b == null) continue;
+                double separation = angularSeparation(a.ra(), a.dec(), b.ra(), b.dec());
+                if (Double.isFinite(separation) && separation < best.separationDeg()) {
+                    ZonedDateTime viewing = ZonedDateTime.of(date, sample, ZoneId.of(LocationService.getTimezone()));
+                    best = new CombinedAstronomyData.SkyEvent(date.toString(), sample.toString(), best.primary(), best.secondary(), separation, currentAltitude(a, viewing), currentAzimuth(a, viewing), currentAltitude(b, viewing), currentAzimuth(b, viewing));
+                }
+            }
+            return best;
+        } catch (Exception ignored) { return candidate; }
     }
 
     private static LocalTime recommendedViewingTime(LocalDate date, CombinedAstronomyData.PlanetCoordinate sun, LocalTime fallback) {
