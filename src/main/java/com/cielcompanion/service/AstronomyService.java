@@ -343,13 +343,35 @@ public class AstronomyService {
             for (int i = 0; i < visibleLines.size(); i++) {
                 sequentialEvents.put("planet_" + i, visibleLines.get(i));
             }
+            CombinedAstronomyData.PlanetCoordinate uranus = body("uranus");
+            if (uranus != null && config.enabled("show.uranusPuns", true)
+                    && LocalDate.now(ZoneId.of(LocationService.getTimezone())).getDayOfYear() % 7 == 0
+                    && currentAltitude(uranus, now) >= 20.0 && isPlanetObservable(uranus)) {
+                sequentialEvents.put("uranus_note", PhonoKana.getInstance().toKatakana(
+                        "Uranus is up there tonight. It is not a naked-eye target, but a small telescope can help you find your Uranus."));
+            }
         } else {
              checkVisiblePlanetsStatic(sequentialEvents);
         }
     }
 
     private static void checkDeepSkyObjectsDynamic(Map<String, String> sequentialEvents) {
+        if (!config.enabled("show.deepSkyObjects", true) || skyTooObscured()) return;
         ZonedDateTime now = ZonedDateTime.now(ZoneId.of(LocationService.getTimezone()));
+        List<CombinedAstronomyData.PlanetCoordinate> visible = fixedCatalogBodies(now).stream()
+                .filter(p -> SkyCatalog.byId(p.id()) != null && SkyCatalog.byId(p.id()).kind() != SkyCatalog.Kind.STAR)
+                .filter(p -> currentAltitude(p, now) >= config.getDouble("astronomy.minDeepSkyAltitudeDeg", 20.0))
+                .filter(AstronomyService::isPlanetObservable)
+                .sorted(Comparator.comparingDouble(p -> p.hasPhotometry() ? p.magnitude() : 99.0))
+                .limit(2)
+                .toList();
+        for (int i = 0; i < visible.size(); i++) {
+            CombinedAstronomyData.PlanetCoordinate p = visible.get(i);
+            sequentialEvents.put("deep_sky_" + i, PhonoKana.getInstance().toKatakana(
+                    (p.name() == null ? p.id() : p.name()) + " is above the "
+                            + AstroUtils.compassDirection(currentAzimuth(p, now)) + " horizon."
+                            + dynamicBodyDetail(p, currentAltitude(p, now))));
+        }
     }
 
     private static CombinedAstronomyData.PlanetCoordinate body(String id) {
@@ -360,8 +382,25 @@ public class AstronomyService {
     }
 
     private static CombinedAstronomyData.PlanetCoordinate bodyOrFixedStar(String id) {
-        if ("regulus".equalsIgnoreCase(id)) return REGULUS;
+        SkyCatalog.Object fixed = SkyCatalog.byId(id);
+        if (fixed != null) return fixed.coordinate(ZonedDateTime.now(ZoneId.of(LocationService.getTimezone())).toEpochSecond());
         return body(id);
+    }
+
+    private static List<CombinedAstronomyData.PlanetCoordinate> fixedCatalogBodies(ZonedDateTime now) {
+        long capturedAt = now == null ? System.currentTimeMillis() / 1000L : now.toEpochSecond();
+        return SkyCatalog.notableObjects().stream().map(o -> o.coordinate(capturedAt)).toList();
+    }
+
+    private static List<CombinedAstronomyData.PlanetCoordinate> allTrackedBodies(ZonedDateTime now) {
+        Map<String, CombinedAstronomyData.PlanetCoordinate> tracked = new LinkedHashMap<>();
+        if (todaysApiData != null && todaysApiData.planetCoordinates != null) {
+            for (CombinedAstronomyData.PlanetCoordinate p : todaysApiData.planetCoordinates) {
+                if (p != null && p.id() != null) tracked.put(p.id().toLowerCase(Locale.ROOT), p);
+            }
+        }
+        for (CombinedAstronomyData.PlanetCoordinate p : fixedCatalogBodies(now)) tracked.putIfAbsent(p.id(), p);
+        return new ArrayList<>(tracked.values());
     }
 
     private static double currentAltitude(CombinedAstronomyData.PlanetCoordinate p, ZonedDateTime now) {
@@ -445,10 +484,25 @@ public class AstronomyService {
             }
             System.out.println("Ciel Debug (Astronomy): Selected " + selected.size()
                 + " time/location-aware constellation entries from API: " + String.join(" | ", selected));
-        } else {
-            String constellations = Constellations.forMonth(LocalDate.now().getMonth());
-            sequentialEvents.put("constellations", "ヴィジブル コンステレーションズ インクルード " + constellations + "。");
-            System.out.println("Ciel Debug (Astronomy): Using monthly constellation fallback: " + constellations);
+        }
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.of(LocationService.getTimezone()));
+        Map<String, CombinedAstronomyData.PlanetCoordinate> anchors = new LinkedHashMap<>();
+        for (CombinedAstronomyData.PlanetCoordinate p : fixedCatalogBodies(now)) {
+            double altitude = currentAltitude(p, now);
+            if (altitude >= config.getDouble("astronomy.minConstellationAltitudeDeg", 20.0)
+                    && isPlanetObservable(p) && p.constellationName() != null) {
+                anchors.merge(p.constellationName(), p, (a, b) ->
+                        (a.hasPhotometry() && b.hasPhotometry() && a.magnitude() <= b.magnitude()) ? a : b);
+            }
+        }
+        if (!anchors.isEmpty()) {
+            String names = anchors.values().stream()
+                    .sorted(Comparator.comparingDouble(p -> p.hasPhotometry() ? p.magnitude() : 99.0))
+                    .limit(6)
+                    .map(CombinedAstronomyData.PlanetCoordinate::constellationName)
+                    .distinct().reduce((a, b) -> a + ", " + b).orElse("");
+            sequentialEvents.put("constellation_anchors", PhonoKana.getInstance().toKatakana(
+                    "The strongest named-star anchors are in " + names + "."));
         }
     }
 
@@ -494,11 +548,10 @@ public class AstronomyService {
                 return;
             }
         }
-        List<CombinedAstronomyData.PlanetCoordinate> brightBodies = new ArrayList<>();
-        for (String id : List.of("venus", "mars", "jupiter", "saturn", "uranus", "regulus")) {
-            CombinedAstronomyData.PlanetCoordinate planet = bodyOrFixedStar(id);
-            if (planet != null && currentAltitude(planet, now) >= 10.0 && isPlanetObservable(planet)) brightBodies.add(planet);
-        }
+        List<CombinedAstronomyData.PlanetCoordinate> brightBodies = allTrackedBodies(now).stream()
+                .filter(p -> !"sun".equalsIgnoreCase(p.id()))
+                .filter(p -> currentAltitude(p, now) >= 10.0 && isPlanetObservable(p))
+                .toList();
         double maxSpan = config.getDouble("astronomy.alignmentMaxSpanDeg", 15.0);
         for (int i = 0; i < brightBodies.size(); i++) {
             List<CombinedAstronomyData.PlanetCoordinate> group = new ArrayList<>();
@@ -519,8 +572,9 @@ public class AstronomyService {
                 return;
             }
         }
-        double pleiadesAltitude = AstroUtils.getAltitude(56.75, 24.1167, LocationService.getLatitude(), LocationService.getLongitude(), now);
-        double pleiadesSeparation = moon == null ? Double.NaN : angularSeparation(moon.ra(), moon.dec(), 56.75, 24.1167);
+        CombinedAstronomyData.PlanetCoordinate pleiades = bodyOrFixedStar("pleiades");
+        double pleiadesAltitude = currentAltitude(pleiades, now);
+        double pleiadesSeparation = moon == null ? Double.NaN : angularSeparation(moon.ra(), moon.dec(), pleiades.ra(), pleiades.dec());
         if (pleiadesAltitude >= 10.0 && Double.isFinite(pleiadesSeparation) && pleiadesSeparation <= 8.0) sequentialEvents.put("special_alignment", PhonoKana.getInstance().toKatakana("The Moon is close to the Pleiades, the Seven Sisters, tonight."));
     }
 
@@ -543,33 +597,41 @@ public class AstronomyService {
             ZonedDateTime viewing = ZonedDateTime.of(date, dateViewingTime, ZoneId.of(LocationService.getTimezone()));
             if (currentAltitude(sun, viewing) >= -6.0) continue;
             CombinedAstronomyData.PlanetCoordinate moon = entry.getValue().stream().filter(p -> p != null && "moon".equalsIgnoreCase(p.id())).findFirst().orElse(null);
-            if (moon == null || currentAltitude(moon, viewing) < 10.0) continue;
-            for (String id : List.of("venus", "mars", "jupiter", "saturn")) {
-                CombinedAstronomyData.PlanetCoordinate planet = entry.getValue().stream().filter(p -> p != null && id.equalsIgnoreCase(p.id())).findFirst().orElse(null);
-                if (planet == null || currentAltitude(planet, viewing) < 10.0) continue;
-                double separation = angularSeparation(moon.ra(), moon.dec(), planet.ra(), planet.dec());
-                if (Double.isFinite(separation) && separation <= 8.0) {
-                    CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), dateViewingTime.toString(), "Moon", planet.name() == null ? id : planet.name(), separation, currentAltitude(moon, viewing), currentAzimuth(moon, viewing), currentAltitude(planet, viewing), currentAzimuth(planet, viewing));
-                    candidate = refinePeak(candidate, "moon", id);
-                    best.merge("moon-" + id, candidate, (a, b) -> a.separationDeg() <= b.separationDeg() ? a : b);
+            if (moon != null && currentAltitude(moon, viewing) >= 10.0) {
+                for (String id : List.of("venus", "mars", "jupiter", "saturn")) {
+                    CombinedAstronomyData.PlanetCoordinate planet = entry.getValue().stream().filter(p -> p != null && id.equalsIgnoreCase(p.id())).findFirst().orElse(null);
+                    if (planet == null || currentAltitude(planet, viewing) < 10.0) continue;
+                    double separation = angularSeparation(moon.ra(), moon.dec(), planet.ra(), planet.dec());
+                    if (Double.isFinite(separation) && separation <= 8.0) {
+                        CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), dateViewingTime.toString(), "Moon", planet.name() == null ? id : planet.name(), separation, currentAltitude(moon, viewing), currentAzimuth(moon, viewing), currentAltitude(planet, viewing), currentAzimuth(planet, viewing));
+                        candidate = refinePeak(candidate, "moon", id);
+                        best.merge("moon-" + id, candidate, (a, b) -> a.separationDeg() <= b.separationDeg() ? a : b);
+                    }
                 }
             }
-            List<CombinedAstronomyData.PlanetCoordinate> brightBodies = new ArrayList<>(entry.getValue().stream().filter(p -> p != null && List.of("venus", "mars", "jupiter", "saturn", "uranus").contains(p.id().toLowerCase(Locale.ROOT))).filter(p -> currentAltitude(p, viewing) >= 10.0).toList());
-            if (currentAltitude(REGULUS, viewing) >= 10.0 && isPlanetObservable(REGULUS)) brightBodies.add(REGULUS);
+            List<CombinedAstronomyData.PlanetCoordinate> brightBodies = new ArrayList<>(entry.getValue().stream().filter(p -> p != null && List.of("mercury", "venus", "mars", "jupiter", "saturn", "uranus", "neptune").contains(p.id().toLowerCase(Locale.ROOT))).filter(p -> currentAltitude(p, viewing) >= 10.0 && isPlanetObservable(p)).toList());
+            for (CombinedAstronomyData.PlanetCoordinate fixed : fixedCatalogBodies(viewing)) {
+                SkyCatalog.Object object = SkyCatalog.byId(fixed.id());
+                if (object != null && (object.kind() != SkyCatalog.Kind.STAR || object.magnitude() <= 2.0)
+                        && currentAltitude(fixed, viewing) >= 10.0 && isPlanetObservable(fixed)) brightBodies.add(fixed);
+            }
             for (int i = 0; i < brightBodies.size(); i++) for (int j = i + 1; j < brightBodies.size(); j++) {
                 CombinedAstronomyData.PlanetCoordinate a = brightBodies.get(i), b = brightBodies.get(j);
                 double separation = angularSeparation(a.ra(), a.dec(), b.ra(), b.dec());
                 if (Double.isFinite(separation) && separation <= 6.0) {
                     CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), dateViewingTime.toString(), a.name() == null ? a.id() : a.name(), b.name() == null ? b.id() : b.name(), separation, currentAltitude(a, viewing), currentAzimuth(a, viewing), currentAltitude(b, viewing), currentAzimuth(b, viewing));
-                    candidate = refinePeak(candidate, a.id(), b.id());
+                    if (!SkyCatalog.isFixedObject(a.id()) && !SkyCatalog.isFixedObject(b.id())) candidate = refinePeak(candidate, a.id(), b.id());
                     best.merge("pair-" + a.id() + "-" + b.id(), candidate, (x, y) -> x.separationDeg() <= y.separationDeg() ? x : y);
                 }
             }
-            double pleiadesAltitude = AstroUtils.getAltitude(56.75, 24.1167, LocationService.getLatitude(), LocationService.getLongitude(), viewing);
-            double pleiadesSeparation = angularSeparation(moon.ra(), moon.dec(), 56.75, 24.1167);
-            if (pleiadesAltitude >= 10.0 && Double.isFinite(pleiadesSeparation) && pleiadesSeparation <= 8.0) {
-                CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), viewingTime.toString(), "Moon", "the Pleiades (Seven Sisters)", pleiadesSeparation, currentAltitude(moon, viewing), currentAzimuth(moon, viewing), pleiadesAltitude, AstroUtils.getAzimuth(56.75, 24.1167, LocationService.getLatitude(), LocationService.getLongitude(), viewing));
-                best.merge("moon-pleiades", candidate, (a, b) -> a.separationDeg() <= b.separationDeg() ? a : b);
+            if (moon != null && currentAltitude(moon, viewing) >= 10.0) {
+                CombinedAstronomyData.PlanetCoordinate pleiades = bodyOrFixedStar("pleiades");
+                double pleiadesAltitude = currentAltitude(pleiades, viewing);
+                double pleiadesSeparation = angularSeparation(moon.ra(), moon.dec(), pleiades.ra(), pleiades.dec());
+                if (pleiadesAltitude >= 10.0 && Double.isFinite(pleiadesSeparation) && pleiadesSeparation <= 8.0) {
+                    CombinedAstronomyData.SkyEvent candidate = new CombinedAstronomyData.SkyEvent(date.toString(), viewingTime.toString(), "Moon", "the Pleiades (Seven Sisters)", pleiadesSeparation, currentAltitude(moon, viewing), currentAzimuth(moon, viewing), pleiadesAltitude, currentAzimuth(pleiades, viewing));
+                    best.merge("moon-pleiades", candidate, (a, b) -> a.separationDeg() <= b.separationDeg() ? a : b);
+                }
             }
         }
         return new ArrayList<>(best.values());
