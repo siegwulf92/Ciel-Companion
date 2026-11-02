@@ -38,23 +38,12 @@ public final class BreezeUsageTracker {
         synchronized (LOCK) {
             Boolean shared = reserveShared(credits, text);
             if (shared != null) return shared;
-            System.err.println("[Breeze TTS] Shared usage ledger unavailable; using device-local safety ledger.");
-            Properties p = read();
-            String today = LocalDate.now().toString();
-            if (!today.equals(p.getProperty("day"))) {
-                p.clear();
-                p.setProperty("day", today);
-                p.setProperty("credits", "0");
-            }
-            long used = parseLong(p.getProperty("credits"), 0L);
-            long limit = Math.max(1L, Settings.getBreezeDailyCreditLimit());
-            if (credits > limit || used > limit - credits) {
-                System.err.println("[Breeze TTS] Daily credit guard declined request (used="
-                        + used + ", requested=" + credits + ", limit=" + limit + ").");
-                return false;
-            }
-            p.setProperty("credits", Long.toString(used + credits));
-            return write(p);
+            // The allowance is shared across active devices. If the
+            // authenticated replicated ledger is unavailable, fail closed so
+            // SpeechService can use Azure rather than risking a second local
+            // counter that could overspend the shared daily grant.
+            System.err.println("[Breeze TTS] Shared usage ledger unavailable; declining Breeze request so Azure can take over.");
+            return false;
         }
     }
 
