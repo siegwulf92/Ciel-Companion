@@ -290,11 +290,13 @@ public class AstronomyApi {
                         .filter(name -> !CIRCUMPOLAR_CONSTELLATIONS.contains(name))
                         .distinct()
                         .limit(12)
-                        .map(name -> PhonoKana.getInstance().toKatakana(name))
                         .collect(Collectors.toList());
                     
                     if (!names.isEmpty()) {
-                        return List.of("ヴィジブル コンステレーションズ インクルード " + String.join("、 ", names) + "。");
+                        // Keep astronomy facts in English until the final TTS
+                        // boundary. Converting here caused cached reports to
+                        // contain semantic Japanese before speech routing.
+                        return List.of("Visible constellations include " + String.join(", ", names) + ".");
                     }
                 }
             }
