@@ -296,6 +296,18 @@ public class SpeechService {
             String cleanText = matcher.replaceAll("").trim();
             cleanText = cleanText.replaceAll("\\*.*?\\*", "").trim();
 
+            // All dialogue remains English internally. The Japanese voice
+            // receives Katakana-English only at the final speech boundary;
+            // never let semantic Japanese text reach TTS (including idle or
+            // generated dialogue, not only game/media commentary).
+            if (containsSemanticJapaneseScript(cleanText)) {
+                System.err.println("[Speech Guard] Rejected semantic Japanese "
+                        + (key == null ? "unkeyed" : key)
+                        + " payload; expected English source before Katakana conversion.");
+                if (onComplete != null) onComplete.accept(false);
+                return;
+            }
+
             if (emotionToTrigger != null && !emotionToTrigger.isBlank()) {
                 final String finalEmotion = emotionToTrigger;
                 CielState.getEmotionManager().ifPresent(em -> em.triggerEmotion(finalEmotion, 0.8, "Dialogue Tag"));
@@ -362,7 +374,9 @@ public class SpeechService {
                             && Pattern.compile("[a-zA-Z]").matcher(finalCleanText).find();
                     // v4 invalidates older cached transliterations that could
                     // contain collapsed initialisms (for example DD -> ディディ).
-                    String cacheKey = requiresPhonokana ? "phonokana-v4:" + key : key;
+                    // v5 invalidates clips generated before the contextual
+                    // pronunciation audit and high-impact word overrides.
+                    String cacheKey = requiresPhonokana ? "phonokana-v5:" + key : key;
                     String speechKey = com.cielcompanion.util.SpeechText.cacheKey(cacheKey, finalCleanText, langCode);
                     boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, finalStyle, langCode);
 
@@ -418,6 +432,10 @@ public class SpeechService {
             t.printStackTrace();
             if (onComplete != null) onComplete.accept(false);
         }
+    }
+
+    private static boolean containsSemanticJapaneseScript(String text) {
+        return text != null && text.matches("(?s).*[぀-ゟ一-鿿].*");
     }
 
     public static void speakSequentially(List<DialogueLine> lines, long delayMs, boolean preformatted, Runnable onComplete) {
@@ -487,7 +505,7 @@ public class SpeechService {
                                 && !line.key().startsWith("warm_login")
                                 && langCode.equals("ja-JP")
                                 && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find();
-                        String cacheKey = requiresPhonokana ? "phonokana-v4:" + line.key() : line.key();
+                        String cacheKey = requiresPhonokana ? "phonokana-v5:" + line.key() : line.key();
                         String speechKey = com.cielcompanion.util.SpeechText.cacheKey(cacheKey, textToSpeak, langCode);
                         boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, style, langCode);
 
