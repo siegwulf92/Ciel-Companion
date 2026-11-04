@@ -154,7 +154,9 @@ public class AIEngine {
 
     private static String expandInitialisms(String text) {
         java.util.regex.Matcher matcher = java.util.regex.Pattern
-                .compile("(?<![A-Za-z])([A-Z]{2,6})(?![A-Za-z])")
+                // Include a standalone capital letter (G, D, etc.) so it is
+                // sent as an English letter name rather than a guessed word.
+                .compile("(?<![A-Za-z])([A-Z]{1,6})(?![A-Za-z])")
                 .matcher(text);
         StringBuffer out = new StringBuffer();
         while (matcher.find()) {
@@ -240,9 +242,21 @@ public class AIEngine {
                         if (json.has("status") && !json.get("status").getAsString().equals("CACHE_HIT")) {
                             System.out.println("[Raphael — Phonokana] pronunciation_path=" + json.get("status").getAsString());
                         }
-                        if (json.has("katakana")) {
-                            String result = json.get("katakana").getAsString();
-                            if (!result.contains("エラー")) return result;
+                        // The router must prove that its output came from the
+                        // word-aligned phonetic path.  A model can return
+                        // perfectly valid Japanese while translating the
+                        // sentence; accepting that would make the Japanese
+                        // TTS speak a different meaning.  Older routers omit
+                        // this marker and therefore fall back locally.
+                        if (json.has("katakana") && json.has("audit")) {
+                            String audit = json.get("audit").getAsString().toLowerCase(java.util.Locale.ROOT);
+                            boolean audited = audit.equals("word-aligned")
+                                    || audit.equals("word-aligned-cache")
+                                    || audit.equals("deterministic-word-path");
+                            if (audited) {
+                                String result = json.get("katakana").getAsString();
+                                if (!result.contains("エラー")) return result;
+                            }
                         }
                     } else {
                         System.err.println("[Raphael — Japanese Speech Formatting] Transliteration endpoint returned HTTP " + response.statusCode() + ".");
