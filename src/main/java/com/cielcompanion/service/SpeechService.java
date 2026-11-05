@@ -117,17 +117,11 @@ public class SpeechService {
                 }
 
                 if (isGamingActive && HabitTrackerService.isCurrentGamePausable()) {
-                    System.out.println("Ciel Debug: Global Speech Queue active. Suspending game immediately.");
-                    gameWasPausedForSpeech = true;
-                    try {
-                        Robot robot = new Robot();
-                        AzureSpeechService.isSimulatingKeystroke = true;
-                        AzureSpeechService.lastSimulatedInputTime = System.currentTimeMillis();
-                        robot.keyPress(KeyEvent.VK_ESCAPE);
-                        robot.keyRelease(KeyEvent.VK_ESCAPE);
-                        Thread.sleep(600);
-                        AzureSpeechService.isSimulatingKeystroke = false;
-                    } catch (AWTException | InterruptedException ignored) {}
+                    System.out.println("Ciel Debug: Global Speech Queue active. Suspending pausable single-player game with Esc.");
+                    gameWasPausedForSpeech = sendGamePauseKey();
+                    if (!gameWasPausedForSpeech) {
+                        System.err.println("[Media Transport] Game pause was not confirmed; speech will not claim ownership of the game toggle.");
+                    }
                 }
             } else {
                 // A chained line inherits the first line's media ownership
@@ -139,6 +133,29 @@ public class SpeechService {
             // false and media commentary was discarded as an unconfirmed
             // pause, which made paused YouTube videos appear silently ignored.
             return !mediaActiveForQueue || mediaWasPausedForSpeech || HabitTrackerService.isMediaPlaybackPaused();
+        }
+    }
+
+    /**
+     * Send the game-local pause key only for a game already classified as
+     * pausable.  The flag is set only after Robot successfully sends the key,
+     * so cleanup cannot send a second Esc to an unpaused game after a failed
+     * attempt.  Online or unknown games never reach this helper.
+     */
+    private static boolean sendGamePauseKey() {
+        try {
+            Robot robot = new Robot();
+            AzureSpeechService.isSimulatingKeystroke = true;
+            AzureSpeechService.lastSimulatedInputTime = System.currentTimeMillis();
+            robot.keyPress(KeyEvent.VK_ESCAPE);
+            robot.keyRelease(KeyEvent.VK_ESCAPE);
+            Thread.sleep(600);
+            return true;
+        } catch (AWTException | InterruptedException failure) {
+            if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+            return false;
+        } finally {
+            AzureSpeechService.isSimulatingKeystroke = false;
         }
     }
 
