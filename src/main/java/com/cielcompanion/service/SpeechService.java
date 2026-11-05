@@ -403,8 +403,13 @@ public class SpeechService {
                     if (!hasEnqueued) {
                         boolean ownsMediaPause = enqueueSpeech();
                         hasEnqueued = true;
-                        if (onComplete != null && !ownsMediaPause) {
+                        // Never speak over active media when pause was not
+                        // confirmed. The old conditional only deferred when a
+                        // callback was supplied, so greetings and other
+                        // unkeyed lines could continue over YouTube/Netflix.
+                        if (!ownsMediaPause) {
                             System.out.println("[Media Transport] Commentary deferred: playback pause was not confirmed.");
+                            if (onComplete != null) onComplete.accept(false);
                             return;
                         }
                         try { Thread.sleep(600); } catch (Exception ignored) {}
