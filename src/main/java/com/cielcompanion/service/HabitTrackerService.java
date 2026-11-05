@@ -633,6 +633,35 @@ public class HabitTrackerService {
         }
     }
 
+    /** Persist a bounded, actionable transport failure for the repair queue. */
+    private static void recordMediaTransportFailure(String action, String detail) {
+        try {
+            Path directory = ProjectPaths.ciel().resolve("diagnostics").resolve("media-transport");
+            Files.createDirectories(directory);
+            String safeDetail = detail == null || detail.isBlank() ? "unknown" : detail;
+            String fingerprint = String.format("%020x", Integer.toUnsignedLong((action + "|" + safeDetail).hashCode()));
+            Path report = directory.resolve(fingerprint + ".json");
+            if (Files.exists(report)) return;
+            try (java.util.stream.Stream<Path> entries = Files.list(directory)) {
+                if (entries.filter(p -> p.toString().endsWith(".json")).limit(100).count() >= 100) return;
+            }
+            JsonObject issue = new JsonObject();
+            issue.addProperty("code", "MEDIA_TRANSPORT_FAILURE");
+            issue.addProperty("fingerprint", fingerprint);
+            issue.addProperty("component", "media_transport");
+            issue.addProperty("contract_version", 1);
+            issue.addProperty("status", "pending");
+            issue.addProperty("action", action);
+            issue.addProperty("created_at", System.currentTimeMillis() / 1000);
+            issue.addProperty("detail", safeDetail.substring(0, Math.min(safeDetail.length(), 1000)));
+            issue.addProperty("workaround", "Retry verified Windows media session, then foreground browser UI controls; never speak until pause is confirmed.");
+            Files.writeString(report, issue.toString(), StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
+            System.err.println("[Media Transport] Failure recorded for repair review: " + report.getFileName());
+        } catch (Exception ignored) {
+            // Diagnostics must never stop speech or media polling.
+        }
+    }
+
     private static boolean hasUsableMediaMetadata(String dom) {
         String status = extractFirstMatch(dom, "(?m)^METADATA_STATUS:[\t ]*([^\r\n]*)");
         String kind = extractFirstMatch(dom, "(?m)^MEDIA_KIND:[\t ]*([^\r\n]*)");
@@ -686,9 +715,17 @@ public class HabitTrackerService {
                 +" method="+(result.has("method")?result.get("method").getAsString():"unknown")
                 +" target="+(result.has("target")?result.get("target").getAsString():"unknown")
                 +" reason="+(result.has("reason")?result.get("reason").getAsString():"state verified"));
-            return process.exitValue()==0 && confirmed && (!requireChanged||changed);
+            boolean success = process.exitValue()==0 && confirmed && (!requireChanged||changed);
+            if (!success) {
+                String reason = result.has("reason") ? result.get("reason").getAsString() : "unconfirmed media state";
+                recordMediaTransportFailure(action, reason);
+            }
+            return success;
         } catch(Exception error) {
-            System.err.println("[Media Transport] "+action+" failed: "+error.getClass().getSimpleName());return false;
+            String detail = error.getClass().getSimpleName() + (error.getMessage() == null ? "" : ": " + error.getMessage());
+            System.err.println("[Media Transport] "+action+" failed: "+detail);
+            recordMediaTransportFailure(action, detail);
+            return false;
         } finally {if(process!=null)process.destroyForcibly();}
     }
 
