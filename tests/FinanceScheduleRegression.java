@@ -21,6 +21,9 @@ public class FinanceScheduleRegression {
         check(!FinanceSchedulePolicy.due(saturday.plusDays(1).withHour(10),CLOSED_MARKET_PLAN,now,0,0));
         check(FinanceSchedulePolicy.due(saturday.plusDays(1).withHour(20),CLOSED_MARKET_PLAN,now,0,0));
         long mon=monday.toInstant().toEpochMilli();
+        long yesterday=monday.minusDays(1).withHour(22).toInstant().toEpochMilli();
+        check(FinanceSchedulePolicy.due(monday,DAILY_BRIEFING,yesterday,0,0));
+        check(!FinanceSchedulePolicy.due(monday,DAILY_BRIEFING,mon-3600000,0,0));
         check(!FinanceSchedulePolicy.due(monday,NEWS_WATCH,mon-59*60000,0,0));
         check(FinanceSchedulePolicy.due(monday,NEWS_WATCH,mon-61*60000,0,0));
         check(FinanceSchedulePolicy.marketClosed(java.time.LocalDate.parse("2026-11-26")));
