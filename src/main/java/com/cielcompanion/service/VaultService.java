@@ -362,6 +362,20 @@ public class VaultService {
         }
     }
 
+    /**
+     * Build a valid, evidence-free result when a model endpoint is unavailable.
+     * This keeps the raw transcript lossless and lets the ordered queue advance;
+     * fact extraction remains empty until a later review pass succeeds.
+     */
+    private static String sourcePreservingLoreFallback(String source) {
+        JsonObject fallback = new JsonObject();
+        fallback.addProperty("cleaned_text", source == null ? "" : source);
+        fallback.add("lore_facts", new JsonArray());
+        fallback.addProperty("review_required", true);
+        fallback.addProperty("fallback_reason", "model_unavailable_or_invalid_response");
+        return fallback.toString();
+    }
+
     private static void saveLoreFactCandidates(JsonObject result, String volumeName, int chunkIndex,
                                                String sourceChunk) throws IOException {
         JsonArray facts = result.getAsJsonArray("lore_facts");
@@ -956,9 +970,20 @@ public class VaultService {
                                 + "Use the canonical English proper name for entity, never a pronoun, generic role, group label, or guessed correction. For Skills only, skill_type may be Ultimate Skills, Unique Skills, Extra Skills, Intrinsic Skills, Common Skills, Resistances, Arts, or blank. "
                                 + "Include only important facts explicitly stated in this excerpt. evidence must be a short exact quotation copied from SOURCE TEXT; omit any fact without a matching quote. "
                                 + "Do not use outside knowledge, foreshadow later events, or add headings outside the JSON.\n\nSOURCE TEXT:\n" + state.currentDraft;
-                        String result = awaitLorePhase(prompt,
-                                "You are a conservative source archivist. Preserve the transcript and extract only explicitly evidenced facts.",
-                                "proofread-and-extract", state, c);
+                        String result = null;
+                        try {
+                            result = awaitLorePhase(prompt,
+                                    "You are a conservative source archivist. Preserve the transcript and extract only explicitly evidenced facts.",
+                                    "proofread-and-extract", state, c);
+                        } catch (Exception phaseFailure) {
+                            // A provider outage must not strand the ordered lore queue.
+                            // The raw source is authoritative, so a deterministic
+                            // source-preserving fallback is safe and remains review-required.
+                            System.err.println("Ciel Lore Pipeline: phase=proofread-and-extract file="
+                                    + state.fileName + " chunk=" + (c + 1)
+                                    + " fallback=source-preserving reason="
+                                    + phaseFailure.getClass().getSimpleName());
+                        }
                         if (result != null && !result.isBlank() && !isErrorResponse(result)) {
                             // Validate before checkpointing: malformed JSON must never
                             // become a phase-3 checkpoint that every retry reparses.
@@ -996,9 +1021,16 @@ public class VaultService {
                             state.currentPhase = 3;
                             saveState(state);
                         } else {
-                            System.err.println("Ciel Warning: Pipeline sweep timed out or failed on Pass 2. Safely halting to prevent data rot.");
-                            fileCompletedSuccessfully = false;
-                            break;
+                            // Preserve the exact source (apart from timestamp cleanup)
+                            // and continue. No facts are extracted from an unverified
+                            // model response, so this cannot create unsupported canon.
+                            result = sourcePreservingLoreFallback(state.currentDraft);
+                            System.err.println("Ciel Lore Pipeline: file=" + state.fileName
+                                    + " chunk=" + (c + 1)
+                                    + " status=review-required source-preserving-fallback");
+                            state.currentDraft = result;
+                            state.currentPhase = 3;
+                            saveState(state);
                         }
                     }
                     
