@@ -465,6 +465,17 @@ public class AzureSpeechService {
             clip.open(playbackStream);
             if (!clip.isOpen()) throw new IllegalStateException("Java Sound output line did not open");
             if (playbackStream != audioStream) playbackStream.close();
+
+            // For generated media commentary, preparation happens while the
+            // player continues. Pause only at the final audio handoff so the
+            // speaker wake/preroll cannot create a long silent gap after the
+            // media has already stopped.
+            if (!SpeechService.ensureMediaPausedBeforePlayback()) {
+                clip.close();
+                activeClip = null;
+                System.err.println("[Media Transport] Audio handoff cancelled; verified pause was unavailable.");
+                return false;
+            }
             
             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
             CielState.getCielGui().ifPresent(gui -> gui.setSpeechLevel(0.14f));

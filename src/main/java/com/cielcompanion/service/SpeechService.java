@@ -54,6 +54,8 @@ public class SpeechService {
 
     private static final AtomicInteger speechQueueCount = new AtomicInteger(0);
     private static volatile boolean mediaWasPausedForSpeech = false;
+    private static volatile boolean mediaPauseDeferredForSpeech = false;
+    private static volatile boolean mediaPauseFailedForSpeech = false;
     private static volatile boolean gameWasPausedForSpeech = false;
     private static final Object pauseLock = new Object();
     // Keep the media/GUI handoff tight without leaving the orb visible for a
@@ -94,12 +96,13 @@ public class SpeechService {
         return isActivelySpeaking.get();
     }
 
-    private static boolean enqueueSpeech() {
+    private static boolean enqueueSpeech(boolean deferMediaPause) {
         synchronized (pauseLock) {
             boolean mediaActiveForQueue = false;
             boolean gamingActive = ShortTermMemoryService.getMemory().isInGamingSession()
                     || "Gaming".equalsIgnoreCase(HabitTrackerService.getCurrentCategory());
             if (speechQueueCount.getAndIncrement() == 0) {
+                mediaPauseFailedForSpeech = false;
                 SystemMonitor.SystemMetrics metrics = SystemMonitor.getSystemMetrics();
                 String currentCategory = HabitTrackerService.getCurrentCategory();
                 String activeProcLower = metrics.activeProcessName() != null ? metrics.activeProcessName().toLowerCase() : "";
@@ -114,8 +117,17 @@ public class SpeechService {
                 boolean isGamingActive = gamingActive;
 
                 if (isMediaActive && !isGamingActive) {
-                    mediaWasPausedForSpeech = HabitTrackerService.pauseMediaForSpeech();
-                    System.out.println("[Media Transport] Speech owns pause=" + mediaWasPausedForSpeech);
+                    if (deferMediaPause) {
+                        // Generated media commentary may take several seconds
+                        // to synthesize. Keep playback running while it is
+                        // prepared; the verified pause is requested by the
+                        // audio backend immediately before clip.start().
+                        mediaPauseDeferredForSpeech = true;
+                        System.out.println("[Media Transport] Deferring pause until provider audio is ready.");
+                    } else {
+                        mediaWasPausedForSpeech = HabitTrackerService.pauseMediaForSpeech();
+                        System.out.println("[Media Transport] Speech owns pause=" + mediaWasPausedForSpeech);
+                    }
                 }
 
                 if (isGamingActive) {
@@ -139,7 +151,24 @@ public class SpeechService {
             // false and media commentary was discarded as an unconfirmed
             // pause, which made paused YouTube videos appear silently ignored.
             if (gamingActive && !gameWasPausedForSpeech) return false;
-            return !mediaActiveForQueue || mediaWasPausedForSpeech || HabitTrackerService.isMediaPlaybackPaused();
+            return !mediaActiveForQueue || mediaWasPausedForSpeech
+                    || mediaPauseDeferredForSpeech || HabitTrackerService.isMediaPlaybackPaused();
+        }
+    }
+
+    /** Called by the provider playback path at the final audio handoff. */
+    public static boolean ensureMediaPausedBeforePlayback() {
+        synchronized (pauseLock) {
+            if (!mediaPauseDeferredForSpeech) return !mediaPauseFailedForSpeech;
+            if (mediaWasPausedForSpeech || HabitTrackerService.isMediaPlaybackPaused()) {
+                mediaPauseDeferredForSpeech = false;
+                return true;
+            }
+            mediaWasPausedForSpeech = HabitTrackerService.pauseMediaForSpeech();
+            mediaPauseDeferredForSpeech = false;
+            mediaPauseFailedForSpeech = !mediaWasPausedForSpeech;
+            System.out.println("[Media Transport] Speech owns pause=" + mediaWasPausedForSpeech + " (audio handoff)");
+            return mediaWasPausedForSpeech;
         }
     }
 
@@ -170,6 +199,10 @@ public class SpeechService {
                 return;
             }
             becameEmpty = speechQueueCount.decrementAndGet() == 0;
+            if (becameEmpty) {
+                mediaPauseDeferredForSpeech = false;
+                mediaPauseFailedForSpeech = false;
+            }
         }
         if (becameEmpty) {
             CompletableFuture.delayedExecutor(SPEECH_HANDOFF_SETTLE_MS, TimeUnit.MILLISECONDS).execute(() -> {
@@ -418,7 +451,7 @@ public class SpeechService {
                     }
 
                     if (!hasEnqueued) {
-                        boolean ownsMediaPause = enqueueSpeech();
+                        boolean ownsMediaPause = enqueueSpeech("media_commentary".equalsIgnoreCase(key));
                         hasEnqueued = true;
                         // Never speak over active media when pause was not
                         // confirmed. The old conditional only deferred when a
@@ -556,7 +589,7 @@ public class SpeechService {
                         }
 
                         if (!hasEnqueued) {
-                            enqueueSpeech();
+                            enqueueSpeech(false);
                             hasEnqueued = true;
                             try { Thread.sleep(600); } catch (Exception ignored) {}
                         }
