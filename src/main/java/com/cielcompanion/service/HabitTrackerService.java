@@ -224,6 +224,15 @@ public class HabitTrackerService {
                 || dom.matches("(?s).*\\b(media_kind|media_type)\\s*:\\s*(music|song|audio)\\b.*");
     }
 
+    /** Explicit short-form feeds are non-interruptive even when duration is unavailable. */
+    static boolean isShortFormMedia(String title, String domText, String activeUrl) {
+        String combined = ((title == null ? "" : title) + " "
+                + (domText == null ? "" : domText) + " "
+                + (activeUrl == null ? "" : activeUrl)).toLowerCase(Locale.ROOT);
+        return combined.matches("(?s).*\\b(shorts?|short-form|reels?|tiktok)\\b.*")
+                || combined.contains("/shorts/") || combined.contains("/reel/");
+    }
+
     public static void initialize() {
         loadProcessCategories();
         loadMediaList();
@@ -860,7 +869,9 @@ public class HabitTrackerService {
             // silently and never enters the commentary path.
             boolean isMusic = verifiedMetadata && filmTitle != null && !filmTitle.isBlank()
                     && isMusicMedia(filmTitle, cachedDomText, mediaKind);
-            boolean isShortMedia = (isEpisode || isFilm) && cachedDurationMinutes > 0 && cachedDurationMinutes < 10;
+            boolean isShortMedia = (isEpisode || isFilm) &&
+                    (isShortFormMedia(filmTitle, cachedDomText, cachedActiveUrl)
+                            || (cachedDurationMinutes > 0 && cachedDurationMinutes < 10));
             boolean playbackFresh = MediaObservation.freshPlayback(
                     cachedPlaybackState, lastPlaybackEvidenceAt, System.currentTimeMillis());
 
