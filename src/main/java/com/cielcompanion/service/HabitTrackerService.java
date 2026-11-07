@@ -855,7 +855,12 @@ public class HabitTrackerService {
             boolean isFilm = !isEpisode && ("FILM".equalsIgnoreCase(mediaKind == null ? "" : mediaKind.trim())
                     || "VIDEO".equalsIgnoreCase(mediaKind == null ? "" : mediaKind.trim()))
                     && verifiedMetadata && filmTitle != null && !filmTitle.isBlank();
-            boolean isMusic = isFilm && isMusicMedia(filmTitle, cachedDomText, mediaKind);
+            // Music can be labelled MUSIC/SONG/AUDIO by a provider instead of
+            // VIDEO/FILM; classify it independently so it is always tracked
+            // silently and never enters the commentary path.
+            boolean isMusic = verifiedMetadata && filmTitle != null && !filmTitle.isBlank()
+                    && isMusicMedia(filmTitle, cachedDomText, mediaKind);
+            boolean isShortMedia = (isEpisode || isFilm) && cachedDurationMinutes > 0 && cachedDurationMinutes < 10;
             boolean playbackFresh = MediaObservation.freshPlayback(
                     cachedPlaybackState, lastPlaybackEvidenceAt, System.currentTimeMillis());
 
@@ -867,7 +872,18 @@ public class HabitTrackerService {
                 String musicKey = "MUSIC_" + currentMediaTitle.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
                 if (!musicKey.equals(currentEpisodeHash)) {
                     currentEpisodeHash = musicKey;
+                    MusicLibraryService.record(cachedDomText, filmTitle, cachedActiveUrl);
                     System.out.println("[HabitTracker] Music media detected; commentary and playback transport suppressed for '"
+                            + currentMediaTitle + "'.");
+                }
+            } else if (isShortMedia) {
+                // Short-form videos and clips are tracked but never interrupted.
+                String shortKey = "SHORT_" + (isEpisode ? (series + "_" + ep) : filmTitle)
+                        .toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+                if (!shortKey.equals(currentEpisodeHash)) {
+                    currentEpisodeHash = shortKey;
+                    currentMediaTitle = isEpisode ? series.trim() + " - " + ep.trim() : filmTitle.trim();
+                    System.out.println("[HabitTracker] Short media (<10m) detected; commentary and playback transport suppressed for '"
                             + currentMediaTitle + "'.");
                 }
             } else if (isEpisode || isFilm) {
