@@ -214,6 +214,16 @@ public class HabitTrackerService {
         return false;
     }
 
+    /** Music videos and song/audio uploads are tracked silently. */
+    static boolean isMusicMedia(String title, String domText, String mediaKind) {
+        String titleText = title == null ? "" : title.toLowerCase(Locale.ROOT);
+        String dom = domText == null ? "" : domText.toLowerCase(Locale.ROOT);
+        String kind = mediaKind == null ? "" : mediaKind.trim().toLowerCase(Locale.ROOT);
+        if (kind.equals("music") || kind.equals("song") || kind.equals("audio")) return true;
+        return titleText.matches(".*(\\[?\\s*music\\s+video|official\\s+(music\\s+)?video|official\\s+audio|lyrics?(?:\\s+video)?|audio\\s+only|\\bost\\b|soundtrack).*")
+                || dom.matches("(?s).*\\b(media_kind|media_type)\\s*:\\s*(music|song|audio)\\b.*");
+    }
+
     public static void initialize() {
         loadProcessCategories();
         loadMediaList();
@@ -845,10 +855,22 @@ public class HabitTrackerService {
             boolean isFilm = !isEpisode && ("FILM".equalsIgnoreCase(mediaKind == null ? "" : mediaKind.trim())
                     || "VIDEO".equalsIgnoreCase(mediaKind == null ? "" : mediaKind.trim()))
                     && verifiedMetadata && filmTitle != null && !filmTitle.isBlank();
+            boolean isMusic = isFilm && isMusicMedia(filmTitle, cachedDomText, mediaKind);
             boolean playbackFresh = MediaObservation.freshPlayback(
                     cachedPlaybackState, lastPlaybackEvidenceAt, System.currentTimeMillis());
 
-            if (isEpisode || isFilm) {
+            if (isMusic) {
+                // Music should never be interrupted for commentary. Keep the
+                // verified identity for history, but do not advance commentary
+                // timers or invoke media transport pause/resume.
+                currentMediaTitle = filmTitle.trim();
+                String musicKey = "MUSIC_" + currentMediaTitle.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+                if (!musicKey.equals(currentEpisodeHash)) {
+                    currentEpisodeHash = musicKey;
+                    System.out.println("[HabitTracker] Music media detected; commentary and playback transport suppressed for '"
+                            + currentMediaTitle + "'.");
+                }
+            } else if (isEpisode || isFilm) {
                 if (isEpisode) {
                     currentMediaTitle = series.trim() + " - " + ep.trim();
                 } else {
