@@ -218,6 +218,11 @@ public class FinanceService {
     private static boolean isFinanceFailure(String result) {
         if (result == null) return true;
         String normalized = result.trim().toLowerCase(java.util.Locale.ROOT);
+        // A model response can fail policy validation while the deterministic
+        // holdings fallback remains a complete, evidence-bounded briefing.
+        // Only the explicitly marked fallback with usable holdings data is a
+        // successful stage; malformed fallback output must still retry.
+        if (isValidatedHoldingsFallback(normalized)) return false;
         // Ordinary prose may discuss unavailable quotes or past timeouts.
         // Only explicit stage/error markers establish a failed stage.
         return normalized.isEmpty() || normalized.startsWith("error:")
@@ -230,9 +235,24 @@ public class FinanceService {
                 || normalized.startsWith("weekday news watch unavailable:")
                 || normalized.startsWith("portfolio news watch unavailable:")
                 || normalized.contains("model review unavailable. these dated discovery headlines")
+                || normalized.startsWith("finance status: validated holdings fallback")
                 || normalized.startsWith("master, the recommendation models did not return prose this cycle")
+                || normalized.startsWith("master, i could not produce my usual strategic review")
+                || normalized.startsWith("master, the recommendation model was unavailable")
                 || normalized.startsWith("### market scan status\nthe narrative model was unavailable")
                 || normalized.matches("(?s)^(market scan|strategic recommendations|portfolio update|finance pipeline) (failed:|returned no result|timed out|unavailable).*" );
+    }
+
+    /** Validate the narrow deterministic fallback emitted by ciel_finance.py. */
+    private static boolean isValidatedHoldingsFallback(String result) {
+        if (result == null) return false;
+        String normalized = result.trim().toLowerCase(java.util.Locale.ROOT);
+        boolean marker = normalized.startsWith("finance status: validated holdings fallback")
+                || normalized.startsWith("master, the recommendation models did not return prose this cycle");
+        return marker
+                && normalized.contains("tracked value is $")
+                && normalized.contains("rules-based read")
+                && normalized.contains("model status:");
     }
 
     private static boolean isFinanceRouterReady() {
@@ -258,7 +278,8 @@ public class FinanceService {
                     System.err.println("[Raphael â€” Financial Analysis] Stage '" + label + "' returned an empty result.");
                     return label + " returned no result.";
                 }
-                System.out.println("[Raphael â€” Financial Analysis] Stage '" + label + "' completed (" + result.length() + " chars).");
+                String resultKind = isValidatedHoldingsFallback(result) ? "; validated holdings fallback" : "";
+                System.out.println("[Raphael â€” Financial Analysis] Stage '" + label + "' completed (" + result.length() + " chars" + resultKind + ").");
                 return result;
             } catch (Exception e) {
                 String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
