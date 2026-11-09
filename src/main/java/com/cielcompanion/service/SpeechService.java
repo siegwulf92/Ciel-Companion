@@ -261,7 +261,7 @@ public class SpeechService {
         if (sequentialSpeechTask != null) {
             sequentialSpeechTask.cancel(true);
         }
-        AzureSpeechService.isIntentionalCancellation = true; 
+        AzureSpeechService.isIntentionalCancellation = true;
         if (currentSpeechTask != null) {
             currentSpeechTask.cancel(true);
         }
@@ -324,7 +324,7 @@ public class SpeechService {
             if (!isGreeting && ShortTermMemoryService.getMemory().isInGamingSession() && !ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
                 boolean isGameLaunch = "game_launch".equals(key);
                 boolean isPhase3Or4 = ShortTermMemoryService.getMemory().getCurrentPhase() >= 3;
-                
+
                 if (!isGameLaunch && !isPhase3Or4) {
                     System.out.println("Ciel Debug: Suppressing non-critical speech (" + key + ") due to active Gaming Mode.");
                     if (onComplete != null) onComplete.accept(false);
@@ -459,14 +459,8 @@ public class SpeechService {
                         // unkeyed lines could continue over YouTube/Netflix.
                         if (!ownsMediaPause) {
                             System.out.println("[Media Transport] Commentary deferred: playback pause was not confirmed.");
-                            if (onComplete != null) onComplete.accept(false);
                             return;
                         }
-                        try { Thread.sleep(600); } catch (Exception ignored) {}
-                    }
-
-                    if (needsLanguageConversion) {
-                        CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
                     }
 
                     if (taskGeneration != speechGeneration.get() || Thread.currentThread().isInterrupted()) return;
@@ -519,7 +513,7 @@ public class SpeechService {
                 SpeechMood sequenceMood = resolveSpeechMood();
                 String sequencePitch = applyHumanVariance(sequenceMood.pitch());
                 for (int i = 0; i < lines.size(); i++) {
-                    
+
                     if (WindowsApiService.isSessionLocked() || sequenceCancelled || Thread.currentThread().isInterrupted()
                             || taskGeneration != speechGeneration.get()) {
                         System.out.println("Ciel Debug: Sequential speech loop explicitly broken via flag.");
@@ -636,9 +630,8 @@ public class SpeechService {
             isActivelySpeaking.set(true);
             AzureSpeechService.isIntentionalCancellation = false;
 
-            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
-
             boolean breezeSuccess = false;
+            String deliveryProvider = "none";
             // Once a Breeze file exists, it is the preferred local voice. A
             // miss does not spend credits or delay speech: Azure supplies the
             // line immediately and queues a one-time Breeze prefetch below.
@@ -649,6 +642,7 @@ public class SpeechService {
                 if (breezeCacheHit || warmupComplete) {
                     breezeSuccess = BreezeSpeechService.speak(text, key, style, pitch, langCode);
                     if (breezeSuccess) {
+                        deliveryProvider = "breeze";
                         System.out.println(breezeCacheHit
                                 ? "[Breeze TTS] Cached line selected before Azure."
                                 : "[Breeze TTS] Warm-up threshold reached; generated line selected before Azure.");
@@ -660,6 +654,7 @@ public class SpeechService {
             if (!breezeSuccess && AzureSpeechService.isAvailable()) {
                 azureSuccess = AzureSpeechService.speak(text, key, style, pitch, langCode);
                 if (azureSuccess) {
+                    deliveryProvider = "azure";
                     System.out.println("Ciel Debug: Azure Speech successful (Key: " + (key != null ? key : "Dynamic") + ", Style: " + style + ")");
                     if (!isNonPrefetchableSpeechKey(key)) {
                         queueBreezePrefetch(text, key, style, pitch, langCode);
@@ -674,6 +669,7 @@ public class SpeechService {
             if (!breezeSuccess && !azureSuccess && BreezeSpeechService.isAvailable() && breezeEligible) {
                 breezeSuccess = BreezeSpeechService.speak(text, key, style, pitch, langCode);
                 if (breezeSuccess) {
+                    deliveryProvider = "breeze";
                     System.out.println("Ciel Debug: Breeze Speech successful (generated fallback).");
                 }
             }
@@ -718,6 +714,7 @@ public class SpeechService {
                             // speech gets the same PCM envelope, word timing,
                             // GUI state, and media handoff as Breeze/Azure.
                             sapiSuccess = AzureSpeechService.playProviderWavFile(fallbackWav, "SapiFallback", false, text);
+                            if (sapiSuccess) deliveryProvider = "sapi";
                         } else if (p.isAlive()) {
                             p.destroyForcibly();
                         }
@@ -729,7 +726,15 @@ public class SpeechService {
                     }
                 }
             }
-            return azureSuccess || breezeSuccess || sapiSuccess;
+            boolean delivered = azureSuccess || breezeSuccess || sapiSuccess;
+            if (delivered) {
+                System.out.println("[Speech Delivery] status=completed key=" + safeSpeechLogKey(key)
+                        + " provider=" + deliveryProvider + " chars=" + text.codePointCount(0, text.length()));
+            } else {
+                System.err.println("[Speech Delivery] status=failed key=" + safeSpeechLogKey(key)
+                        + " reason=all-providers-unavailable");
+            }
+            return delivered;
         } finally {
             isActivelySpeaking.set(false);
             if (voiceListener != null) voiceListener.setInternalMute(false);
@@ -753,6 +758,10 @@ public class SpeechService {
         // Provider order is enforced in executeSpeechBlocking. This flag keeps
         // Breeze available for cache hits and for the final hosted fallback.
         return BreezeSpeechService.isAvailable();
+    }
+
+    private static String safeSpeechLogKey(String key) {
+        return (key == null || key.isBlank()) ? "dynamic" : key.replaceAll("[^A-Za-z0-9._:-]", "_");
     }
 
     private static boolean isNonPrefetchableSpeechKey(String key) {

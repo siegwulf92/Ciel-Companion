@@ -8,7 +8,11 @@ public class JapaneseSpeechRegression {
         String actual = (String) method.invoke(null, nativeText);
         if (!nativeText.equals(actual)) throw new AssertionError("Native Japanese changed: " + actual);
         String mixed = (String) method.invoke(null, "Taylor様、大好きだよ。");
-        if (!mixed.contains("テイラー") || !mixed.contains("大好きだよ")) throw new AssertionError("Name pronunciation or Japanese lost: " + mixed);
+        if (!mixed.contains("テイラー") || !mixed.contains("大好きだよ")) {
+            StringBuilder points = new StringBuilder();
+            mixed.codePoints().forEach(point -> points.append(String.format("U+%04X ", point)));
+            throw new AssertionError("Name pronunciation or Japanese lost; codepoints=" + points);
+        }
         System.out.println("Japanese speech preservation and proper-name pronunciation passed.");
         System.exit(0); // AIEngine owns background executors in the application.
     }

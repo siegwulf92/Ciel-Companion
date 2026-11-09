@@ -128,6 +128,13 @@ public class AIEngine {
         System.out.println("[Raphael — Japanese Speech Formatting] Models load on demand; startup inference warm-up skipped.");
     }
 
+    private static final int PHONOKANA_MAX_ATTEMPTS = 3;
+    private static final long PHONOKANA_ATTEMPT_TIMEOUT_SECONDS = 35L;
+    // This covers three bounded router calls plus short retry backoff.  It is
+    // deliberately larger than a single model turn, while still preventing a
+    // stuck formatter from holding the speech worker forever.
+    private static final long PHONOKANA_TOTAL_TIMEOUT_SECONDS = 115L;
+
     public static CompletableFuture<String> transliterateAsync(String englishText) {
         return CompletableFuture.supplyAsync(() -> {
             if (englishText == null || englishText.isBlank()) return "";
@@ -141,13 +148,25 @@ public class AIEngine {
             // such as "address" remain unchanged.
             final String phoneticSource = expandInitialisms(englishText);
 
-            String fallbackResult = attemptTransliteration(phoneticSource);
-            if (fallbackResult != null && !ALPHA_PATTERN.matcher(fallbackResult).find()) {
-                return fallbackResult; 
+            String lastFailure = "unavailable";
+            for (int attempt = 1; attempt <= PHONOKANA_MAX_ATTEMPTS; attempt++) {
+                PhonokanaAttempt result = attemptTransliteration(phoneticSource, attempt);
+                if (result.katakana() != null) return result.katakana();
+                lastFailure = result.failure();
+                if (attempt < PHONOKANA_MAX_ATTEMPTS) {
+                    try {
+                        Thread.sleep(350L * attempt);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("Phonokana formatting interrupted", interrupted);
+                    }
+                }
             }
 
             String localFallback = localKatakanaFallback(phoneticSource);
-            System.err.println("[Speech Phonetics] Formatter endpoint unavailable or returned unusable output; using the offline phoneme converter.");
+            System.err.println("[Speech Phonetics] status=fallback pathway=local attempts="
+                    + PHONOKANA_MAX_ATTEMPTS + " reason=" + safeLogValue(lastFailure)
+                    + " policy=word-aligned-only");
             return localFallback;
         }, translationExecutor);
     }
@@ -188,8 +207,14 @@ public class AIEngine {
 
     public static String transliterateToKatakanaSync(String englishText) {
         try {
-            return transliterateAsync(englishText).get(45, TimeUnit.SECONDS);
+            return transliterateAsync(englishText).get(PHONOKANA_TOTAL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.TimeoutException timeout) {
+            System.err.println("[Speech Phonetics] status=fallback pathway=local reason=java-total-timeout timeout_s="
+                    + PHONOKANA_TOTAL_TIMEOUT_SECONDS);
+            return localKatakanaFallback(englishText);
         } catch (Exception e) {
+            System.err.println("[Speech Phonetics] status=fallback pathway=local reason=java-"
+                    + safeLogValue(e.getClass().getSimpleName()));
             return localKatakanaFallback(englishText);
         }
     }
@@ -198,79 +223,115 @@ public class AIEngine {
         if (!ALPHA_PATTERN.matcher(text).find()) return text;
         java.nio.file.Path root = com.cielcompanion.util.ProjectPaths.root();
         Process process = null;
+        java.nio.file.Path requestFile = null;
+        java.nio.file.Path responseFile = null;
         try {
-            process = new ProcessBuilder(com.cielcompanion.util.ProjectPaths.pythonBackgroundExecutable(),
-                root.resolve("Ciel/skills/ciel_phonetics.py").toString())
-                .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+            java.nio.file.Path localDir = root.resolve(".local");
+            java.nio.file.Files.createDirectories(localDir);
+            requestFile = java.nio.file.Files.createTempFile(localDir, "ciel-phonokana-request-", ".json");
+            responseFile = java.nio.file.Files.createTempFile(localDir, "ciel-phonokana-response-", ".json");
             JsonObject payload = new JsonObject(); payload.addProperty("text", text);
-            try (var input = process.getOutputStream()) { input.write(gson.toJson(payload).getBytes(StandardCharsets.UTF_8)); }
-            final Process running = process;
-            var output = CompletableFuture.supplyAsync(() -> {
-                try { return new String(running.getInputStream().readNBytes(128000), StandardCharsets.UTF_8); }
-                catch (Exception e) { return ""; }
-            });
-            if (!process.waitFor(12, TimeUnit.SECONDS) || process.exitValue()!=0) throw new IllegalStateException("Local phoneme converter failed");
-            JsonObject result=JsonParser.parseString(output.get(1,TimeUnit.SECONDS)).getAsJsonObject();
+            java.nio.file.Files.writeString(requestFile, gson.toJson(payload), StandardCharsets.UTF_8);
+            process = new ProcessBuilder(com.cielcompanion.util.ProjectPaths.pythonBackgroundExecutable(),
+                    root.resolve("Ciel/skills/katakana_transliterator.py").toString(),
+                    "--request-file", requestFile.toString(), "--response-file", responseFile.toString())
+                .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+            if (!process.waitFor(25, TimeUnit.SECONDS) || process.exitValue()!=0)
+                throw new IllegalStateException("Local phoneme converter failed");
+            JsonObject result=JsonParser.parseString(java.nio.file.Files.readString(responseFile, StandardCharsets.UTF_8)).getAsJsonObject();
             String kana=result.get("katakana").getAsString();
-            if (ALPHA_PATTERN.matcher(kana).find()) throw new IllegalStateException("Unconverted speech rejected");
+            // The local helper is deterministic and can preserve an existing
+            // Japanese honorific/name fragment in a mixed proper name. Router
+            // responses remain subject to the stricter Katakana-only audit.
+            if (ALPHA_PATTERN.matcher(kana).find() || kana.isBlank())
+                throw new IllegalStateException("Unconverted or malformed local speech rejected");
             return kana;
         } catch (Exception error) {
             System.err.println("[Speech Phonetics] Pronunciation unavailable; refusing unsafe letter-spelling fallback.");
             throw new IllegalStateException("Safe pronunciation unavailable",error);
-        } finally { if(process!=null) process.destroyForcibly(); }
+        } finally {
+            if(process!=null) process.destroyForcibly();
+            try { if (requestFile != null) java.nio.file.Files.deleteIfExists(requestFile); } catch (Exception ignored) {}
+            try { if (responseFile != null) java.nio.file.Files.deleteIfExists(responseFile); } catch (Exception ignored) {}
+        }
     }
 
-    private static String attemptTransliteration(String englishText) {
+    private record PhonokanaAttempt(String katakana, String failure) {}
+
+    private static PhonokanaAttempt attemptTransliteration(String englishText, int attempt) {
         activeSwarmTasks.incrementAndGet();
+        final long started = System.nanoTime();
+        final String url = System.getProperty("ciel.phonokana.endpoint", "http://localhost:8000/katakana");
         try {
-            String url = "http://localhost:8000/katakana";
-            
             JsonObject payload = new JsonObject();
             payload.addProperty("text", englishText);
-            
             try {
-                    HttpRequest request = HttpRequest.newBuilder()
-                            .uri(URI.create(url))
-                            .header("Content-Type", "application/json")
-                            .timeout(Duration.ofSeconds(20))
-                            .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
-                            .build();
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("Content-Type", "application/json")
+                        .timeout(Duration.ofSeconds(PHONOKANA_ATTEMPT_TIMEOUT_SECONDS))
+                        .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
+                        .build();
 
-                    HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-                    if (response.statusCode() == 200) {
-                        JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
-                        if (json.has("status") && !json.get("status").getAsString().equals("CACHE_HIT")) {
-                            System.out.println("[Raphael — Phonokana] pronunciation_path=" + json.get("status").getAsString());
-                        }
-                        // The router must prove that its output came from the
-                        // word-aligned phonetic path.  A model can return
-                        // perfectly valid Japanese while translating the
-                        // sentence; accepting that would make the Japanese
-                        // TTS speak a different meaning.  Older routers omit
-                        // this marker and therefore fall back locally.
-                        if (json.has("katakana") && json.has("audit")) {
-                            String audit = json.get("audit").getAsString().toLowerCase(java.util.Locale.ROOT);
-                            boolean audited = audit.equals("word-aligned")
-                                    || audit.equals("word-aligned-cache")
-                                    || audit.equals("deterministic-word-path");
-                            if (audited) {
-                                String result = json.get("katakana").getAsString();
-                                if (!result.contains("エラー")) return result;
-                            }
-                        }
-                    } else {
-                        System.err.println("[Raphael — Japanese Speech Formatting] Transliteration endpoint returned HTTP " + response.statusCode() + ".");
-                    }
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+                if (response.statusCode() != 200) {
+                    String failure = "http-" + response.statusCode();
+                    System.err.println("[Speech Phonetics] status=retry attempt=" + attempt + "/"
+                            + PHONOKANA_MAX_ATTEMPTS + " endpoint=router failure=" + failure
+                            + " elapsed_ms=" + elapsedMs);
+                    return new PhonokanaAttempt(null, failure);
+                }
+                JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
+                String audit = json.has("audit") ? json.get("audit").getAsString().toLowerCase(java.util.Locale.ROOT) : "missing";
+                boolean audited = audit.equals("word-aligned")
+                        || audit.equals("word-aligned-cache")
+                        || audit.equals("deterministic-word-path");
+                String result = json.has("katakana") ? json.get("katakana").getAsString() : "";
+                if (audited && isStrictKatakana(result)) {
+                    String path = json.has("status") ? safeLogValue(json.get("status").getAsString()) : "unknown";
+                    String review = json.has("context_review") ? safeLogValue(json.get("context_review").getAsString()) : "not-reported";
+                    System.out.println("[Speech Phonetics] status=success attempt=" + attempt + "/"
+                            + PHONOKANA_MAX_ATTEMPTS + " endpoint=router audit=" + audit
+                            + " path=" + path + " context_review=" + review + " elapsed_ms=" + elapsedMs);
+                    return new PhonokanaAttempt(result, "");
+                }
+                String failure = !audited ? "audit-" + audit : "invalid-katakana";
+                System.err.println("[Speech Phonetics] status=retry attempt=" + attempt + "/"
+                        + PHONOKANA_MAX_ATTEMPTS + " endpoint=router failure=" + safeLogValue(failure)
+                        + " elapsed_ms=" + elapsedMs);
+                return new PhonokanaAttempt(null, failure);
             } catch (Exception e) {
-            String detail = e.getMessage();
-            if (detail == null || detail.isBlank()) detail = e.getClass().getSimpleName();
-            System.err.println("[Raphael — Japanese Speech Formatting] Transliteration request failed at " + url
-                    + ": " + detail);
+                long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+                String failure = e instanceof java.net.http.HttpTimeoutException ? "timeout"
+                        : e.getClass().getSimpleName();
+                System.err.println("[Speech Phonetics] status=retry attempt=" + attempt + "/"
+                        + PHONOKANA_MAX_ATTEMPTS + " endpoint=router failure=" + safeLogValue(failure)
+                        + " elapsed_ms=" + elapsedMs);
+                return new PhonokanaAttempt(null, failure);
             }
         } finally {
             activeSwarmTasks.decrementAndGet();
         }
-        return null;
+    }
+
+    /** Reject semantic translations, Latin leftovers, and malformed provider payloads. */
+    private static boolean isStrictKatakana(String value) {
+        if (value == null || value.isBlank() || value.contains("エラー") || ALPHA_PATTERN.matcher(value).find()) return false;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            boolean allowed = Character.isWhitespace(ch)
+                    || (ch >= '\u30A0' && ch <= '\u30FF')
+                    || (ch >= '\u3000' && ch <= '\u303F')
+                    || Character.isDigit(ch);
+            if (!allowed) return false;
+        }
+        return true;
+    }
+
+    private static String safeLogValue(String value) {
+        if (value == null || value.isBlank()) return "unknown";
+        return value.replaceAll("[^A-Za-z0-9._:-]", "_");
     }
 
     public static CompletableFuture<String> generateSilentLogic(String userMessage, String systemContext) {
@@ -344,7 +405,7 @@ public class AIEngine {
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
                     // CRITICAL FIX: Extremely fast 15-second timeout for UI interaction tracking so it doesn't freeze the system shutdown
-                    .timeout(Duration.ofSeconds(15)) 
+                    .timeout(Duration.ofSeconds(15))
                     .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                     .build();
 
@@ -365,20 +426,20 @@ public class AIEngine {
         if (conversationHistory.isEmpty()) return;
 
         long idleTimeMs = System.currentTimeMillis() - lastInteractionTime;
-        if (idleTimeMs > 5 * 60 * 1000) { 
+        if (idleTimeMs > 5 * 60 * 1000) {
             System.out.println("Ciel Debug: Conversation idle. Digesting short-term buffer into Long-Term Episodic Memory...");
-            
+
             JsonArray historyArray = new JsonArray();
             List<JsonObject> digestedSnapshot = new ArrayList<>(conversationHistory);
             for (JsonObject obj : digestedSnapshot) historyArray.add(obj);
-            
-            String prompt = "You are the memory core of Ciel. Review this conversation history array:\n" + 
-                            gson.toJson(historyArray) + 
+
+            String prompt = "You are the memory core of Ciel. Review this conversation history array:\n" +
+                            gson.toJson(historyArray) +
                             "\nExtract any meaningful facts, preferences, or narrative conclusions into a concise 1-sentence summary. " +
                             "CRITICAL: Write the summary from Ciel's internal perspective. You MUST refer to the human strictly as 'Master' or 'Master Taylor', NEVER as 'the user'. " +
                             "Reply strictly in JSON: { \"actionable\": true/false, \"summary\": \"the extracted fact\" }. " +
                             "If it was just casual greetings or small talk, set actionable to false.";
-                            
+
             evaluateBackground(prompt, "You are a memory extraction sub-process.").thenAccept(result -> {
                 if (result == null || !result.has("actionable")) {
                     System.err.println("Ciel Warning: Memory digestion returned no valid result; keeping the conversation buffer.");
@@ -401,21 +462,21 @@ public class AIEngine {
 
     public static void chatFast(String userMessage, String systemContext, Runnable onComplete) {
         System.out.println("[Raphael — Local Dialogue] Requesting the single available local inference slot.");
-        
+
         activeSwarmTasks.incrementAndGet();
         addHistory("user", userMessage);
-        
+
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.PERSONALITY);
-        
+
         JsonObject payload = buildPayloadWithHistory(ModelManager.ModelTier.PERSONALITY, systemContext, false);
         boolean groundedLore = systemContext != null && systemContext.contains("--- LOCAL TENSURA SOURCE RETRIEVAL ---");
         payload.addProperty("model", groundedLore ? "auto" : "local");
         payload.addProperty("task_intent", groundedLore ? "Grounded Lore Answer" : "Local Reflex Dialogue");
-        
+
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofMinutes(15)) 
+                .timeout(Duration.ofMinutes(15))
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
                 .build();
 
@@ -425,12 +486,12 @@ public class AIEngine {
                         triggerFallback(userMessage, systemContext, onComplete);
                         return;
                     }
-                    
+
                     String rawContent = ModelManager.extractMessageContent(response.body());
                     if (rawContent != null) {
                         String cleanContent = THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim();
                         processAndSpeakChunk(cleanContent);
-                        
+
                         addHistory("assistant", cleanContent);
                         long durationMs = SpeechService.estimateSpeechDuration(cleanContent);
                         int extraSeconds = (int) (durationMs / 1000) + 15;
@@ -513,27 +574,27 @@ public class AIEngine {
     private static void reasonDeeplyLocalFallback(String userMessage, String systemContext, Runnable onComplete) {
         System.out.println("Ciel Debug: Routing fallback through the scored model pool...");
         activeSwarmTasks.incrementAndGet();
-        
+
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOCAL_LOGIC_FALLBACK);
-        
+
         JsonObject payload = new JsonObject();
         payload.addProperty("model", "router-selected");
         payload.addProperty("task_intent", "Deep Logic Reasoning");
-        payload.addProperty("temperature", 0.3); 
+        payload.addProperty("temperature", 0.3);
         payload.addProperty("stream", false);
         ensureLiteLlmProvider(payload);
-        
+
         JsonArray messages = new JsonArray();
         JsonObject sysMsg = new JsonObject();
         sysMsg.addProperty("role", "system");
         sysMsg.addProperty("content", systemContext);
         messages.add(sysMsg);
-        
+
         JsonObject usrMsg = new JsonObject();
         usrMsg.addProperty("role", "user");
         usrMsg.addProperty("content", userMessage);
         messages.add(usrMsg);
-        
+
         payload.add("messages", messages);
 
         HttpRequest request = HttpRequest.newBuilder()
@@ -563,49 +624,49 @@ public class AIEngine {
     private static void processLogicResponse(String responseBody, Runnable onComplete) {
         String rawContent = ModelManager.extractMessageContent(responseBody);
         if (rawContent == null) return;
-        
+
         String cleanContent = THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim();
-        
+
         String[] sentences = cleanContent.split("(?<=[.!?])\\s+");
         for (String s : sentences) {
             processAndSpeakChunk(s);
         }
-        
+
         addHistory("assistant", cleanContent);
 
         long durationMs = SpeechService.estimateSpeechDuration(cleanContent);
         int extraSeconds = (int) (durationMs / 1000) + 15;
         com.cielcompanion.memory.stwm.ShortTermMemoryService.getMemory().setPrivilegedMode(true, extraSeconds);
-        
+
         if (onComplete != null) onComplete.run();
     }
 
     private static void triggerFallback(String userMessage, String systemContext, Runnable onComplete) {
         System.out.println("Ciel Debug: Requesting final eligible fallback through the scored model pool...");
         activeSwarmTasks.incrementAndGet();
-        
+
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOCAL_LOGIC_FALLBACK);
-        
+
         JsonObject payload = new JsonObject();
         payload.addProperty("model", "router-selected");
         payload.addProperty("task_intent", "Deep Logic Reasoning");
-        payload.addProperty("temperature", 0.3); 
+        payload.addProperty("temperature", 0.3);
         payload.addProperty("stream", false);
         ensureLiteLlmProvider(payload);
-        
+
         JsonArray messages = new JsonArray();
         JsonObject sysMsg = new JsonObject();
         sysMsg.addProperty("role", "system");
         sysMsg.addProperty("content", systemContext);
         messages.add(sysMsg);
-        
+
         JsonObject usrMsg = new JsonObject();
         usrMsg.addProperty("role", "user");
         usrMsg.addProperty("content", userMessage);
         messages.add(usrMsg);
-        
+
         payload.add("messages", messages);
-        
+
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
@@ -620,7 +681,7 @@ public class AIEngine {
                         if (content != null) {
                             String cleanContent = THINK_TAG_PATTERN.matcher(content).replaceAll("").trim();
                             for (String s : cleanContent.split("(?<=[.!?])\\s+")) processAndSpeakChunk(s);
-                            
+
                             addHistory("assistant", cleanContent);
 
                             long durationMs = SpeechService.estimateSpeechDuration(cleanContent);
@@ -639,15 +700,15 @@ public class AIEngine {
 
     private static JsonObject buildPayloadWithHistory(ModelManager.ModelTier tier, String systemContext, boolean stream) {
         JsonObject payload = new JsonObject();
-        
-        payload.addProperty("model", "local"); 
+
+        payload.addProperty("model", "local");
         payload.addProperty("stream", stream);
         payload.addProperty("temperature", (tier == ModelManager.ModelTier.LOGIC || tier == ModelManager.ModelTier.LOCAL_LOGIC_FALLBACK) ? 0.3 : 0.7);
 
         ensureLiteLlmProvider(payload);
 
         JsonArray messages = new JsonArray();
-        
+
         JsonObject sysMsg = new JsonObject();
         sysMsg.addProperty("role", "system");
         sysMsg.addProperty("content", systemContext);
@@ -684,7 +745,7 @@ public class AIEngine {
         }
 
         JsonArray messages = new JsonArray();
-        
+
         JsonObject sysMsg = new JsonObject();
         sysMsg.addProperty("role", "system");
         sysMsg.addProperty("content", systemContext);
@@ -711,7 +772,7 @@ public class AIEngine {
         while (matcher.find()) {
             emotionToTrigger = matcher.group(1);
         }
-        
+
         String rawText = matcher.replaceAll("").trim();
         final String textToProcess = rawText.replaceAll("\\*.*?\\*", "").trim();
 
@@ -725,7 +786,7 @@ public class AIEngine {
         }
 
         transliterateAsync(textToProcess).thenAccept(katakana -> {
-            SpeechService.speakChunk(katakana); 
+            SpeechService.speakChunk(katakana);
         });
     }
 

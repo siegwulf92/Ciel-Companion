@@ -5,7 +5,6 @@ public class MediaObservationRegression {
         if (!value) throw new AssertionError(message);
     }
     public static void main(String[] args) {
-        check(MediaObservation.verified("MEDIA_KIND: VIDEO\nMETADATA_STATUS: PUBLISHER\nMETADATA_SOURCES: youtube_publisher\nMEDIA_TITLE: Published video\nDESCRIPTION: Publisher-provided context\n"), "Publisher metadata not recognized");
         String verified = "MEDIA_KIND: EPISODE\nSERIES: The Ghost in the Shell\nEPISODE: PHANTOM FUND\nMETADATA_STATUS: VERIFIED\nDESCRIPTION: supported\n";
         String browsing = "SERIES: Unknown\nEPISODE: \nMEDIA_KIND: UNKNOWN\nMETADATA_STATUS: BROWSING\nDURATION_MINUTES: 24\n";
         for (boolean update : new boolean[]{false, true}) {

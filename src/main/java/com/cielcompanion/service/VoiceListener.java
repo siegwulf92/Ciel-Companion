@@ -31,26 +31,27 @@ public class VoiceListener {
     private static final String[] MIC_PRIORITY = {"Microphone (NVIDIA Broadcast)", "Focusrite", "Default Input"};
     private static final int PRIVILEGED_MODE_DURATION_SECONDS = 20;
     private static final double MIN_CONFIDENCE = 0.50;
-    
+
     private static final String WAKE_WORD_REGEX = "^(?:hey\\s+|hi\\s+|uh\\s+|um\\s+|ok\\s+|okay\\s+|so\\s+|well\\s+)?(he see our launch|see how can you want|how can you open|he see our|so listen|ceo listen|hey allison|c l|see l|see el|see i|ciel|cl|seal|seo|ceo|joe|chill|tell|feel|fill|she'll|still|steel|steal|sail|sale|shell|hunter)(?:\\s+|$)";
     private static final Pattern WAKE_WORD_PATTERN = Pattern.compile(WAKE_WORD_REGEX, Pattern.CASE_INSENSITIVE);
-    
+
     private static final Pattern SEARCH_TRIGGER_PATTERN = Pattern.compile("^(ciel search|cl search|seal search|seel search|seo search)", Pattern.CASE_INSENSITIVE);
     private static final Set<String> PHANTOM_NOISES = Set.of("huh", "the", "a", "an", "who", "what");
-    
+
     private final AtomicBoolean isMuted = new AtomicBoolean(false);
-    private final AtomicBoolean isInternallyMuted = new AtomicBoolean(false); 
+    private final AtomicBoolean isInternallyMuted = new AtomicBoolean(false);
 
     private static final long DEAD_STREAM_THRESHOLD_MS = 15000;
     private final AtomicBoolean needsMicReinitialization = new AtomicBoolean(false);
 
     private volatile long lastAudioTime = System.currentTimeMillis();
     private volatile long ignoreSttUntil = 0;
-    
+
     private Thread watchdogThread;
 
     private Model voskModel;
     private TargetDataLine microphone;
+    private volatile String activeMicrophoneName = "unselected";
     private final ExecutorService commandExecutor = Executors.newSingleThreadExecutor();
     private Thread listeningThread;
     private volatile CommandService commandService;
@@ -84,7 +85,7 @@ public class VoiceListener {
             voskModel = new Model(modelPath);
             isInitialized = true;
             System.out.println("Ciel Debug: Vosk model loaded successfully from " + modelPath);
-            ObserverService.initialize(); 
+            ObserverService.initialize();
         } catch (IOException e) {
             System.err.println("Ciel FATAL Error: Could not load Vosk model at " + Paths.get(System.getProperty("user.dir"), "model").toString());
         }
@@ -94,16 +95,16 @@ public class VoiceListener {
     public void handleVoiceAttackTrigger(String trigger) {
         if ("privileged_mode".equals(trigger)) {
             System.out.println("Ciel Debug: Voice Attack triggered 'Ciel Listen'. Forcing Privileged Mode.");
-            
+
             ShortTermMemoryService.getMemory().setPrivilegedMode(true, PRIVILEGED_MODE_DURATION_SECONDS);
-            
+
             // Acknowledge via direct fast-path TTS
             LineManager.getWakeWordAckLine().ifPresent(line -> {
                 SpeechService.speakPreformatted(line.text());
             });
-            
+
             // Give her a small 1.5s window to ignore her own voice, but KEEP the mic running so she hears you instantly!
-            ignoreSttUntil = System.currentTimeMillis() + 1500; 
+            ignoreSttUntil = System.currentTimeMillis() + 1500;
         }
     }
 
@@ -119,8 +120,9 @@ public class VoiceListener {
                     microphone.start();
                     if (isMuted.get()) microphone.stop();
                     startContinuousListening();
-                    startWatchdog(); 
-                    System.out.println("Ciel Debug: Microphone line opened. Continuous listening started.");
+                    startWatchdog();
+                    System.out.println("Ciel Debug: Microphone line opened (endpoint="
+                            + activeMicrophoneName + "). Continuous listening started.");
                 } else {
                     System.err.println("Ciel Error: No compatible microphone could be found.");
                 }
@@ -136,7 +138,7 @@ public class VoiceListener {
 
     public void refresh() {
         System.out.println("Ciel Debug: Refreshing Voice Listener state...");
-        needsMicReinitialization.set(true); 
+        needsMicReinitialization.set(true);
         if (microphone != null) {
             microphone.close();
         }
@@ -154,12 +156,13 @@ public class VoiceListener {
                     DataLine.Info info = new DataLine.Info(TargetDataLine.class, new AudioFormat(16000, 16, 1, true, false));
                     if (mixer.isLineSupported(info)) {
                         System.out.println("Ciel Debug: Found " + MIC_PRIORITY[0] + " successfully.");
+                        activeMicrophoneName = mixerInfo.getName();
                         return (TargetDataLine) mixer.getLine(info);
                     }
                 }
             }
         }
-        
+
         System.out.println("Ciel Warning: Could not find primary mic. Checking fallbacks.");
         for (int i = 1; i < MIC_PRIORITY.length; i++) {
             String micName = MIC_PRIORITY[i];
@@ -169,20 +172,27 @@ public class VoiceListener {
                     DataLine.Info info = new DataLine.Info(TargetDataLine.class, new AudioFormat(16000, 16, 1, true, false));
                     if (mixer.isLineSupported(info)) {
                         System.out.println("Ciel Debug: Found fallback mic: " + micName);
+                        activeMicrophoneName = mixerInfo.getName();
                         return (TargetDataLine) mixer.getLine(info);
                     }
                 }
             }
         }
-        
+
         DataLine.Info info = new DataLine.Info(TargetDataLine.class, new AudioFormat(16000, 16, 1, true, false));
         if (AudioSystem.isLineSupported(info)) {
             System.out.println("Ciel Debug: Found System Default mic.");
+            activeMicrophoneName = "System Default";
             return (TargetDataLine) AudioSystem.getLine(info);
         }
         return null;
     }
-    
+
+    /** The endpoint actually selected after preferred/fallback resolution. */
+    public String getActiveMicrophoneName() {
+        return activeMicrophoneName;
+    }
+
     private void processRecognitionResult(String result) {
         if (commandService == null) return;
         if (isMuted.get() || isInternallyMuted.get()) {
@@ -194,7 +204,7 @@ public class VoiceListener {
             return;
         }
 
-        if (!isProcessing.compareAndSet(false, true)) return; 
+        if (!isProcessing.compareAndSet(false, true)) return;
         try {
             boolean isPrivileged = ShortTermMemoryService.getMemory().isInPrivilegedMode();
             if (ShortTermMemoryService.getMemory().isInGamingSession() && !isPrivileged) return;
@@ -214,9 +224,9 @@ public class VoiceListener {
 
             if (hasWakeWord) {
                 textToProcess = WAKE_WORD_PATTERN.matcher(transcribedText).replaceFirst("").trim();
-                
+
                 if (textToProcess.isEmpty() || textToProcess.matches("(?i)^(listen|listened|listening|lesson|wilson|lessen|vision)$")) {
-                    
+
                     if (ShortTermMemoryService.getMemory().isInPrivilegedMode()) {
                         System.out.println("Ciel Debug: Silently dropping STT ghost echo '" + transcribedText + "' (VoiceAttack handled it).");
                         return;
@@ -281,7 +291,7 @@ public class VoiceListener {
 
     public void startListeningForCommand() {
         ignoreSttUntil = System.currentTimeMillis() + 3000;
-        
+
         LineManager.getWakeWordAckLine().ifPresent(line -> {
             long speechDuration = SpeechService.estimateSpeechDuration(line.text());
             ShortTermMemoryService.getMemory().setPrivilegedMode(true, PRIVILEGED_MODE_DURATION_SECONDS + (int)(speechDuration/1000));
@@ -300,7 +310,7 @@ public class VoiceListener {
 
     private void startWatchdog() {
         if (watchdogThread != null && watchdogThread.isAlive()) return;
-        
+
         watchdogThread = new Thread(() -> {
             while (isRunning) {
                 try { Thread.sleep(2000); } catch (InterruptedException e) { break; }
@@ -309,20 +319,20 @@ public class VoiceListener {
                     initializeMicrophoneAsync();
                     continue;
                 }
-                
+
                 if (needsMicReinitialization.get()) {
-                    lastAudioTime = System.currentTimeMillis(); 
+                    lastAudioTime = System.currentTimeMillis();
                     continue;
                 }
-                
+
                 long silenceDuration = System.currentTimeMillis() - lastAudioTime;
                 if (silenceDuration > DEAD_STREAM_THRESHOLD_MS) {
                     System.out.println("Ciel FATAL: Watchdog detected dead audio stream (" + silenceDuration + "ms). Assassinating thread and rebuilding...");
                     needsMicReinitialization.set(true);
-                    lastAudioTime = System.currentTimeMillis(); 
-                    
+                    lastAudioTime = System.currentTimeMillis();
+
                     if (listeningThread != null && listeningThread.isAlive()) {
-                        listeningThread.interrupt(); 
+                        listeningThread.interrupt();
                     }
                 }
             }
@@ -339,7 +349,7 @@ public class VoiceListener {
                 if (needsMicReinitialization.compareAndSet(true, false)) {
                     reinitializeMicrophone();
                 }
-                
+
                 try (Recognizer recognizer = new Recognizer(voskModel, 16000)) {
                     recognizer.setWords(true);
                     byte[] buffer = new byte[4096];
@@ -350,13 +360,13 @@ public class VoiceListener {
                             try { Thread.sleep(20); } catch (InterruptedException e) { break; }
                             continue;
                         }
-                        
+
                         int available = microphone.available();
                         if (available > 0) {
                             int bytesToRead = Math.min(buffer.length, available);
                             int bytesRead = microphone.read(buffer, 0, bytesToRead);
                             if (bytesRead > 0) {
-                                lastAudioTime = System.currentTimeMillis(); 
+                                lastAudioTime = System.currentTimeMillis();
                                 if (isMuted.get() || isInternallyMuted.get()) {
                                     recognizer.reset();
                                     continue; // Discard muted audio; never queue it for after unmute.
@@ -408,9 +418,9 @@ public class VoiceListener {
         } catch (Exception e) {
             System.err.println("Ciel Error: Watchdog failed to rebuild microphone.");
         }
-        lastAudioTime = System.currentTimeMillis(); 
+        lastAudioTime = System.currentTimeMillis();
     }
-    
+
     private double getConfidence(JsonObject resultJson) {
         if (resultJson.has("result")) {
             return resultJson.getAsJsonArray("result").asList().stream()

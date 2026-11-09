@@ -26,13 +26,13 @@ public class AzureSpeechService {
 
     private static SpeechConfig config;
     private static boolean isInitialized = false;
-    
+
     public static boolean isSimulatingKeystroke = false;
     public static long lastSimulatedInputTime = 0;
-    
+
     // --- CRITICAL FLAG FOR SAPI ROUTING ---
     public static volatile boolean isIntentionalCancellation = false;
-    
+
     private static final String CACHE_DIR_PATH = "voice_cache\\ja-JP-NanamiNeural";
     private static final String DND_CACHE_DIR_PATH = "dnd_voice_cache";
     // Rebuild old neutral WAVs after correcting Nanami's supported style mapping.
@@ -43,7 +43,7 @@ public class AzureSpeechService {
     // About 24 dB quieter than the initial cue, while keeping non-zero PCM for wake detection.
     private static final double SPEAKER_WAKE_TONE_AMPLITUDE = 0.0011;
     private static final double SPEAKER_WAKE_TONE_HZ = 660.0;
-    
+
     private static Clip activeClip = null;
     private static SpeechSynthesizer activeSynthesizer = null;
     private static final AtomicReference<Process> activeProcess = new AtomicReference<>();
@@ -55,12 +55,12 @@ public class AzureSpeechService {
         if (key != null && !key.isBlank() && region != null && !region.isBlank()) {
             try {
                 config = SpeechConfig.fromSubscription(key, region);
-                config.setSpeechSynthesisLanguage("ja-JP"); 
-                
+                config.setSpeechSynthesisLanguage("ja-JP");
+
                 new File(CACHE_DIR_PATH).mkdirs();
                 migrateLegacyVoiceCache();
                 new File(DND_CACHE_DIR_PATH).mkdirs();
-                
+
                 isInitialized = true;
                 System.out.println("[Azure Init] Service initialized.");
             } catch (Exception e) {
@@ -102,7 +102,7 @@ public class AzureSpeechService {
     public static boolean isAvailable() {
         return isInitialized;
     }
-    
+
     // --- DYNAMIC BYPASS FOR CACHING ---
     public static boolean isDynamicKey(String key) {
         return key == null || key.isBlank() || key.equals("game_launch") || key.equals("media_commentary") || key.startsWith("dynamic");
@@ -118,7 +118,7 @@ public class AzureSpeechService {
         return new File(targetCacheDir, cacheFilename(key, style, safeLang)).exists()
                 || new File(targetCacheDir, legacyCacheFilename(key, style, safeLang)).exists();
     }
-    
+
     public static void stopAllAudio() {
         isIntentionalCancellation = true;
         if (activeClip != null && activeClip.isRunning()) {
@@ -144,13 +144,13 @@ public class AzureSpeechService {
 
     public static synchronized boolean speak(String text, String key, String style, String pitch, String langCode) {
         if (!isInitialized) return false;
-        
+
         isIntentionalCancellation = false;
 
         String safeStyle = (style == null || style.isBlank() || style.equalsIgnoreCase("default")) ? "default" : style;
         String safePitch = (pitch == null || pitch.isBlank()) ? "+0%" : pitch;
         String safeLang = (langCode == null || langCode.isBlank()) ? "ja-JP" : langCode;
-        
+
         boolean isDndContent = safeLang.equalsIgnoreCase("en-US");
         String targetCacheDir = isDndContent ? DND_CACHE_DIR_PATH : CACHE_DIR_PATH;
 
@@ -170,7 +170,7 @@ public class AzureSpeechService {
             }
 
             return generateAndPlayFile(text, safeStyle, safePitch, safeLang, cachedFile, key);
-            
+
         } else {
             return generateAndPlayDynamicFile(text, safeStyle, safePitch, safeLang, key);
         }
@@ -247,7 +247,7 @@ public class AzureSpeechService {
                     text.codePointCount(0, text.length()), conservativeBillableCharacters(ssml));
             if (reservation == null) return false;
             System.out.println("[Azure TTS] Generating WAV for playback: " + destination.getName());
-            
+
             fileOutput = AudioConfig.fromWavFileOutput(destination.getAbsolutePath());
             activeSynthesizer = new SpeechSynthesizer(config, fileOutput);
             SpeechSynthesisResult result = activeSynthesizer.SpeakSsml(ssml);
@@ -258,7 +258,7 @@ public class AzureSpeechService {
                 synthesisCompleted = true;
                 result.close();
                 activeSynthesizer.close();
-                fileOutput.close(); 
+                fileOutput.close();
                 activeSynthesizer = null;
 
                 return playWav(destination, key, true, text);
@@ -281,7 +281,7 @@ public class AzureSpeechService {
                 activeSynthesizer = null;
             }
         }
-        return false; 
+        return false;
     }
 
     private static boolean streamDirectly(String text, String style, String pitch, String lang, String key) {
@@ -289,7 +289,7 @@ public class AzureSpeechService {
         boolean synthesisCompleted = false;
         try {
             System.out.println("[Azure TTS] Streaming dynamic content: \"" + text + "\"");
-            
+
             AudioConfig audioConfig = AudioConfig.fromDefaultSpeakerOutput();
             activeSynthesizer = new SpeechSynthesizer(config, audioConfig);
             // Azure exposes word-boundary callbacks even when the audio is
@@ -303,9 +303,9 @@ public class AzureSpeechService {
                     voiceForLanguage(lang), text.codePointCount(0, text.length()),
                     conservativeBillableCharacters(ssml));
             if (reservation == null) return false;
-            
+
             CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
-            
+
             SpeechSynthesisResult result = activeSynthesizer.SpeakSsml(ssml);
 
             if (result.getReason() == ResultReason.SynthesizingAudioCompleted) {
@@ -316,7 +316,7 @@ public class AzureSpeechService {
                 return true;
             } else if (result.getReason() == ResultReason.Canceled) {
                 SpeechSynthesisCancellationDetails cancellation = SpeechSynthesisCancellationDetails.fromResult(result);
-                
+
                 // --- CLEAN SAPI FALLBACK (Rate = 0, Hardcoded Haruka) ---
                 // A stop requested by the speech controller is authoritative.
                 // Azure can report an intentional StopSpeakingAsync as an error;
@@ -325,7 +325,7 @@ public class AzureSpeechService {
                 if (!isIntentionalCancellation) {
                     System.out.println("Ciel Warning: Azure Stream canceled internally. Reason: " + cancellation.getErrorDetails());
                     System.out.println("Ciel Debug: Executing clean SAPI Fallback (Microsoft Haruka Desktop) for string: " + text);
-                    
+
                     String safeSsml = buildFallbackSsml(text, lang).replace("'", "''");
                     String psScript = "$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
                             + "Add-Type -AssemblyName System.Speech; "
@@ -335,7 +335,7 @@ public class AzureSpeechService {
                             + "$s.Rate = 0; "
                             + "$s.SpeakSsml('" + safeSsml + "'); "
                             + "$s.Dispose();";
-                    
+
                     String encodedCommand = Base64.getEncoder().encodeToString(psScript.getBytes(StandardCharsets.UTF_16LE));
 
                     ProcessBuilder pb = new ProcessBuilder(com.cielcompanion.util.ProjectPaths.windowlessCommand(java.util.List.of(
@@ -350,14 +350,14 @@ public class AzureSpeechService {
                     } finally {
                         activeProcess.set(null);
                     }
-                    
+
                     result.close();
                     return true; // We handled it with SAPI
                 }
-                
+
                 System.out.println("Ciel Debug: Azure Speech stream intentionally canceled.");
                 result.close();
-                return true; 
+                return true;
             }
             result.close();
         } catch (Exception e) {
@@ -392,16 +392,16 @@ public class AzureSpeechService {
         StringBuilder ssml = new StringBuilder();
         ssml.append("<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" xmlns:mstts=\"https://www.w3.org/2001/mstts\" xml:lang=\"").append(lang).append("\">");
         ssml.append("<voice name=\"").append(currentVoiceName).append("\">");
-        
+
         boolean useStyle = !resolvedStyle.equals("default");
         if (useStyle) ssml.append("<mstts:express-as style=\"").append(resolvedStyle)
                 .append("\" styledegree=\"").append("cheerful".equals(resolvedStyle) ? "1.15" : "1.05")
                 .append("\">");
-        
+
         ssml.append("<prosody pitch=\"").append(pitch).append("\">");
         if (warmSpeakerOutput) ssml.append("<break time=\"").append(SPEAKER_PREROLL_MILLIS).append("ms\"/>");
         ssml.append(safeText).append("</prosody>");
-        
+
         if (useStyle) ssml.append("</mstts:express-as>");
         ssml.append("</voice></speak>");
         return ssml.toString();
@@ -449,7 +449,7 @@ public class AzureSpeechService {
             DataLine.Info info = new DataLine.Info(Clip.class, format);
             Mixer defaultOutput = AudioSystem.getMixer(null);
             clip = (Clip) defaultOutput.getLine(info);
-            activeClip = clip; 
+            activeClip = clip;
             long prerollFrames = 0;
             javax.sound.sampled.AudioInputStream playbackStream = audioStream;
             int frameSize = format.getFrameSize();
@@ -466,20 +466,16 @@ public class AzureSpeechService {
             if (!clip.isOpen()) throw new IllegalStateException("Java Sound output line did not open");
             if (playbackStream != audioStream) playbackStream.close();
 
-            // For generated media commentary, preparation happens while the
-            // player continues. Pause only at the final audio handoff so the
-            // speaker wake/preroll cannot create a long silent gap after the
-            // media has already stopped.
-            if (!SpeechService.ensureMediaPausedBeforePlayback()) {
+            // Start the deliberately quiet output wake *before* Ciel takes
+            // ownership of media playback.  This prevents a 2.5 s silent gap
+            // after a pause on sleeping speakers.  For unprimed output, take
+            // the pause immediately before the first frame instead.
+            if (prerollFrames == 0 && !SpeechService.ensureMediaPausedBeforePlayback()) {
                 clip.close();
                 activeClip = null;
                 System.err.println("[Media Transport] Audio handoff cancelled; verified pause was unavailable.");
                 return false;
             }
-            
-            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.SPEAKING));
-            CielState.getCielGui().ifPresent(gui -> gui.setSpeechLevel(0.14f));
-            
             clip.start();
             long readyTimeoutMillis = Math.max(5000L, SPEAKER_PREROLL_MILLIS + 3000L);
             long readyDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(readyTimeoutMillis);
@@ -493,6 +489,25 @@ public class AzureSpeechService {
             }
             if (clip.getLongFramePosition() < prerollFrames)
                 throw new IllegalStateException("Speaker pre-roll did not complete before timeout");
+            if (prerollFrames > 0 && !SpeechService.ensureMediaPausedBeforePlayback()) {
+                clip.stop();
+                clip.close();
+                activeClip = null;
+                System.err.println("[Media Transport] Audio handoff cancelled; verified pause was unavailable.");
+                return false;
+            }
+            // The orb must only enter SPEAKING at the same boundary that the
+            // player is confirmed paused and the first real speech frame can
+            // be heard.  The pre-roll stays in THINKING rather than faking a
+            // generic glow.
+            CielState.getCielGui().ifPresent(gui -> {
+                gui.setState(CielGui.GuiState.SPEAKING);
+                gui.setSpeechLevel(0f);
+                gui.markSpeechWord();
+            });
+            System.out.println("[Speech Delivery] status=started key="
+                    + (key == null ? "dynamic" : key.replaceAll("[^A-Za-z0-9._:-]", "_"))
+                    + " preroll_ms=" + (prerollFrames == 0 ? 0 : SPEAKER_PREROLL_MILLIS));
             if (primeOutput) {
                 System.out.println("[Azure TTS] Default output primed before WAV speech playback (key="
                         + (key == null ? "Dynamic" : key) + ", mixer=" + defaultOutput.getMixerInfo().getName()
@@ -503,6 +518,10 @@ public class AzureSpeechService {
             long speechFrames = Math.max(0L, clip.getFrameLength() - prerollFrames);
             int wordCount = countSpeechWords(speechText);
             int nextWord = 1;
+            float minEnvelope = 1.0f;
+            float maxEnvelope = 0.0f;
+            int envelopeSamples = 0;
+            String envelopeSource = analysisPcm != null ? "wav-pcm" : "output-meter";
             while (clip.isRunning() && System.nanoTime() < playbackDeadline) {
                 long speechFrame = Math.max(0L, clip.getLongFramePosition() - prerollFrames);
                 while (wordCount > 0 && nextWord <= wordCount
@@ -510,26 +529,28 @@ public class AzureSpeechService {
                     CielState.getCielGui().ifPresent(CielGui::markSpeechWord);
                     nextWord++;
                 }
-                float level = 0.14f;
+                float level = 0f;
                 float pcmLevel = samplePcmLevel(analysisPcm, format,
                         clip.getLongFramePosition(), prerollFrames);
-                if (!Float.isNaN(pcmLevel)) level = pcmLevel;
-                try {
-                    float db = clip.getLevel();
-                    if (!Float.isNaN(db) && !Float.isInfinite(db) && db > -60f) {
-                        float outputLevel = Math.max(0.08f, Math.min(1.0f, (db + 60f) / 60f));
-                        // Java Sound's line meter is the closest stable signal
-                        // to the final Windows output endpoint available to the
-                        // current runtime. Blend it with the source envelope so
-                        // a quiet hardware floor does not erase speech detail.
-                        level = Float.isNaN(pcmLevel)
-                                ? outputLevel
-                                : (pcmLevel * 0.45f + outputLevel * 0.55f);
+                if (!Float.isNaN(pcmLevel)) {
+                    // The source WAV is deterministic and follows the exact
+                    // voice being played. Never replace it with a mixer meter,
+                    // which can be constant or unavailable on Windows.
+                    level = pcmLevel;
+                } else {
+                    try {
+                        float db = clip.getLevel();
+                        if (!Float.isNaN(db) && !Float.isInfinite(db) && db > -60f) {
+                            envelopeSource = "output-meter";
+                            level = Math.max(0f, Math.min(1.0f, (db + 60f) / 60f));
+                        }
+                    } catch (RuntimeException ignored) {
+                        // Some Windows mixers do not expose a peak level.
                     }
-                } catch (RuntimeException ignored) {
-                    // Some Windows mixers do not expose a peak level; the
-                    // baseline keeps the speaking animation alive in that case.
                 }
+                minEnvelope = Math.min(minEnvelope, level);
+                maxEnvelope = Math.max(maxEnvelope, level);
+                envelopeSamples++;
                 final float visualLevel = level;
                 CielState.getCielGui().ifPresent(gui -> gui.setSpeechLevel(visualLevel));
                 Thread.sleep(30);
@@ -538,11 +559,15 @@ public class AzureSpeechService {
                 System.err.println("[Azure TTS] Cached audio exceeded its playback deadline; stopping the output line.");
                 clip.stop();
             }
+            if (envelopeSamples > 0) {
+                System.out.printf("[Speech Envelope] source=%s min=%.3f max=%.3f range=%.3f samples=%d%n",
+                        envelopeSource, minEnvelope, maxEnvelope, maxEnvelope - minEnvelope, envelopeSamples);
+            }
             return true;
         } catch (InterruptedException e) {
             System.out.println("Ciel Debug: Audio playback was intentionally interrupted/cancelled.");
-            Thread.currentThread().interrupt(); 
-            return true; 
+            Thread.currentThread().interrupt();
+            return true;
         } catch (Exception e) {
             System.err.println("[Azure TTS] Cached audio playback failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return false;
@@ -572,7 +597,7 @@ public class AzureSpeechService {
         int start = (int) Math.min((long) pcm.length, speechFrame * frameSize);
         int windowFrames = Math.max(1, Math.round(format.getFrameRate() * 0.032f));
         int end = Math.min(pcm.length, start + windowFrames * frameSize);
-        if (end <= start + 1) return 0.08f;
+        if (end <= start + 1) return 0f;
         double sum = 0.0;
         double peak = 0.0;
         long samples = 0;
@@ -587,14 +612,14 @@ public class AzureSpeechService {
             peak = Math.max(peak, Math.abs(normalized));
             samples++;
         }
-        if (samples == 0) return 0.08f;
+        if (samples == 0) return 0f;
         double rms = Math.sqrt(sum / samples);
         // Preserve short consonant transients instead of reducing the whole
         // 32 ms window to a slow average. The peak is weighted below RMS so
         // clicks cannot dominate, but real speech intensity remains visible.
         double speechEnergy = Math.max(rms, peak * 0.72);
         double db = speechEnergy <= 0.000001 ? -60.0 : 20.0 * Math.log10(speechEnergy);
-        return (float) Math.max(0.08, Math.min(1.0, (db + 60.0) / 60.0));
+        return (float) Math.max(0.0, Math.min(1.0, (db + 60.0) / 60.0));
     }
 
     /**

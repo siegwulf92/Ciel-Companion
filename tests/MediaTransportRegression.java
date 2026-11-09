@@ -11,7 +11,7 @@ public class MediaTransportRegression {
         Path fixture = Files.createTempDirectory("ciel-media-transport-");
         System.setProperty("ciel.root", fixture.toString());
         AtomicReference<String> response = new AtomicReference<>();
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 8000), 0);
         server.createContext("/active_media_data", exchange -> {
             byte[] body = response.get().getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
@@ -19,7 +19,6 @@ public class MediaTransportRegression {
             try (var output = exchange.getResponseBody()) { output.write(body); }
         });
         server.start();
-        System.setProperty("ciel.routerPort", Integer.toString(server.getAddress().getPort()));
         try {
             Class<?> tracker = Class.forName("com.cielcompanion.service.HabitTrackerService");
             Method call = tracker.getDeclaredMethod("getActiveMediaData", String.class, String.class, boolean.class);

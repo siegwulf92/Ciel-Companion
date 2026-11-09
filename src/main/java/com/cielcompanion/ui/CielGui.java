@@ -8,12 +8,11 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.geom.Ellipse2D;
 import java.awt.geom.Point2D;
-import java.awt.geom.AffineTransform;
 import java.awt.RadialGradientPaint;
 import java.util.Random;
 
 public class CielGui {
-    
+
     // CRITICAL FIX: Added the THINKING state to the Enum
     public enum GuiState { IDLE, LISTENING, SPEAKING, THINKING }
 
@@ -60,7 +59,7 @@ public class CielGui {
         });
     }
 
-    public void setState(GuiState state) { 
+    public void setState(GuiState state) {
         if (state == null) state = GuiState.IDLE;
         pendingState = state;
         final GuiState appliedState = state;
@@ -106,20 +105,41 @@ public class CielGui {
     public void markSpeechWord() {
         if (panel != null) panel.markSpeechWord();
     }
-    
+
     public void setVisualState(EmotionalState.VisualState state) { if (panel != null) panel.setCurrentVisualState(state); }
-    
+
+    /**
+     * Maps the final audio envelope onto the orb's 1..10-style motion range.
+     * Kept pure so the speech visual contract can be regression-tested without
+     * opening a desktop window or audio device.
+     */
+    public static float calculateSpeechPulse(float audioLevel, long sinceWordNanos, float intensity) {
+        float audio = Float.isFinite(audioLevel) ? Math.max(0f, Math.min(1f, audioLevel)) : 0f;
+        float safeIntensity = Float.isFinite(intensity) ? Math.max(0.1f, Math.min(1f, intensity)) : 0.8f;
+        float wordKick = 0f;
+        if (sinceWordNanos >= 0 && sinceWordNanos < 220_000_000L) {
+            wordKick = 1.0f - (sinceWordNanos / 220_000_000f);
+        }
+        return Math.max(0.03f, Math.min(1.0f,
+                0.03f + audio * (0.83f + safeIntensity * 0.12f) + wordKick * 0.92f));
+    }
+
     private static class CielPanel extends JPanel {
         private volatile GuiState currentState = GuiState.IDLE;
         private volatile EmotionalState.VisualState currentVisualState;
         private volatile float targetSpeechLevel = 0f;
+        private volatile long lastSpeechSignalNanos = 0L;
         private volatile long lastSpeechWordNanos = 0L;
         private float renderedSpeechLevel = 0f;
+        private float renderedHue = -1f;
+        private float renderedSaturation = 0f;
+        private float renderedValue = 1f;
         private float animationTick = 0;
         private long lastAnimationNanos = System.nanoTime();
         private final Random random = new Random();
-        private final Particle[] particles = new Particle[50];
-        
+        // Soft motes provide motion without drawing orbit paths or glyphs.
+        private final Particle[] particles = new Particle[56];
+
         private Point2D.Double currentPos;
         private Point2D.Double targetPos;
         private boolean isPaused = false;
@@ -127,7 +147,7 @@ public class CielGui {
         public CielPanel() {
             setOpaque(false);
             for (int i = 0; i < particles.length; i++) particles[i] = new Particle();
-            
+
             // Thirty frames per second keeps the glow fluid while cutting paint/GPU
             // work roughly in half compared with the old 60 fps repaint loop.
             new Timer(33, e -> {
@@ -137,7 +157,7 @@ public class CielGui {
                 for (Particle p : particles) p.update();
                 repaint();
             }).start();
-            
+
             if (GuiSettings.isMovementEnabled()) initializeMovement();
         }
 
@@ -171,7 +191,7 @@ public class CielGui {
             int sy = (s.height - GuiSettings.getGuiSize()) / 2;
             currentPos = new Point2D.Double(sx, sy);
             targetPos = new Point2D.Double(sx, sy);
-            
+
             new Timer(16, e -> {
                 if (isPaused) return;
                 double dx = targetPos.x - currentPos.x;
@@ -186,7 +206,7 @@ public class CielGui {
             }).start();
             new Timer(GuiSettings.getNewTargetDelayMs(), e -> pickNewTarget()).start();
         }
-        
+
         private void pickNewTarget() {
             if (isPaused) return;
             GraphicsConfiguration gc = getGraphicsConfiguration();
@@ -197,18 +217,18 @@ public class CielGui {
             targetPos.x = b.x + pad + random.nextInt(b.width - sz - (2 * pad));
             targetPos.y = b.y + pad + random.nextInt(b.height - sz - (2 * pad));
         }
-        
+
         public void pauseMovement() { isPaused = true; }
         public void resumeMovement() { isPaused = false; pickNewTarget(); }
         public void setCurrentState(GuiState state) {
             this.currentState = state;
             if (state != GuiState.SPEAKING) targetSpeechLevel = 0f;
-            else if (targetSpeechLevel < 0.12f) targetSpeechLevel = 0.12f;
             repaint();
         }
         public void setSpeechLevel(float level) {
             if (Float.isNaN(level) || Float.isInfinite(level)) level = 0.12f;
             targetSpeechLevel = Math.max(0f, Math.min(1f, level));
+            lastSpeechSignalNanos = System.nanoTime();
         }
         public void setOutputSpeechLevel(float level) {
             if (Float.isNaN(level) || Float.isInfinite(level)) return;
@@ -221,7 +241,6 @@ public class CielGui {
         public void clearSpeechLevel() { targetSpeechLevel = 0f; }
         public void markSpeechWord() {
             lastSpeechWordNanos = System.nanoTime();
-            targetSpeechLevel = Math.max(targetSpeechLevel, 0.88f);
         }
         public void setCurrentVisualState(EmotionalState.VisualState state) { this.currentVisualState = state; }
 
@@ -249,124 +268,114 @@ public class CielGui {
             float width = getWidth();
             float height = getHeight();
             Point2D.Float center = new Point2D.Float(width / 2f, height / 2f);
-            
-            Color baseColor = cycleEmotionColor(currentVisualState.color(), currentVisualState.animation());
+
+            Color targetColor = cycleEmotionColor(currentVisualState.color(), currentVisualState.animation());
+            // Preserve distinct listening/thinking states without bringing back
+            // the orbit-ring geometry: the filled halo and motes carry the cue.
+            if (currentState == GuiState.LISTENING) {
+                targetColor = blend(targetColor, new Color(95, 225, 255), 0.24f);
+            } else if (currentState == GuiState.THINKING) {
+                targetColor = blend(targetColor, new Color(160, 200, 255), 0.22f);
+            }
             float brightness = (float) currentVisualState.brightness();
             float maxRadius = (width / 2f) - 10f;
-            
+
             // Animation Pulses
             float breath = (float) (Math.sin(animationTick * GuiSettings.getBreathingSpeed() * 2.0)) / 2.0f + 0.5f;
             // Attack quickly enough to catch consonants and syllable peaks;
             // release more gently so short vowels do not make the orb blink.
             float speechResponse = targetSpeechLevel > renderedSpeechLevel ? 0.52f : 0.22f;
             renderedSpeechLevel += (targetSpeechLevel - renderedSpeechLevel) * speechResponse;
-            
+
             // GUI SYNC FIX: Distinct rapid pulse logic for the THINKING state
             float pulse = breath;
             if (currentState == GuiState.SPEAKING) {
-                // This envelope is based on monotonic time, not the speaker
-                // mixer.  It therefore remains visible when Windows reports
-                // a muted/quiet endpoint. Word-boundary callbacks add a kick
-                // at each spoken word when the provider exposes them.
-                float cadence = (float) ((Math.sin(animationTick * GuiSettings.getSpeakingFlickerSpeed() * 2.0) + 1.0) * 0.5);
-                long sinceWord = System.nanoTime() - lastSpeechWordNanos;
-                if (sinceWord >= 0 && sinceWord < 180_000_000L) cadence = Math.max(cadence, 0.92f);
                 float intensity = (float) Math.max(0.1, Math.min(1.0, GuiSettings.getSpeakingFlickerIntensity()));
-                // Let the measured output envelope drive most of the motion;
-                // retain only a small cadence floor when a provider or mixer
-                // cannot expose levels.  This tracks syllable energy instead
-                // of looking like a generic sinusoid.
-                pulse = Math.max(0.08f, Math.min(1.0f,
-                        0.06f + renderedSpeechLevel * (0.86f + intensity * 0.12f) + cadence * 0.06f));
+                // Keep a visible articulation cadence even when Java Sound's
+                // mixer exposes no useful peak meter (muted/quiet endpoints
+                // are common on laptops).  Measured energy still dominates;
+                // cadence fills only the missing signal instead of replacing
+                // it, so loud words expand farther than quiet ones.
+                // A slower carrier gives the shell a smooth rise/fall rather
+                // than a rapid flicker; the measured envelope still controls
+                // the amplitude when the speaker meter is available.
+                float cadence = (float) ((Math.sin(animationTick
+                        * GuiSettings.getSpeakingFlickerSpeed() * 0.72) + 1.0) * 0.5);
+                // A quiet/muted endpoint must still produce a readable smooth
+                // pulse.  This is deliberately a broad envelope, not a ring or
+                // flicker, and measured audio still wins whenever it is present.
+                float fallbackEnvelope = 0.12f + cadence * 0.70f;
+                long signalAge = System.nanoTime() - lastSpeechSignalNanos;
+                boolean liveSignal = lastSpeechSignalNanos > 0L && signalAge < 180_000_000L;
+                float signal = liveSignal ? renderedSpeechLevel : fallbackEnvelope;
+                float speechEnvelope = calculateSpeechPulse(signal, Long.MAX_VALUE, intensity);
+                // When PCM is arriving, its amplitude is authoritative.  The
+                // carrier is used only as a recovery path when no signal update
+                // has arrived, so the orb cannot fake a wave over real speech.
+                pulse = liveSignal
+                        ? speechEnvelope
+                        : speechEnvelope * (0.42f + cadence * 0.58f);
             } else if (currentState == GuiState.THINKING) {
                 pulse = (float) (Math.sin(animationTick * 15.0) + 1) / 2.0f; // Rapid processing throb
+            } else if (currentState == GuiState.LISTENING) {
+                // A gentle listening shimmer keeps this state visibly distinct
+                // without drawing a separate outline around the orb.
+                pulse = Math.max(pulse,
+                        0.18f + (float) ((Math.sin(animationTick * 8.0) + 1.0) * 0.06));
             }
 
-            // Make the envelope visible at a glance. The previous 10% radius
-            // range was too subtle on small always-on-top windows, especially
-            // when a mixer reported a quiet level. Keep the motion smooth but
-            // give speech a clearly readable expansion/contraction.
-            float coreR = maxRadius * (0.50f + pulse * 0.34f);
+            // EmotionManager may change the target several times during a
+            // lament or other intense passage. Interpolate in HSB space so
+            // blue-to-pink, happy-to-sad, and similar changes travel through
+            // the spectrum instead of snapping between RGB values. The small
+            // pulse-linked value wave keeps the color movement visually in
+            // phase with the audio without overriding the emotional target.
+            Color baseColor = smoothEmotionColor(targetColor, pulse);
+
+            // Restore the older desktop/GitHub silhouette: a smaller crystal
+            // core nested inside a broad halo.  Pulse still comes from the
+            // real PCM envelope; only the proportions are restored here.
+            // Keep the center airy and translucent; the halo carries most of
+            // the visible speech expansion instead of a solid filled disk.
+            float coreR = maxRadius * (0.44f + pulse * 0.28f);
             float glowR = maxRadius * (0.74f + breath * 0.10f + pulse * 0.16f);
             float displayBrightness = brightness;
             if (currentState == GuiState.SPEAKING) {
-                // Radius-only motion can look like a hue shift at a glance.
-                // Couple the same guaranteed cadence to luminance so speaking
-                // is unmistakable even when the output mixer is muted.
-                displayBrightness = Math.max(0.16f, Math.min(1.0f,
-                        brightness * (0.24f + pulse * 0.76f)));
+                displayBrightness = Math.max(0.08f, Math.min(1.0f,
+                        brightness * (0.28f + pulse * 0.90f)));
             }
 
             // --- LAYER 1: Outer Glow (Soft Halo) ---
-            float glowAlpha = Math.max(0.08f, Math.min(0.90f, displayBrightness * (0.22f + pulse * 0.48f)));
+            float glowAlpha = Math.max(0.08f, Math.min(0.96f, displayBrightness * (0.24f + pulse * 0.70f)));
             Color g1 = new Color(baseColor.getRed()/255f, baseColor.getGreen()/255f, baseColor.getBlue()/255f, glowAlpha);
             Color g2 = new Color(baseColor.getRed()/255f, baseColor.getGreen()/255f, baseColor.getBlue()/255f, 0f);
             g2d.setPaint(new RadialGradientPaint(center, glowR, new float[]{0f, 1f}, new Color[]{g1, g2}));
             g2d.fill(new Ellipse2D.Float(center.x - glowR, center.y - glowR, glowR*2, glowR*2));
 
             // --- LAYER 2: Crystal Core (Solid Center) ---
-            Color coreC = new Color(baseColor.getRed(), baseColor.getGreen(), baseColor.getBlue(), (int)(255 * displayBrightness));
-            Color coreHigh = new Color(255, 255, 255, (int)(120 * displayBrightness)); // Highlight
+            // Keep the core stable and translucent.  Speech changes the shell
+            // and its glow, not the crystal's silhouette or opacity.
+            // The crystal should read as translucent depth, not a flat filled
+            // disk.  Leave enough alpha for a stable silhouette while allowing
+            // the halo and motes to remain visible through it.
+            float coreAlpha = currentState == GuiState.SPEAKING
+                    ? Math.max(0.30f, Math.min(0.64f, 0.30f + pulse * 0.34f))
+                    : Math.min(0.46f, Math.max(0.20f, displayBrightness * 0.68f));
+            Color coreC = new Color(baseColor.getRed(), baseColor.getGreen(), baseColor.getBlue(), (int)(255 * coreAlpha));
+            float coreHighlight = currentState == GuiState.SPEAKING ? (58f + pulse * 54f) : 58f;
+            Color coreHigh = new Color(255, 255, 255, (int)(coreHighlight * coreAlpha)); // Stable highlight
             g2d.setPaint(new RadialGradientPaint(new Point2D.Float(center.x - coreR*0.2f, center.y - coreR*0.2f), coreR, new float[]{0f, 1f}, new Color[]{coreHigh, coreC}));
             g2d.fill(new Ellipse2D.Float(center.x - coreR, center.y - coreR, coreR*2, coreR*2));
 
             // --- LAYER 3: Particles (Energy Motes) ---
+            // The motes drift independently of speech; only the halo responds
+            // to the output envelope so the silhouette remains calm and clear.
             for (Particle p : particles) {
-                float particleAlpha = p.alpha * (0.5f + pulse * 0.5f);
-                g2d.setColor(new Color(1f, 1f, 1f, particleAlpha * displayBrightness));
+                float particleAlpha = p.alpha * (0.32f + displayBrightness * 0.48f);
+                g2d.setColor(new Color(1f, 1f, 1f, particleAlpha));
                 g2d.fill(new Ellipse2D.Float(p.x - p.size/2, p.y - p.size/2, p.size, p.size));
             }
 
-            // --- LAYER 4: Rotating Rings (The "Tech" Look) ---
-            AffineTransform oldTransform = g2d.getTransform();
-            
-            // Ring 1: Slow outer ring
-            g2d.setStroke(new BasicStroke(0.5f));
-            g2d.setColor(new Color(1f, 1f, 1f, 0.2f * brightness));
-            g2d.translate(center.x, center.y);
-            g2d.scale(1.0, 0.3); // Flatten perspective
-            for(int i = 0; i < 6; i++) {
-                 g2d.rotate(Math.toRadians(30 + (animationTick * 2))); // Rotate
-                 g2d.draw(new Ellipse2D.Float(-coreR * 1.5f, -coreR * 1.5f, coreR * 3.0f, coreR * 3.0f));
-            }
-            g2d.setTransform(oldTransform);
-            
-            // Ring 2: Medium middle ring
-            g2d.setStroke(new BasicStroke(1.0f));
-            g2d.setColor(new Color(1f, 1f, 1f, 0.4f * brightness));
-            g2d.translate(center.x, center.y);
-            g2d.rotate(animationTick * 0.7);
-            g2d.scale(1.0, 0.4);
-            g2d.draw(new Ellipse2D.Float(-coreR * 1.2f, -coreR * 1.2f, coreR * 2.4f, coreR * 2.4f));
-            g2d.setTransform(oldTransform);
-
-            // Ring 3: Fast inner ring (Counter-rotate)
-            g2d.setStroke(new BasicStroke(1.5f));
-            g2d.setColor(new Color(1f, 1f, 1f, 0.7f * brightness));
-            g2d.translate(center.x, center.y);
-            g2d.rotate(-animationTick * 1.2);
-            g2d.scale(1.0, 0.2);
-            g2d.draw(new Ellipse2D.Float(-coreR * 1.1f, -coreR * 1.1f, coreR * 2.2f, coreR * 2.2f));
-            g2d.setTransform(oldTransform);
-
-            // --- LAYER 5: Overlays (Listening vs Thinking) ---
-            if (currentState == GuiState.LISTENING) {
-                float listeningPulse = (float) (Math.sin(animationTick * 20) + 1) / 2.0f;
-                g2d.setColor(Color.CYAN);
-                g2d.setStroke(new BasicStroke(3.0f));
-                float r = maxRadius * (0.95f - listeningPulse * 0.1f);
-                g2d.draw(new Ellipse2D.Float(center.x - r, center.y - r, r * 2, r * 2));
-            } else if (currentState == GuiState.THINKING) {
-                // Great Sage / Raphael Calculation Effect: Inner counter-rotating dashed geometry
-                g2d.setColor(new Color(150, 200, 255, 200)); 
-                g2d.setStroke(new BasicStroke(2.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10.0f, new float[]{10.0f, 10.0f}, 0.0f));
-                g2d.translate(center.x, center.y);
-                g2d.rotate(-animationTick * 6.0); // Fast counter-rotation to look computational
-                float r = maxRadius * 0.85f;
-                g2d.draw(new Ellipse2D.Float(-r, -r, r * 2, r * 2));
-                g2d.setTransform(oldTransform);
-            }
-            
             g2d.dispose();
         }
 
@@ -380,6 +389,40 @@ public class CielGui {
                 hsb[0] = (float) ((hsb[0] + Math.sin(seconds * (2.0 * Math.PI / 12.0)) * 0.035 + 1.0) % 1.0);
             }
             return Color.getHSBColor(hsb[0], hsb[1], hsb[2]);
+        }
+
+        private Color blend(Color first, Color second, float amount) {
+            float t = Math.max(0f, Math.min(1f, amount));
+            int r = Math.round(first.getRed() * (1f - t) + second.getRed() * t);
+            int g = Math.round(first.getGreen() * (1f - t) + second.getGreen() * t);
+            int b = Math.round(first.getBlue() * (1f - t) + second.getBlue() * t);
+            return new Color(r, g, b);
+        }
+
+        private Color smoothEmotionColor(Color targetColor, float pulse) {
+            float[] target = Color.RGBtoHSB(targetColor.getRed(), targetColor.getGreen(),
+                    targetColor.getBlue(), null);
+            if (renderedHue < 0f) {
+                renderedHue = target[0];
+                renderedSaturation = target[1];
+                renderedValue = target[2];
+            } else {
+                // About 350-500 ms for a meaningful mood transition at the
+                // 30 fps paint rate; quick changes remain visible but graceful.
+                float amount = currentState == GuiState.SPEAKING ? 0.095f : 0.075f;
+                float hueDelta = target[0] - renderedHue;
+                if (hueDelta > 0.5f) hueDelta -= 1.0f;
+                if (hueDelta < -0.5f) hueDelta += 1.0f;
+                renderedHue = (renderedHue + hueDelta * amount + 1.0f) % 1.0f;
+                renderedSaturation += (target[1] - renderedSaturation) * amount;
+                renderedValue += (target[2] - renderedValue) * amount;
+            }
+
+            float safePulse = Math.max(0f, Math.min(1f, pulse));
+            float wave = (safePulse - 0.5f) * 0.035f;
+            float value = Math.max(0f, Math.min(1f, renderedValue + wave));
+            return Color.getHSBColor(renderedHue,
+                    Math.max(0f, Math.min(1f, renderedSaturation)), value);
         }
     }
 }

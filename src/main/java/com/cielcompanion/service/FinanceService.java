@@ -30,10 +30,10 @@ public class FinanceService {
     public static boolean isAnalysisRunning() {
         return analysisRunning.get();
     }
-    
+
     private static final Path SYNC_FILE = Paths.get(System.getenv("LOCALAPPDATA"), "CielCompanion", "market_sync.dat");
     private static final Path ATTEMPT_FILE = Paths.get(System.getenv("LOCALAPPDATA"), "CielCompanion", "market_attempt.dat");
-    
+
     private static long localSyncTimeMs = 0L;
     private static long localAttemptTimeMs = 0L;
     private static final Path SCHEDULE_STATE = Paths.get(System.getProperty("user.dir"), ".local", "finance-schedule.properties");
@@ -77,7 +77,7 @@ public class FinanceService {
         try {
             ZoneId estZone = ZoneId.of("America/New_York");
             ZonedDateTime now = ZonedDateTime.now(estZone);
-            
+
             var job = FinanceSchedulePolicy.briefingAt(now);
             var state = scheduleState();
             String key = job.name() + ".";
@@ -218,6 +218,11 @@ public class FinanceService {
     private static boolean isFinanceFailure(String result) {
         if (result == null) return true;
         String normalized = result.trim().toLowerCase(java.util.Locale.ROOT);
+        // Market evidence is still publishable when the narrative model fails
+        // validation: this deterministic fallback preserves dated source data
+        // and refuses to make a directional call. Treat it as a completed,
+        // evidence-bounded stage so a daily briefing is not silently skipped.
+        if (isSafeMarketFallback(normalized)) return false;
         // A model response can fail policy validation while the deterministic
         // holdings fallback remains a complete, evidence-bounded briefing.
         // Only the explicitly marked fallback with usable holdings data is a
@@ -253,6 +258,19 @@ public class FinanceService {
                 && normalized.contains("tracked value is $")
                 && normalized.contains("rules-based read")
                 && normalized.contains("model status:");
+    }
+
+    private static boolean isSafeMarketFallback(String result) {
+        if (result == null) return false;
+        String normalized = result.trim().toLowerCase(java.util.Locale.ROOT);
+        return normalized.startsWith("### market scan status")
+                && normalized.contains("fetched evidence is preserved")
+                && normalized.contains("s&p 500 and vix source data")
+                && normalized.contains("market news context")
+                && normalized.contains("without a directional conclusion")
+                && !normalized.contains("i can't help with that")
+                && !normalized.contains("i can’t help with that")
+                && !normalized.contains("i cannot help with that");
     }
 
     private static boolean isFinanceRouterReady() {
@@ -296,7 +314,7 @@ public class FinanceService {
 
         int hour = now.getHour();
         int minute = now.getMinute();
-        
+
         if (hour < 9 || (hour == 9 && minute < 30)) return false;
         return hour < 16;
     }
@@ -307,7 +325,7 @@ public class FinanceService {
 
         if (day == DayOfWeek.SATURDAY) return close.minusDays(1);
         if (day == DayOfWeek.SUNDAY) return close.minusDays(2);
-        
+
         if (now.getHour() < 16) {
             return (day == DayOfWeek.MONDAY) ? close.minusDays(3) : close.minusDays(1);
         }
@@ -321,7 +339,7 @@ public class FinanceService {
             String yearStr = String.format("%04d", now.getYear());
             String monthStr = String.format("%02d", now.getMonthValue());
             String dayStr = String.format("%02d", now.getDayOfMonth());
-            
+
             // Build dynamic folders
             Path financeDir = Paths.get(System.getProperty("user.dir"), "Ciel", "finance").toAbsolutePath().normalize();
             Path reportsDir = financeDir.resolve(Paths.get("reports", yearStr, monthStr, dayStr));
@@ -333,7 +351,7 @@ public class FinanceService {
             if (Files.exists(fireFile)) {
                 fireProgress = "\n\n## Deterministic FIRE Scenario Progress\n\n" + Files.readString(fireFile);
             }
-            
+
             // Never insert the raw CSV math here!
             boolean closed = FinanceSchedulePolicy.marketClosed(now.toLocalDate());
             String content = "# Ciel's " + (closed ? "Closed-Market Portfolio Plan" : "Daily Financial Briefing") + " (" + dateStr + ")\n\n" +
@@ -341,12 +359,12 @@ public class FinanceService {
                              latestPortfolioDataStatus + "\n\n" +
                              "## Ciel's Portfolio Analysis and Recommendations\n" +
                              (closed ? "Planning for the next market session (verify the exchange calendar before trading).\n\n" : "Market-day review.\n\n") + latestRecommendations + "\n\n" +
-                             "## Macro Market Scan\n" + 
+                             "## Macro Market Scan\n" +
                              latestMarketScan + fireProgress;
-            
+
             String filename = "Briefing_" + now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy_MM_dd")) + ".md";
             Path dailyReport = reportsDir.resolve(filename);
-            
+
             writeAtomically(dailyReport, content);
 
             // Copy to root
