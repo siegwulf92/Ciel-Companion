@@ -39,7 +39,9 @@ public class AzureSpeechService {
     private static final String VOICE_PROFILE_VERSION = "nanami_conversational_v3";
     // Wake output devices that suppress initial audio after a quiet period. The cue is
     // intentionally quiet and is followed by enough time for the endpoint to settle.
-    private static final int SPEAKER_PREROLL_MILLIS = 2500;
+    // Keep the media pause close to audible speech while allowing sleeping
+    // laptop/desktop speakers a short hardware wake window.
+    private static final int SPEAKER_PREROLL_MILLIS = 1500;
     // About 24 dB quieter than the initial cue, while keeping non-zero PCM for wake detection.
     private static final double SPEAKER_WAKE_TONE_AMPLITUDE = 0.0011;
     private static final double SPEAKER_WAKE_TONE_HZ = 660.0;

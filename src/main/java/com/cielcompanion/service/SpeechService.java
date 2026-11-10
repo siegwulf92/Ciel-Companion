@@ -451,7 +451,12 @@ public class SpeechService {
                     }
 
                     if (!hasEnqueued) {
-                        boolean ownsMediaPause = enqueueSpeech("media_commentary".equalsIgnoreCase(key));
+                        // All utterances over active media use the same final
+                        // handoff. Wait for provider audio first, then let the
+                        // audio backend verify the pause immediately before
+                        // its speaker wake pre-roll. This avoids freezing
+                        // playback while TTS is still being generated.
+                        boolean ownsMediaPause = enqueueSpeech(true);
                         hasEnqueued = true;
                         // Never speak over active media when pause was not
                         // confirmed. The old conditional only deferred when a
