@@ -163,11 +163,10 @@ public class AIEngine {
                 }
             }
 
-            String localFallback = localKatakanaFallback(phoneticSource);
-            System.err.println("[Speech Phonetics] status=fallback pathway=local attempts="
+            System.err.println("[Speech Phonetics] status=failed pathway=model-only attempts="
                     + PHONOKANA_MAX_ATTEMPTS + " reason=" + safeLogValue(lastFailure)
-                    + " policy=word-aligned-only");
-            return localFallback;
+                    + " policy=contextual-model-required");
+            throw new IllegalStateException("Contextual phonokana model unavailable: " + lastFailure);
         }, translationExecutor);
     }
 
@@ -180,6 +179,12 @@ public class AIEngine {
         StringBuffer out = new StringBuffer();
         while (matcher.find()) {
             String token = matcher.group(1);
+            // A and I are ordinary English words in a sentence, not
+            // standalone initialisms. Preserve them for contextual review.
+            if ("A".equals(token) || "I".equals(token)) {
+                matcher.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(token));
+                continue;
+            }
             java.util.Map<Character, String> names = java.util.Map.ofEntries(
                     java.util.Map.entry('A', "ay"), java.util.Map.entry('B', "bee"),
                     java.util.Map.entry('C', "see"), java.util.Map.entry('D', "dee"),
@@ -209,50 +214,13 @@ public class AIEngine {
         try {
             return transliterateAsync(englishText).get(PHONOKANA_TOTAL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (java.util.concurrent.TimeoutException timeout) {
-            System.err.println("[Speech Phonetics] status=fallback pathway=local reason=java-total-timeout timeout_s="
+            System.err.println("[Speech Phonetics] status=failed pathway=model-only reason=java-total-timeout timeout_s="
                     + PHONOKANA_TOTAL_TIMEOUT_SECONDS);
-            return localKatakanaFallback(englishText);
+            return "";
         } catch (Exception e) {
-            System.err.println("[Speech Phonetics] status=fallback pathway=local reason=java-"
+            System.err.println("[Speech Phonetics] status=failed pathway=model-only reason=java-"
                     + safeLogValue(e.getClass().getSimpleName()));
-            return localKatakanaFallback(englishText);
-        }
-    }
-
-    private static String localKatakanaFallback(String text) {
-        if (!ALPHA_PATTERN.matcher(text).find()) return text;
-        java.nio.file.Path root = com.cielcompanion.util.ProjectPaths.root();
-        Process process = null;
-        java.nio.file.Path requestFile = null;
-        java.nio.file.Path responseFile = null;
-        try {
-            java.nio.file.Path localDir = root.resolve(".local");
-            java.nio.file.Files.createDirectories(localDir);
-            requestFile = java.nio.file.Files.createTempFile(localDir, "ciel-phonokana-request-", ".json");
-            responseFile = java.nio.file.Files.createTempFile(localDir, "ciel-phonokana-response-", ".json");
-            JsonObject payload = new JsonObject(); payload.addProperty("text", text);
-            java.nio.file.Files.writeString(requestFile, gson.toJson(payload), StandardCharsets.UTF_8);
-            process = new ProcessBuilder(com.cielcompanion.util.ProjectPaths.pythonBackgroundExecutable(),
-                    root.resolve("Ciel/skills/katakana_transliterator.py").toString(),
-                    "--request-file", requestFile.toString(), "--response-file", responseFile.toString())
-                .redirectError(ProcessBuilder.Redirect.DISCARD).start();
-            if (!process.waitFor(25, TimeUnit.SECONDS) || process.exitValue()!=0)
-                throw new IllegalStateException("Local phoneme converter failed");
-            JsonObject result=JsonParser.parseString(java.nio.file.Files.readString(responseFile, StandardCharsets.UTF_8)).getAsJsonObject();
-            String kana=result.get("katakana").getAsString();
-            // The local helper is deterministic and can preserve an existing
-            // Japanese honorific/name fragment in a mixed proper name. Router
-            // responses remain subject to the stricter Katakana-only audit.
-            if (ALPHA_PATTERN.matcher(kana).find() || kana.isBlank())
-                throw new IllegalStateException("Unconverted or malformed local speech rejected");
-            return kana;
-        } catch (Exception error) {
-            System.err.println("[Speech Phonetics] Pronunciation unavailable; refusing unsafe letter-spelling fallback.");
-            throw new IllegalStateException("Safe pronunciation unavailable",error);
-        } finally {
-            if(process!=null) process.destroyForcibly();
-            try { if (requestFile != null) java.nio.file.Files.deleteIfExists(requestFile); } catch (Exception ignored) {}
-            try { if (responseFile != null) java.nio.file.Files.deleteIfExists(responseFile); } catch (Exception ignored) {}
+            return "";
         }
     }
 
@@ -285,8 +253,7 @@ public class AIEngine {
                 JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
                 String audit = json.has("audit") ? json.get("audit").getAsString().toLowerCase(java.util.Locale.ROOT) : "missing";
                 boolean audited = audit.equals("word-aligned")
-                        || audit.equals("word-aligned-cache")
-                        || audit.equals("deterministic-word-path");
+                        || audit.equals("word-aligned-cache");
                 String result = json.has("katakana") ? json.get("katakana").getAsString() : "";
                 if (audited && isStrictKatakana(result)) {
                     String path = json.has("status") ? safeLogValue(json.get("status").getAsString()) : "unknown";

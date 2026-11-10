@@ -426,7 +426,7 @@ public class SpeechService {
                     // contain collapsed initialisms (for example DD -> ディディ).
                     // v5 invalidates clips generated before the contextual
                     // pronunciation audit and high-impact word overrides.
-                    String cacheKey = requiresPhonokana ? "phonokana-v5:" + speechKeyBase : speechKeyBase;
+                    String cacheKey = requiresPhonokana ? "phonokana-v6-model:" + speechKeyBase : speechKeyBase;
                     String speechKey = com.cielcompanion.util.SpeechText.cacheKey(cacheKey, finalCleanText, langCode);
                     boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, finalStyle, langCode);
 
@@ -440,8 +440,13 @@ public class SpeechService {
                         }
 
                         if (requiresPhonokana) {
-                            textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
-                            System.out.println("[Ciel World Voice]: Transliterated to Katakana: " + textToSpeak);
+                            String converted = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
+                            if (!isSafePhonokana(converted)) {
+                                System.err.println("[Speech Phonetics] status=aborted reason=model-output-unavailable; refusing non-Katakana TTS input.");
+                                return;
+                            }
+                            textToSpeak = converted;
+                            System.out.println("[Ciel World Voice]: Contextual model produced Katakana speech input.");
                         } else if (!isGreeting && CielVoiceManager.isLanguageLocked()) {
                             textToSpeak = TranslationService.toJapanese(textToSpeak);
                             System.out.println("[Ciel World Voice]: Translated to: " + textToSpeak);
@@ -490,6 +495,13 @@ public class SpeechService {
 
     private static boolean containsSemanticJapaneseScript(String text) {
         return text != null && text.matches("(?s).*[぀-ゟ一-鿿].*");
+    }
+
+    /** English speech may reach Nanami only after a complete model conversion. */
+    private static boolean isSafePhonokana(String text) {
+        return text != null && !text.isBlank()
+                && !Pattern.compile("[a-zA-Z]").matcher(text).find()
+                && containsSemanticJapaneseScript(text);
     }
 
     /** Give generated/unkeyed lines a readable, deterministic cache namespace. */
@@ -566,7 +578,7 @@ public class SpeechService {
                                 && !lineKey.startsWith("warm_login")
                                 && langCode.equals("ja-JP")
                                 && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find();
-                        String cacheKey = requiresPhonokana ? "phonokana-v5:" + lineKey : lineKey;
+                        String cacheKey = requiresPhonokana ? "phonokana-v6-model:" + lineKey : lineKey;
                         String speechKey = com.cielcompanion.util.SpeechText.cacheKey(cacheKey, textToSpeak, langCode);
                         boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, style, langCode);
 
@@ -580,7 +592,12 @@ public class SpeechService {
                             }
 
                             if (requiresPhonokana) {
-                                textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
+                                String converted = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
+                                if (!isSafePhonokana(converted)) {
+                                    System.err.println("[Speech Phonetics] status=skipped reason=model-output-unavailable; line not sent to TTS.");
+                                    continue;
+                                }
+                                textToSpeak = converted;
                             } else if (!lineKey.startsWith("boot_greeting") && !lineKey.startsWith("login_greeting")
                                     && !lineKey.startsWith("warm_login") && CielVoiceManager.isLanguageLocked()) {
                                 textToSpeak = TranslationService.toJapanese(textToSpeak);
