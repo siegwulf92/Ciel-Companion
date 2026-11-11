@@ -55,6 +55,9 @@ public class FinanceService {
         } else {
             int failures = Integer.parseInt(state.getProperty(key + "failures", "0")) + 1;
             state.setProperty(key + "failures", Integer.toString(failures));
+            // A failed/deferred attempt is still an attempt. Persist its time
+            // so the next scheduler tick honors retry backoff.
+            state.setProperty(key + "attempt", Long.toString(now));
             System.out.println("[Finance Schedule] " + job + " incomplete; retry eligible after " + FinanceSchedulePolicy.retryMinutes(failures) + " minutes in its next active window.");
         }
         try {
@@ -105,11 +108,14 @@ public class FinanceService {
     }
 
     private static void executeSilentMarketCheck(FinanceSchedulePolicy.Job job) {
-        if (!isFinanceRouterReady()) {
-            System.out.println("[Raphael â€” Financial Analysis] Deferred: local AI router is not ready; existing briefing and retry timestamps preserved.");
+        String routerStatus = financeRouterStatus();
+        if (!"ready".equals(routerStatus)) {
+            recordSchedule(job, false);
+            System.out.println("[Raphael â€” Financial Analysis] Deferred: local AI router " + routerStatus + "; retry state recorded.");
             return;
         }
         if (CodexAgentService.isMaintenanceActive()) {
+            recordSchedule(job, null);
             System.out.println("[Raphael â€” Financial Analysis] Deferred while the daily health review is active.");
             return;
         }
@@ -120,6 +126,7 @@ public class FinanceService {
         // Close the race where daily maintenance claims its window after the first check.
         if (CodexAgentService.isMaintenanceActive()) {
             analysisRunning.set(false);
+            recordSchedule(job, null);
             System.out.println("[Raphael â€” Financial Analysis] Deferred while the daily health review is active.");
             return;
         }
@@ -188,8 +195,15 @@ public class FinanceService {
     }
 
     private static void executeNewsCheck() {
-        if (!isFinanceRouterReady() || CodexAgentService.isMaintenanceActive()) {
-            System.out.println("[Finance Schedule] News watch deferred; router unavailable or maintenance active. Rechecking next schedule tick.");
+        String routerStatus = financeRouterStatus();
+        if (!"ready".equals(routerStatus)) {
+            recordSchedule(FinanceSchedulePolicy.Job.NEWS_WATCH, false);
+            System.out.println("[Finance Schedule] News watch deferred: local AI router " + routerStatus + "; retry state recorded.");
+            return;
+        }
+        if (CodexAgentService.isMaintenanceActive()) {
+            recordSchedule(FinanceSchedulePolicy.Job.NEWS_WATCH, null);
+            System.out.println("[Finance Schedule] News watch deferred while maintenance is active; no failure recorded.");
             return;
         }
         if (!analysisRunning.compareAndSet(false, true)) return;
@@ -273,15 +287,28 @@ public class FinanceService {
                 && !normalized.contains("i cannot help with that");
     }
 
-    private static boolean isFinanceRouterReady() {
+    /** Probe each router health endpoint and preserve the reason for deferral. */
+    private static String financeRouterStatus() {
+        int docs = probeRouterEndpoint("/docs");
+        if (docs == 200) return "ready";
+        int routing = probeRouterEndpoint("/model_routing_status");
+        if (routing == 200) return "ready";
+        int device = probeRouterEndpoint("/device_status");
+        if (device == 200) return "ready";
+        if (docs == -1 && routing == -1 && device == -1) return "unavailable (connection failed)";
+        return "unavailable (HTTP docs=" + docs + ", routing=" + routing + ", device=" + device + ")";
+    }
+
+    private static int probeRouterEndpoint(String path) {
         java.net.HttpURLConnection connection = null;
         try {
-            connection = (java.net.HttpURLConnection) new java.net.URL("http://127.0.0.1:8000/docs").openConnection();
+            connection = (java.net.HttpURLConnection) new java.net.URL("http://127.0.0.1:8000" + path).openConnection();
             connection.setConnectTimeout(1000);
             connection.setReadTimeout(1500);
-            return connection.getResponseCode() == 200;
+            connection.setRequestMethod("GET");
+            return connection.getResponseCode();
         } catch (java.io.IOException e) {
-            return false;
+            return -1;
         } finally {
             if (connection != null) connection.disconnect();
         }
