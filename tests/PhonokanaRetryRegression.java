@@ -22,7 +22,7 @@ public class PhonokanaRetryRegression {
                 body = "{\"detail\":\"router temporarily unavailable\"}".getBytes(StandardCharsets.UTF_8);
             } else {
                 status = 200;
-                body = "{\"katakana\":\"エグジット。\",\"audit\":\"word-aligned\",\"status\":\"CONTEXTUAL_MODEL\"}"
+                body = "{\"katakana\":\"エクジット。\",\"audit\":\"word-aligned\",\"status\":\"CONTEXTUAL_MODEL\"}"
                         .getBytes(StandardCharsets.UTF_8);
             }
             exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
@@ -34,7 +34,7 @@ public class PhonokanaRetryRegression {
             System.setProperty("ciel.phonokana.endpoint",
                     "http://127.0.0.1:" + server.getAddress().getPort() + "/katakana");
             String result = AIEngine.transliterateToKatakanaSync("exit");
-            if (!"エグジット。".equals(result)) throw new AssertionError("Unexpected phonokana: " + result);
+            if (!"エクジット。".equals(result)) throw new AssertionError("Unexpected phonokana: " + result);
             if (calls.get() != 3) throw new AssertionError("Expected exactly 3 bounded attempts, got " + calls.get());
             System.out.println("Phonokana retry regression passed: retries were bounded and audited output won.");
         } finally {

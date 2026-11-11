@@ -17,16 +17,15 @@ public class SpeechTextRegression {
         check(!SpeechText.isValidKana("hello。"), "English phonokana accepted");
         check(SpeechText.isValidKana("テイラー様、大好きだよ。"), "Native affection rejected");
         check(SpeechText.normalizeKana("大好きだよ。").equals("大好きだよ。"), "Native Japanese rewritten");
-        String fallback = SpeechText.localKatakana("I read it yesterday, and I will read it tomorrow?");
-        check(!fallback.matches("(?s).*[A-Za-z0-9].*"), "Fallback leaked English/digits");
-        check(fallback.contains("レッド") && fallback.contains("リード") && fallback.endsWith("？"), "Fallback lost tense or question");
+        String failedClosed = SpeechText.localKatakana("I read it yesterday, and I will read it tomorrow?");
+        check(failedClosed.isEmpty(), "Speech conversion silently used a local fallback when the contextual model was unavailable");
         Method syllables = PhonoKana.class.getDeclaredMethod("romajiLikeToKatakana", String.class);
         syllables.setAccessible(true);
         check(syllables.invoke(PhonoKana.getInstance(), "kashikyu").equals("カシキュ"), "Vowels destroyed whole syllables");
         String first = SpeechText.cacheKey("saved", "I read yesterday.", "ja-JP");
         check(!first.equals("saved"), "Legacy incorrect audio not bypassed");
         check(!first.equals(SpeechText.cacheKey("saved", "I will read tomorrow.", "ja-JP")), "Different source reused audio");
-        check(SpeechText.cacheKey("saved", "アイ リード。", "ja-JP").equals("saved"), "Existing kana WAV invalidated");
+        check(!SpeechText.cacheKey("saved", "アイ リード。", "ja-JP").equals("saved"), "Existing kana WAV was not fingerprinted");
         check(SpeechText.cacheKey("media_commentary", "I read.", "ja-JP").equals("media_commentary"), "Dynamic speech became static");
         check(PhonoKana.getInstance().toKatakana("レッド ガイド").contains("レッド ガイド"), "Existing voiced kana lost dakuten");
         Method ssml = Class.forName("com.cielcompanion.service.AzureSpeechService").getDeclaredMethod(
