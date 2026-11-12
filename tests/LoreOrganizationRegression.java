@@ -39,8 +39,8 @@ public final class LoreOrganizationRegression {
         save.setAccessible(true);
         save.invoke(null, result, "LN Volume 14", 2, "Rimuru used Uriel: Ultimate Defense.");
 
-        Path rimuru = review.resolve("LN 14/Characters/Rimuru.md");
-        Path uriel = review.resolve("LN 14/Skills/Ultimate Skills/Uriel - Ultimate Defense.md");
+        Path rimuru = review.resolve("LN_Volume_14/Characters/Rimuru.md");
+        Path uriel = review.resolve("LN_Volume_14/Skills/Ultimate Skills/Uriel - Ultimate Defense.md");
         if (!Files.isRegularFile(rimuru) || !Files.isRegularFile(uriel))
             throw new AssertionError("Readable volume/category/entity hierarchy was not produced");
         if (!Files.readString(uriel).contains("Raw source: [[../../../../../Raw/LN Volume 14]]"))

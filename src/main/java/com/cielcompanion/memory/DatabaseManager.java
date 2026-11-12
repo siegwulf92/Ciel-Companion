@@ -8,6 +8,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.UUID;
 
 public class DatabaseManager {
     private static final String DB_FILE_NAME = "CielCompanion.db";
@@ -102,6 +103,13 @@ public class DatabaseManager {
         );
         """;
 
+        String syncMetaTableSql = """
+        CREATE TABLE IF NOT EXISTS ciel_sync_meta (
+          key TEXT PRIMARY KEY NOT NULL,
+          value TEXT NOT NULL
+        );
+        """;
+
         try (Statement stmt = conn.createStatement()) {
             stmt.execute(eventsTableSql);
             stmt.execute(factsTableSql);
@@ -110,6 +118,9 @@ public class DatabaseManager {
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_conversation_history_created ON conversation_history(created_at_ms DESC)");
             stmt.execute(loreNotesTableSql);
             stmt.execute(loreLinksTableSql);
+            stmt.execute(syncMetaTableSql);
+            stmt.executeUpdate("INSERT OR IGNORE INTO ciel_sync_meta(key,value) VALUES('device','"
+                    + UUID.randomUUID().toString().replace("-", "") + "')");
             System.out.println("Ciel Debug: Database tables checked/initialized successfully.");
         } catch (Exception e) {
             System.err.println("Ciel Error: FAILED to initialize database tables.");

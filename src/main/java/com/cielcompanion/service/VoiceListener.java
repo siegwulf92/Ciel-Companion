@@ -42,6 +42,8 @@ public class VoiceListener {
     private final AtomicBoolean isInternallyMuted = new AtomicBoolean(false);
 
     private static final long DEAD_STREAM_THRESHOLD_MS = 15000;
+    private static volatile String lastReportedMicrophone = "";
+    private static volatile long lastMicrophoneWarningAt = 0;
     private final AtomicBoolean needsMicReinitialization = new AtomicBoolean(false);
 
     private volatile long lastAudioTime = System.currentTimeMillis();
@@ -163,7 +165,11 @@ public class VoiceListener {
             }
         }
 
-        System.out.println("Ciel Warning: Could not find primary mic. Checking fallbacks.");
+        long now = System.currentTimeMillis();
+        if (now - lastMicrophoneWarningAt > 300000L) {
+            System.out.println("Ciel Debug: Preferred microphone unavailable; probing fallbacks.");
+            lastMicrophoneWarningAt = now;
+        }
         for (int i = 1; i < MIC_PRIORITY.length; i++) {
             String micName = MIC_PRIORITY[i];
              for (Mixer.Info mixerInfo : AudioSystem.getMixerInfo()) {
@@ -171,7 +177,10 @@ public class VoiceListener {
                     Mixer mixer = AudioSystem.getMixer(mixerInfo);
                     DataLine.Info info = new DataLine.Info(TargetDataLine.class, new AudioFormat(16000, 16, 1, true, false));
                     if (mixer.isLineSupported(info)) {
-                        System.out.println("Ciel Debug: Found fallback mic: " + micName);
+                        if (!micName.equals(lastReportedMicrophone)) {
+                            System.out.println("Ciel Debug: Found fallback mic: " + micName);
+                            lastReportedMicrophone = micName;
+                        }
                         activeMicrophoneName = mixerInfo.getName();
                         return (TargetDataLine) mixer.getLine(info);
                     }
@@ -181,7 +190,7 @@ public class VoiceListener {
 
         DataLine.Info info = new DataLine.Info(TargetDataLine.class, new AudioFormat(16000, 16, 1, true, false));
         if (AudioSystem.isLineSupported(info)) {
-            System.out.println("Ciel Debug: Found System Default mic.");
+            System.out.println("Ciel Debug: Microphone fallback selected: system default.");
             activeMicrophoneName = "System Default";
             return (TargetDataLine) AudioSystem.getLine(info);
         }

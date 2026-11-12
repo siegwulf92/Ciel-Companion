@@ -23,10 +23,15 @@ public class MeteorShowers {
         new Shower("Quadrantids", MonthDay.of(1,4), 2, 120, 230, +49, "N"),
         new Shower("Lyrids",      MonthDay.of(4,22),2, 18,  271, +34, "Both"),
         new Shower("Eta Aquariids",MonthDay.of(5,6),2, 50,  338, -1,  "S"),
+        new Shower("Southern Delta Aquariids", MonthDay.of(7,30), 3, 25, 340, -16, "S"),
+        new Shower("Alpha Capricornids", MonthDay.of(7,30), 3, 5, 307, -10, "Both"),
         new Shower("Perseids",    MonthDay.of(8,12),3, 100, 48,  +58, "N"),
+        new Shower("Draconids",   MonthDay.of(10,8), 2, 10, 262, +54, "N"),
         new Shower("Orionids",    MonthDay.of(10,21),3, 20,  95,  +16, "Both"),
+        new Shower("Taurids",     MonthDay.of(11,5), 7, 10, 52,  +22, "Both"),
         new Shower("Leonids",     MonthDay.of(11,17),3, 15, 153, +22, "Both"),
-        new Shower("Geminids",    MonthDay.of(12,14),3, 150, 112, +32, "Both")
+        new Shower("Geminids",    MonthDay.of(12,14),3, 150, 112, +32, "Both"),
+        new Shower("Ursids",      MonthDay.of(12,22),2, 10, 217, +76, "N")
     );
 
     public static class Candidate {

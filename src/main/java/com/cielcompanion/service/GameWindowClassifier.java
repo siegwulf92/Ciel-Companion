@@ -25,6 +25,13 @@ final class GameWindowClassifier {
         String lowerTitle = title.toLowerCase(Locale.ROOT);
         if (isEmptyEmulator(process, lowerTitle)) return Optional.empty();
         String kingdomHeartsGame = kingdomHeartsGame(process);
+        // The 1.5+2.5 ReMIX collection window is a launcher/menu, not a
+        // playable title. Wait for the actual game executable (for example
+        // khfm.exe) before entering Gaming Mode or speaking launch commentary.
+        if (isKingdomHeartsCollectionLauncher(process, lowerTitle, kingdomHeartsGame)) {
+            System.out.println("[Game Classifier] Ignoring Kingdom Hearts 1.5+2.5 collection launcher; waiting for the game process.");
+            return Optional.empty();
+        }
 
         boolean gamePath = lowerCommand.contains("\\steamapps\\common\\")
                 || lowerCommand.contains("\\epic games\\") || lowerCommand.contains("\\xboxgames\\");
@@ -68,6 +75,16 @@ final class GameWindowClassifier {
         if (process.contains("kingdom hearts 358") && process.contains("days"))
             return "Kingdom Hearts 358/2 Days";
         return null;
+    }
+
+    private static boolean isKingdomHeartsCollectionLauncher(String process, String title, String identifiedGame) {
+        if (identifiedGame != null) return false;
+        String identity = (process + " " + title).toLowerCase(Locale.ROOT);
+        if (!identity.contains("kingdom hearts")) return false;
+        boolean collectionTitle = (identity.contains("1.5") || identity.contains("2.5")
+                || identity.contains("1.5+2.5") || identity.contains("1.5 + 2.5"))
+                && identity.contains("remix");
+        return collectionTitle && !process.equals("khfm.exe");
     }
 
     private static boolean isEmptyEmulator(String process, String title) {

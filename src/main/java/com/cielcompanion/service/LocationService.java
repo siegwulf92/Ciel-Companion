@@ -86,7 +86,9 @@ public class LocationService {
             fallbackTimezone = config.getLocationTimezone();
             locationName = config.getString("location.us.zip", "your location");
         } catch (Exception e) {
-            System.err.println("Ciel FATAL Error: Could not load fallback location from astronomy.properties. Using hardcoded defaults.");
+            System.err.println("Ciel Warning: Could not load configured astronomy fallback ("
+                    + e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage()).substring(0, Math.min(160, String.valueOf(e.getMessage()).length()))
+                    + "); using validated hardcoded defaults.");
             fallbackLatitude = 41.3897; // Parma, OH
             fallbackLongitude = -81.7351; // Parma, OH
             fallbackTimezone = "America/New_York";
