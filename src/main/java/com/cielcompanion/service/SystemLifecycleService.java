@@ -5,6 +5,7 @@ import com.cielcompanion.memory.stwm.ShortTermMemoryService;
 import com.cielcompanion.service.LineManager.DialogueLine;
 import com.cielcompanion.CielCompanion;
 import com.cielcompanion.util.ProjectPaths;
+import com.cielcompanion.util.WindowlessCommand;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -102,8 +103,9 @@ public class SystemLifecycleService {
                     String updaterArg = root.resolve("update_ciel.bat").toString().replace("'", "''");
                     String launchHidden = "Start-Process -FilePath '" + updaterArg
                             + "' -WorkingDirectory '" + rootArg + "' -WindowStyle Hidden";
-                    new ProcessBuilder("powershell.exe", "-WindowStyle", "Hidden", "-NoProfile",
-                            "-NonInteractive", "-Command", launchHidden).start();
+                    new ProcessBuilder(ProjectPaths.windowlessCommand(List.of(
+                            "powershell.exe", "-WindowStyle", "Hidden", "-NoProfile",
+                            "-NonInteractive", "-Command", launchHidden))).start();
                 } catch (Exception e) { e.printStackTrace(); }
             }
             System.exit(0);

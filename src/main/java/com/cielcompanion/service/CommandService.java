@@ -23,6 +23,7 @@ import com.cielcompanion.service.nlu.Intent;
 import com.cielcompanion.service.nlu.IntentService;
 import com.cielcompanion.service.SystemMonitor.SystemMetrics;
 import com.cielcompanion.service.SystemMonitor.ProcessInfo;
+import com.cielcompanion.util.WindowlessCommand;
 import com.cielcompanion.util.AstroUtils;
 import com.cielcompanion.util.PhonoKana;
 import com.cielcompanion.util.ProjectPaths;
@@ -1030,8 +1031,9 @@ public class CommandService {
                         if (isReboot) {
                             Runtime.getRuntime().exec("shutdown -r -t 20");
                         } else if (isLogout) {
-                            new ProcessBuilder("powershell.exe", "-NoProfile", "-Command",
-                                    "Start-Sleep -Seconds 20; shutdown.exe -l").start();
+                            new ProcessBuilder(ProjectPaths.windowlessCommand(List.of(
+                                    "powershell.exe", "-NoProfile", "-Command",
+                                    "Start-Sleep -Seconds 20; shutdown.exe -l"))).start();
                         } else {
                             Runtime.getRuntime().exec("shutdown -s -t 20");
                         }
@@ -1121,8 +1123,9 @@ public class CommandService {
             String escapedRoot = ProjectPaths.root().toAbsolutePath().toString().replace("'", "''");
             String launch = "Start-Process -FilePath '" + escapedScript
                     + "' -WorkingDirectory '" + escapedRoot + "' -WindowStyle Hidden";
-            new ProcessBuilder("powershell.exe", "-WindowStyle", "Hidden", "-NoProfile",
-                    "-NonInteractive", "-Command", launch)
+            new ProcessBuilder(ProjectPaths.windowlessCommand(List.of(
+                    "powershell.exe", "-WindowStyle", "Hidden", "-NoProfile",
+                    "-NonInteractive", "-Command", launch)))
                     .directory(ProjectPaths.root().toFile())
                     .redirectOutput(ProcessBuilder.Redirect.DISCARD)
                     .redirectError(ProcessBuilder.Redirect.DISCARD)
