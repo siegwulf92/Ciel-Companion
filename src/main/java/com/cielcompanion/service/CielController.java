@@ -61,6 +61,7 @@ public class CielController {
     // Diagnostic flags for logs
     private static volatile boolean loggedWaitingFor5s = false;
     private static volatile boolean loggedWaitingFor2m = false;
+    private static volatile long nextWarmBootRetryAt;
     private static volatile long lastAudioIdleDiagnostic;
     private static volatile String lastAudioIdleSignature = "";
     private static volatile boolean sessionWasLocked;
@@ -662,17 +663,51 @@ public class CielController {
 
         if (CielState.isWarmBoot()) {
             if (!CielState.isBootGreetingPlayed()) {
-                System.out.println("Ciel Debug: Executing Warm Boot Greeting.");
+                long warmNow = System.currentTimeMillis();
+                if (warmNow < nextWarmBootRetryAt) return;
+                nextWarmBootRetryAt = warmNow + 15_000L;
+                System.out.println("Ciel Debug: Executing Warm Boot Greeting (router readiness is required; retrying on failure).");
                 long offlineSeconds = CielState.getOfflineDurationSeconds();
                 if (offlineSeconds >= 60) {
                     long minutes = offlineSeconds / 60;
-                    SpeechService.speakPreformatted("Welcome back, Master. I was offline for " + minutes
-                            + (minutes == 1 ? " minute." : " minutes."), "warm_boot_return", false, true);
+                    SpeechService.speakPreformattedWithResult(
+                            "Welcome back, Master. I was offline for " + minutes
+                                    + (minutes == 1 ? " minute." : " minutes."),
+                            "warm_boot_return", false, true, spoken -> {
+                                if (Boolean.TRUE.equals(spoken)) {
+                                    CielState.setBootGreetingPlayed(true);
+                                    CielState.setLoginGreetingPlayed(true);
+                                    nextWarmBootRetryAt = 0;
+                                    System.out.println("Ciel Debug: Warm Boot Greeting completed audibly.");
+                                } else {
+                                    System.out.println("Ciel Debug: Warm Boot Greeting was not audible; keeping startup flags clear for retry.");
+                                }
+                            });
                 } else {
-                    speakRandomLine(LineManager.getWarmLoginGreetingLines(), null, 1, false, true);
+                    List<DialogueLine> warmLines = LineManager.getWarmLoginGreetingLines();
+                    if (warmLines == null || warmLines.isEmpty()) {
+                        SpeechService.speakPreformattedWithResult(
+                                "Welcome back, Master.", "warm_login_fallback", false, true, spoken -> {
+                                    if (Boolean.TRUE.equals(spoken)) {
+                                        CielState.setBootGreetingPlayed(true);
+                                        CielState.setLoginGreetingPlayed(true);
+                                        nextWarmBootRetryAt = 0;
+                                    }
+                                });
+                    } else {
+                        DialogueLine line = warmLines.get(random.nextInt(warmLines.size()));
+                        SpeechService.speakPreformattedWithResult(line.text(), line.key(), false, true, spoken -> {
+                            if (Boolean.TRUE.equals(spoken)) {
+                                CielState.setBootGreetingPlayed(true);
+                                CielState.setLoginGreetingPlayed(true);
+                                nextWarmBootRetryAt = 0;
+                                System.out.println("Ciel Debug: Warm Boot Greeting completed audibly.");
+                            } else {
+                                System.out.println("Ciel Debug: Warm Boot Greeting was not audible; keeping startup flags clear for retry.");
+                            }
+                        });
+                    }
                 }
-                CielState.setBootGreetingPlayed(true);
-                CielState.setLoginGreetingPlayed(true);
             }
         } else {
             // First Greeting (5 seconds)

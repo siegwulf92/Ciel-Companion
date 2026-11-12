@@ -14,6 +14,7 @@ public class HotkeyService implements NativeKeyListener {
     private int toggleKeyCode;
     private boolean altFallback;
     private boolean ctrlAltFallback;
+    private boolean volumeMuteFallback;
     private long releaseTimeoutNanos = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(1200L);
     private volatile long lastToggleSignalNanos;
     private final java.util.concurrent.atomic.AtomicBoolean keyDown = new java.util.concurrent.atomic.AtomicBoolean();
@@ -46,6 +47,7 @@ public class HotkeyService implements NativeKeyListener {
         String keyName = Settings.getHotkeyKey().toUpperCase();
         altFallback = Settings.isHotkeyAltFallbackEnabled();
         ctrlAltFallback = Settings.isHotkeyCtrlAltFallbackEnabled();
+        volumeMuteFallback = Settings.isHotkeyVolumeMuteFallbackEnabled();
         releaseTimeoutNanos = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
                 Settings.getHotkeyReleaseTimeoutMs());
         try {
@@ -53,6 +55,7 @@ public class HotkeyService implements NativeKeyListener {
             System.out.println("Ciel Debug: Hotkey for toggle listening set to " + keyName
                     + " (fallbacks: Alt+" + keyName + "=" + altFallback
                     + ", Ctrl+Alt+" + keyName + "=" + ctrlAltFallback
+                    + ", volume-mute alias=" + volumeMuteFallback
                     + ", release watchdog=" + Settings.getHotkeyReleaseTimeoutMs() + "ms)");
         } catch (Exception e) {
             System.err.println("Ciel Error: Invalid hotkey specified in settings: " + keyName);
@@ -83,10 +86,14 @@ public class HotkeyService implements NativeKeyListener {
     }
 
     private boolean isToggleEvent(NativeKeyEvent event) {
-        if (event.getKeyCode() != toggleKeyCode) return false;
         int modifiers = event.getModifiers();
         int relevant = modifiers & (NativeInputEvent.SHIFT_MASK | NativeInputEvent.CTRL_MASK
                 | NativeInputEvent.ALT_MASK | NativeInputEvent.META_MASK);
+        if (volumeMuteFallback && toggleKeyCode == NativeKeyEvent.VC_F12
+                && event.getKeyCode() == NativeKeyEvent.VC_VOLUME_MUTE) {
+            return relevant == 0;
+        }
+        if (event.getKeyCode() != toggleKeyCode) return false;
         return relevant == 0
                 || (altFallback && relevant == NativeInputEvent.ALT_MASK)
                 || (ctrlAltFallback && relevant == (NativeInputEvent.CTRL_MASK | NativeInputEvent.ALT_MASK));
@@ -94,7 +101,11 @@ public class HotkeyService implements NativeKeyListener {
 
     @Override
     public void nativeKeyReleased(NativeKeyEvent e) {
-        if (e.getKeyCode() == toggleKeyCode) keyDown.set(false);
+        if (e.getKeyCode() == toggleKeyCode
+                || (volumeMuteFallback && toggleKeyCode == NativeKeyEvent.VC_F12
+                    && e.getKeyCode() == NativeKeyEvent.VC_VOLUME_MUTE)) {
+            keyDown.set(false);
+        }
     }
 
     // CORRECTED: Renamed method for consistency

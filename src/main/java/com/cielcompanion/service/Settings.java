@@ -74,6 +74,7 @@ public class Settings {
     private static String HOTKEY_KEY;
     private static boolean HOTKEY_ALT_FALLBACK;
     private static boolean HOTKEY_CTRL_ALT_FALLBACK;
+    private static boolean HOTKEY_VOLUME_MUTE_FALLBACK;
     private static long HOTKEY_RELEASE_TIMEOUT_MS;
     
     private static String DND_CAMPAIGN_PATH;
@@ -233,6 +234,7 @@ public class Settings {
             HOTKEY_KEY = props.getProperty("ciel.hotkey.key", "F12");
             HOTKEY_ALT_FALLBACK = Boolean.parseBoolean(props.getProperty("ciel.hotkey.altFallback", "true"));
             HOTKEY_CTRL_ALT_FALLBACK = Boolean.parseBoolean(props.getProperty("ciel.hotkey.ctrlAltFallback", "true"));
+            HOTKEY_VOLUME_MUTE_FALLBACK = Boolean.parseBoolean(props.getProperty("ciel.hotkey.volumeMuteFallback", "true"));
             HOTKEY_RELEASE_TIMEOUT_MS = parseLong(props.getProperty("ciel.hotkey.releaseTimeoutMs", "1200"), 1200L, 250L, 10000L);
             
             DND_CAMPAIGN_PATH = props.getProperty("dnd.campaignPath", "");
@@ -386,6 +388,7 @@ public class Settings {
     public static String getHotkeyKey() { return HOTKEY_KEY; }
     public static boolean isHotkeyAltFallbackEnabled() { return HOTKEY_ALT_FALLBACK; }
     public static boolean isHotkeyCtrlAltFallbackEnabled() { return HOTKEY_CTRL_ALT_FALLBACK; }
+    public static boolean isHotkeyVolumeMuteFallbackEnabled() { return HOTKEY_VOLUME_MUTE_FALLBACK; }
     public static long getHotkeyReleaseTimeoutMs() { return HOTKEY_RELEASE_TIMEOUT_MS; }
     public static String getDndCampaignPath() { return DND_CAMPAIGN_PATH; }
     public static String getDndKnowledgeMode() { return DND_KNOWLEDGE_MODE; }

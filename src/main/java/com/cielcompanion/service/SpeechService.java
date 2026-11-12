@@ -288,6 +288,13 @@ public class SpeechService {
         queuePreformatted(text, key, isRare, flushQueue, null);
     }
 
+    /** Report whether the utterance reached an audible TTS completion. */
+    public static void speakPreformattedWithResult(String text, String key, boolean isRare,
+                                                    boolean flushQueue,
+                                                    java.util.function.Consumer<Boolean> onComplete) {
+        queuePreformatted(text, key, isRare, flushQueue, onComplete, null);
+    }
+
     public static void speakMediaCommentary(String text, java.util.function.Consumer<Boolean> onComplete) {
         // Generated commentary stays English internally; the active Japanese
         // voice receives final-stage phonokana only when it is about to speak.
