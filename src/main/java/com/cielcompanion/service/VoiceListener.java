@@ -291,7 +291,8 @@ public class VoiceListener {
             microphone.flush();
         }
         String lineKey = newMuteState ? "command.toggle_listening.off" : "command.toggle_listening.on";
-        try { LineManager.getDialogueLine(lineKey).ifPresent(line -> SpeechService.speakPreformatted(line.text())); }
+        try { LineManager.getDialogueLine(lineKey).ifPresent(line ->
+                SpeechService.speakImmediateAcknowledgement(line.text(), line.key())); }
         catch (Exception e) { System.out.println("Ciel Debug: Listening toggle applied; spoken acknowledgement not ready yet."); }
     }
 

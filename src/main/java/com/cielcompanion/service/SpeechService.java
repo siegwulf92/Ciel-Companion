@@ -40,6 +40,9 @@ public class SpeechService {
     private record SpeechMood(String source, String style, String pitch, double intensity) {}
 
     private static final ExecutorService speechExecutor = Executors.newSingleThreadExecutor();
+    // A microphone-toggle acknowledgement must not wait behind a stalled
+    // provider request or a long sequential dialogue task.
+    private static final ExecutorService prioritySpeechExecutor = Executors.newCachedThreadPool();
     private static volatile Future<?> sequentialSpeechTask = null;
     private static volatile Future<?> currentSpeechTask = null;
     private static final AtomicBoolean isActivelySpeaking = new AtomicBoolean(false);
@@ -297,6 +300,36 @@ public class SpeechService {
      */
     public static void speakNativeJapanese(String text, String key) {
         queuePreformatted(text, key, false, true, null, "ja-JP", true);
+    }
+
+    /** Speak a short control acknowledgement independently of the dialogue queue. */
+    public static void speakImmediateAcknowledgement(String text, String key) {
+        if (text == null || text.isBlank()) return;
+        prioritySpeechExecutor.submit(() -> {
+            boolean enqueued = false;
+            try {
+                String cleanText = text.replaceAll("\\[([a-zA-Z]+)\\]", "").trim();
+                if (containsSemanticJapaneseScript(cleanText)) {
+                    System.err.println("[Speech Guard] Rejected semantic Japanese acknowledgement; expected Katakana phonetic text.");
+                    return;
+                }
+                String langCode = CielVoiceManager.getActiveLanguageCode();
+                String speechKey = com.cielcompanion.util.SpeechText.cacheKey(
+                        stableSpeechKey(key, cleanText), cleanText, langCode);
+                enqueued = enqueueSpeech(false);
+                if (!enqueued) return;
+                boolean delivered = executeSpeechBlocking(cleanText, speechKey, Settings.getTtsRate(),
+                        "default", "+0%", langCode, speechGeneration.get(),
+                        shouldUseBreeze(key, false));
+                System.out.println("[Speech Acknowledgement] status=" + (delivered ? "completed" : "failed")
+                        + " key=" + safeSpeechLogKey(key));
+            } catch (Throwable failure) {
+                System.err.println("[Speech Acknowledgement] status=failed reason="
+                        + failure.getClass().getSimpleName());
+            } finally {
+                if (enqueued) dequeueSpeech();
+            }
+        });
     }
 
     /** Report whether the utterance reached an audible TTS completion. */
