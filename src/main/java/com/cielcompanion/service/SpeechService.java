@@ -288,6 +288,17 @@ public class SpeechService {
         queuePreformatted(text, key, isRare, flushQueue, null);
     }
 
+    /**
+     * Explicit escape hatch for deliberate native-Japanese dialogue.
+     * Ordinary dialogue must remain English internally and is converted to
+     * Katakana-English at the final speech boundary; callers use this method
+     * only when the content is intentionally Japanese (for example a lore,
+     * affection, or phase-specific line).
+     */
+    public static void speakNativeJapanese(String text, String key) {
+        queuePreformatted(text, key, false, true, null, "ja-JP", true);
+    }
+
     /** Report whether the utterance reached an audible TTS completion. */
     public static void speakPreformattedWithResult(String text, String key, boolean isRare,
                                                     boolean flushQueue,
@@ -310,12 +321,19 @@ public class SpeechService {
 
     private static void queuePreformatted(String text, String key, boolean isRare, boolean flushQueue,
                                           java.util.function.Consumer<Boolean> onComplete) {
-        queuePreformatted(text, key, isRare, flushQueue, onComplete, null);
+        queuePreformatted(text, key, isRare, flushQueue, onComplete, null, false);
     }
 
     private static void queuePreformatted(String text, String key, boolean isRare, boolean flushQueue,
                                           java.util.function.Consumer<Boolean> onComplete,
                                           String forcedLanguageCode) {
+        queuePreformatted(text, key, isRare, flushQueue, onComplete, forcedLanguageCode, false);
+    }
+
+    private static void queuePreformatted(String text, String key, boolean isRare, boolean flushQueue,
+                                          java.util.function.Consumer<Boolean> onComplete,
+                                          String forcedLanguageCode,
+                                          boolean allowSemanticJapanese) {
         try {
             if (text == null || text.isBlank()) {
                 if (onComplete != null) onComplete.accept(false);
@@ -354,10 +372,11 @@ public class SpeechService {
             final String speechKeyBase = stableSpeechKey(key, cleanText);
 
             // All dialogue remains English internally. The Japanese voice
-            // receives Katakana-English only at the final speech boundary;
-            // never let semantic Japanese text reach TTS (including idle or
-            // generated dialogue, not only game/media commentary).
-            if (containsSemanticJapaneseScript(cleanText)) {
+            // receives Katakana-English at the final speech boundary for
+            // ordinary dialogue; deliberate native-Japanese callers opt in
+            // explicitly so accidental semantic-Japanese model output is
+            // still rejected.
+            if (containsSemanticJapaneseScript(cleanText) && !allowSemanticJapanese) {
                 System.err.println("[Speech Guard] Rejected semantic Japanese "
                         + (key == null ? "unkeyed" : key)
                         + " payload; expected English source before Katakana conversion.");
@@ -502,14 +521,19 @@ public class SpeechService {
 
     private static boolean containsSemanticJapaneseScript(String text) {
         // Katakana is the phonetic-English output sent to the Japanese voice.
-        return text != null && text.matches("(?s).*[ぁ-ゟァ-ヺ一-鿿].*");
+        // Only Hiragana/Kanji are semantic Japanese and must be rejected here.
+        return text != null && text.matches("(?s).*[ぁ-ゟ一-鿿].*");
+    }
+
+    private static boolean containsPhoneticJapaneseScript(String text) {
+        return text != null && text.matches("(?s).*[ァ-ヺ].*");
     }
 
     /** English speech may reach Nanami only after a complete model conversion. */
     private static boolean isSafePhonokana(String text) {
         return text != null && !text.isBlank()
                 && !Pattern.compile("[a-zA-Z]").matcher(text).find()
-                && containsSemanticJapaneseScript(text);
+                && containsPhoneticJapaneseScript(text);
     }
 
     /** Give generated/unkeyed lines a readable, deterministic cache namespace. */
