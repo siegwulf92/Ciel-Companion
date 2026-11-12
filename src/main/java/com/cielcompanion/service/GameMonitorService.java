@@ -78,6 +78,11 @@ public final class GameMonitorService {
 
         GameProgress.Context history = GameProgress.begin(game.displayName(), sessionStartTime);
 
+        if (!GameProgress.claimLaunchCommentary(game.displayName(), game.pid(), sessionStartTime)) {
+            System.out.println("[Game Session] Launch commentary suppressed; this process was already announced before a Ciel restart.");
+            return;
+        }
+
         String prompt = "Master Taylor just started playing " + game.displayName() + ". "
                 + "Foreground executable: " + game.process() + ". "
                 + GameLaunchCommentary.grounding(game.displayName()) + " "

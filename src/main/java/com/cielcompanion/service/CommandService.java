@@ -968,6 +968,7 @@ public class CommandService {
         System.out.println("[Ciel Debug] Initiating FAST " + commandType + " sequence. Securing memory core.");
         isShuttingDown.set(true);
         CielState.setPerformingColdShutdown(!isReboot);
+        SessionRecoveryService.requestShutdown("planned_ciel_" + commandType.toLowerCase(Locale.ROOT));
 
         CompletableFuture.runAsync(() -> {
             // 1. Initial Speech (Using static keys so Azure caches/offline files trigger)

@@ -152,6 +152,16 @@ public class VaultService {
             Files.createDirectories(vaultRoot.resolve("lore").resolve("Events"));
             Files.createDirectories(vaultRoot.resolve("lore").resolve("Indexes"));
 
+            // Older runs used a human-readable `LN 3` review folder while the
+            // canonical Obsidian links use `LN_Volume_3`. Merge the legacy
+            // tree before the watcher starts so new extraction chunks never
+            // split across two locations. Existing files are preserved; a
+            // same-name conflict is retained with a deterministic `.legacy`
+            // suffix instead of being overwritten.
+            normalizeLegacyReviewFolders();
+            dedupeCompletedLoreRequests();
+            refreshLoreCoverageManifest();
+
             // Older runs archived some volumes without ever producing a transcript.
             // Put those source texts back in the ordered queue without removing the archive.
             for (int volume = 1; volume <= LoreDocumentStore.MAX_LN_VOLUME; volume++) {
@@ -165,6 +175,9 @@ public class VaultService {
                     System.out.println("Ciel Lore Recovery: restored unprocessed " + name + " to queue.");
                 }
             }
+            // The recovery loop above can restore archived-but-unprocessed
+            // volumes into the active queue; reflect that final state too.
+            refreshLoreCoverageManifest();
 
             System.out.println("Ciel Debug: VaultService initialized at " + vaultRoot);
 
@@ -324,7 +337,141 @@ public class VaultService {
 
     private static String readableVolume(String volumeName) {
         Matcher number = Pattern.compile("(?i)(?:ln\\s*)?(?:volume|vol)?\\s*(\\d+)").matcher(volumeName == null ? "" : volumeName);
-        return number.find() ? "LN " + Integer.parseInt(number.group(1)) : readableLorePart(volumeName);
+        return number.find() ? "LN_Volume_" + Integer.parseInt(number.group(1)) : readableLorePart(volumeName);
+    }
+
+    private static int markdownCount(Path root) {
+        if (!Files.isDirectory(root)) return 0;
+        try (var files = Files.walk(root)) {
+            return (int) files.filter(Files::isRegularFile)
+                    .filter(p -> p.toString().toLowerCase(Locale.ROOT).endsWith(".md"))
+                    .count();
+        } catch (IOException e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Consolidate review candidates emitted by older builds. This is deliberately
+     * limited to the two known legacy volume patterns and never touches Raw,
+     * Transcripts, or approved notes.
+     */
+    private static void normalizeLegacyReviewFolders() {
+        if (!Files.isDirectory(loreReviewDir)) return;
+        try (var dirs = Files.list(loreReviewDir)) {
+            for (Path legacyRoot : dirs.filter(Files::isDirectory).toList()) {
+                Matcher match = Pattern.compile("(?i)^LN\\s+(\\d+)$").matcher(legacyRoot.getFileName().toString());
+                if (!match.matches()) continue;
+                int volume = Integer.parseInt(match.group(1));
+                Path canonicalRoot = loreReviewDir.resolve("LN_Volume_" + volume);
+                try (var files = Files.walk(legacyRoot)) {
+                    for (Path source : files.filter(Files::isRegularFile).toList()) {
+                        Path relative = legacyRoot.relativize(source);
+                        Path target = canonicalRoot.resolve(relative);
+                        Files.createDirectories(target.getParent());
+                        if (Files.exists(target)) {
+                            if (Files.mismatch(source, target) == -1) continue;
+                            String base = target.getFileName().toString().replaceFirst("(?i)\\.md$", "");
+                            target = target.resolveSibling(base + ".legacy.md");
+                            int suffix = 2;
+                            while (Files.exists(target)) {
+                                target = target.resolveSibling(base + ".legacy-" + suffix++ + ".md");
+                            }
+                        }
+                        Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                }
+                System.out.println("Ciel Lore Layout: merged legacy review folder "
+                        + legacyRoot.getFileName() + " -> " + canonicalRoot.getFileName());
+            }
+        } catch (IOException e) {
+            logFailure("lore-layout-normalization", "Ciel Lore Layout: legacy review merge deferred: "
+                    + safeFailureReason(e.getMessage()));
+        }
+    }
+
+    private static String normalizedLoreSource(Path path) throws IOException {
+        return Files.readString(path, StandardCharsets.UTF_8)
+                .replaceAll("(?i)\\\\?#(?:completed|transcript|novel|lore)\\b", "")
+                .replaceAll("\\s+", " ").trim();
+    }
+
+    /** Keep re-added copies from sending already completed volumes back through the model. */
+    private static void dedupeCompletedLoreRequests() {
+        try {
+            Path duplicateDir = requestsArchiveDir.resolve("duplicates");
+            Path stateArchive = pipelineStateDir.resolve("archive");
+            for (int volume = 1; volume <= LoreDocumentStore.MAX_LN_VOLUME; volume++) {
+                String name = "LN Volume " + volume + ".md";
+                Path active = requestsDir.resolve(name);
+                Path archived = requestsArchiveDir.resolve(name);
+                Path transcript = vaultRoot.resolve("lore").resolve("Transcripts")
+                        .resolve("LN Volume " + volume + "_Cleaned.md");
+                if (!Files.isRegularFile(active) || !Files.isRegularFile(archived) || !Files.isRegularFile(transcript)) continue;
+                if (!normalizedLoreSource(active).equals(normalizedLoreSource(archived))) continue;
+                Files.createDirectories(duplicateDir);
+                Path moved = duplicateDir.resolve(name);
+                if (Files.exists(moved)) moved = duplicateDir.resolve("LN Volume " + volume + "-" + System.currentTimeMillis() + ".md");
+                Files.move(active, moved, StandardCopyOption.REPLACE_EXISTING);
+                Path state = statePathFor(name);
+                if (Files.exists(state)) {
+                    Files.createDirectories(stateArchive);
+                    Files.move(state, stateArchive.resolve(state.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+                }
+                System.out.println("Ciel Lore Recovery: archived duplicate completed request " + name);
+            }
+        } catch (IOException e) {
+            logFailure("lore-request-dedupe", "Ciel Lore Recovery: duplicate cleanup deferred: "
+                    + safeFailureReason(e.getMessage()));
+        }
+    }
+
+    /** Write a deterministic, source-grounded status page so gaps are visible. */
+    private static void refreshLoreCoverageManifest() {
+        Path manifest = vaultRoot.resolve("lore").resolve("Tensura").resolve("Light Novels")
+                .resolve("Volume Coverage.md");
+        try {
+            Files.createDirectories(manifest.getParent());
+            StringBuilder body = new StringBuilder("---\ncorpus: Tensura\nrole: coverage-index\nsource_policy: raw-first\n---\n\n")
+                    .append("# Tensura light-novel coverage\n\n")
+                    .append("Raw files are preserved and are the source of truth. Transcripts and review candidates are derived, "
+                            + "not canon until checked. The queue remains strictly ascending and processes one volume at a time.\n\n")
+                    .append("| Volume | Raw | Queue copy | Cleaned transcript | Checkpoint | Review candidates | Status |\n")
+                    .append("|---:|---|---|---|---|---:|---|\n");
+            for (int volume = 1; volume <= LoreDocumentStore.MAX_LN_VOLUME; volume++) {
+                String name = "LN Volume " + volume;
+                Path raw = vaultRoot.resolve("lore").resolve("Raw").resolve(name + ".md");
+                Path request = requestsDir.resolve(name + ".md");
+                Path archived = requestsArchiveDir.resolve(name + ".md");
+                Path transcript = vaultRoot.resolve("lore").resolve("Transcripts").resolve(name + "_Cleaned.md");
+                Path statePath = statePathFor(name + ".md");
+                PipelineState state = loadState(statePath);
+                Path review = loreReviewDir.resolve("LN_Volume_" + volume);
+                String status;
+                if (!Files.isRegularFile(raw)) status = "source not supplied";
+                else if (Files.isRegularFile(transcript)) status = "complete";
+                else if (state != null && state.totalChunks > 0)
+                    status = "processing chunk " + Math.min(state.chunkIndex + 1, state.totalChunks) + "/" + state.totalChunks
+                            + " (phase " + state.currentPhase + ")";
+                else if (Files.isRegularFile(request)) status = "queued";
+                else if (Files.isRegularFile(archived)) status = "archived without transcript";
+                else status = "needs queue";
+                body.append("| ").append(String.format(Locale.ROOT, "%02d", volume)).append(" | ")
+                        .append(Files.isRegularFile(raw) ? "[[../../Raw/" + name + "|present]]" : "missing")
+                        .append(" | ").append(Files.isRegularFile(request) ? "active" : (Files.isRegularFile(archived) ? "archive" : "—"))
+                        .append(" | ").append(Files.isRegularFile(transcript) ? "[[../../Transcripts/" + name + "_Cleaned|present]]" : "—")
+                        .append(" | ").append(state == null ? "—" : "`" + state.chunkIndex + "/" + state.totalChunks + "`")
+                        .append(" | ").append(markdownCount(review))
+                        .append(" | ").append(status).append(" |\n");
+            }
+            body.append("\nVolumes 15–23 are not supplied locally; no placeholder canon files are created.\n")
+                    .append("Review candidates: [[../../Review/Tensura|open review queue]].\n")
+                    .append("Per-volume navigation: [[README|light-novel index]].\n");
+            writeAtomically(manifest, body.toString());
+        } catch (IOException e) {
+            logFailure("lore-coverage-manifest", "Ciel Lore Layout: coverage manifest update deferred: "
+                    + safeFailureReason(e.getMessage()));
+        }
     }
 
     private static String skillTypeFolder(JsonObject fact) {
@@ -360,6 +507,16 @@ public class VaultService {
         } catch (Exception e) {
             throw new IOException("Could not parse model JSON response", e);
         }
+    }
+
+    /** Preserve source text and advance the ordered queue when a model pass is unavailable. */
+    private static String sourcePreservingLoreFallback(String source) {
+        JsonObject fallback = new JsonObject();
+        fallback.addProperty("cleaned_text", source == null ? "" : source);
+        fallback.add("lore_facts", new JsonArray());
+        fallback.addProperty("review_required", true);
+        fallback.addProperty("fallback_reason", "model_unavailable_or_invalid_response");
+        return fallback.toString();
     }
 
     private static void saveLoreFactCandidates(JsonObject result, String volumeName, int chunkIndex,
@@ -812,8 +969,13 @@ public class VaultService {
 
     private static boolean isErrorResponse(String response) {
         if (response == null || response.isBlank()) return true;
-        String l = response.toLowerCase();
-        return l.contains("timeout") || l.contains("[system_error]") || l.contains("[error") || l.contains("crashed");
+        String l = response.strip().toLowerCase(Locale.ROOT);
+        // Model output can legitimately preserve prose containing words such as
+        // "timeout", "error", or "crashed".  Only recognize the explicit
+        // transport/router sentinels; structured lore output is validated below.
+        return l.equals("timeout") || l.equals("timeout_exception")
+                || l.startsWith("[system_error]") || l.startsWith("[error")
+                || l.startsWith("[ai error") || l.startsWith("error:");
     }
 
     private static void startLoreBatch() {
@@ -956,9 +1118,17 @@ public class VaultService {
                                 + "Use the canonical English proper name for entity, never a pronoun, generic role, group label, or guessed correction. For Skills only, skill_type may be Ultimate Skills, Unique Skills, Extra Skills, Intrinsic Skills, Common Skills, Resistances, Arts, or blank. "
                                 + "Include only important facts explicitly stated in this excerpt. evidence must be a short exact quotation copied from SOURCE TEXT; omit any fact without a matching quote. "
                                 + "Do not use outside knowledge, foreshadow later events, or add headings outside the JSON.\n\nSOURCE TEXT:\n" + state.currentDraft;
-                        String result = awaitLorePhase(prompt,
-                                "You are a conservative source archivist. Preserve the transcript and extract only explicitly evidenced facts.",
-                                "proofread-and-extract", state, c);
+                        String result = null;
+                        try {
+                            result = awaitLorePhase(prompt,
+                                    "You are a conservative source archivist. Preserve the transcript and extract only explicitly evidenced facts.",
+                                    "proofread-and-extract", state, c);
+                        } catch (Exception phaseFailure) {
+                            System.err.println("Ciel Lore Pipeline: phase=proofread-and-extract file="
+                                    + state.fileName + " chunk=" + (c + 1)
+                                    + " fallback=source-preserving reason="
+                                    + phaseFailure.getClass().getSimpleName());
+                        }
                         if (result != null && !result.isBlank() && !isErrorResponse(result)) {
                             // Validate before checkpointing: malformed JSON must never
                             // become a phase-3 checkpoint that every retry reparses.
@@ -996,9 +1166,15 @@ public class VaultService {
                             state.currentPhase = 3;
                             saveState(state);
                         } else {
-                            System.err.println("Ciel Warning: Pipeline sweep timed out or failed on Pass 2. Safely halting to prevent data rot.");
-                            fileCompletedSuccessfully = false;
-                            break;
+                            // Preserve the exact source and continue. No facts are
+                            // extracted from an unverified model response.
+                            result = sourcePreservingLoreFallback(state.currentDraft);
+                            logFailure("lore-phase:" + state.fileName + ":" + c,
+                                    "Ciel Lore Pipeline: file=" + state.fileName + " chunk=" + (c + 1)
+                                    + " status=review-required source-preserving-fallback");
+                            state.currentDraft = result;
+                            state.currentPhase = 3;
+                            saveState(state);
                         }
                     }
                     
@@ -1067,8 +1243,9 @@ public class VaultService {
                 }
 
             } catch (Exception e) {
-                System.err.println("Ciel Error: Lore task failed for " + processingFile.getFileName()
-                        + " type=" + e.getClass().getSimpleName() + " message=" + e.getMessage());
+                logFailure("lore-task:" + processingFile.toAbsolutePath(),
+                        "Ciel Error: Lore task failed for " + processingFile.getFileName()
+                                + " type=" + e.getClass().getSimpleName() + " message=" + safeFailureReason(e.getMessage()));
                 debounceExecutor.schedule(() -> queueLoreInjection(processingFile), 15, TimeUnit.MINUTES);
             } finally {
                 activeLorePaths.remove(processingFile);
@@ -1103,8 +1280,9 @@ public class VaultService {
             String result = request.get(6, TimeUnit.MINUTES);
             long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
             if (result == null || result.isBlank() || isErrorResponse(result)) {
-                System.err.println("Ciel Lore Pipeline: phase=" + phase + " file=" + state.fileName
-                        + " chunk=" + (chunkIndex + 1) + " result=error-response elapsedMs=" + elapsedMs);
+                logFailure("lore-phase-response:" + state.fileName + ":" + chunkIndex + ":" + phase,
+                        "Ciel Lore Pipeline: phase=" + phase + " file=" + state.fileName
+                                + " chunk=" + (chunkIndex + 1) + " result=error-response elapsedMs=" + elapsedMs);
                 return null;
             }
             System.out.println("Ciel Lore Pipeline: phase=" + phase + " file=" + state.fileName
@@ -1113,14 +1291,16 @@ public class VaultService {
             return result;
         } catch (TimeoutException e) {
             request.cancel(true);
-            System.err.println("Ciel Lore Pipeline: phase=" + phase + " file=" + state.fileName
-                    + " chunk=" + (chunkIndex + 1) + " result=timeout limitSeconds=360");
+            logFailure("lore-phase-timeout:" + state.fileName + ":" + chunkIndex + ":" + phase,
+                    "Ciel Lore Pipeline: phase=" + phase + " file=" + state.fileName
+                            + " chunk=" + (chunkIndex + 1) + " result=timeout limitSeconds=360");
             throw e;
         } catch (Exception e) {
             long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
-            System.err.println("Ciel Lore Pipeline: phase=" + phase + " file=" + state.fileName
-                    + " chunk=" + (chunkIndex + 1) + " result=exception type="
-                    + e.getClass().getSimpleName() + " elapsedMs=" + elapsedMs);
+            logFailure("lore-phase-exception:" + state.fileName + ":" + chunkIndex + ":" + phase,
+                    "Ciel Lore Pipeline: phase=" + phase + " file=" + state.fileName
+                            + " chunk=" + (chunkIndex + 1) + " result=exception type="
+                            + e.getClass().getSimpleName() + " elapsedMs=" + elapsedMs);
             throw e;
         }
     }

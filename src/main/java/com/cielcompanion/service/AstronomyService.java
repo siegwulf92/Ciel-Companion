@@ -7,7 +7,6 @@ import com.cielcompanion.memory.MemoryService;
 import com.cielcompanion.service.LineManager.DialogueLine;
 import com.cielcompanion.util.AstroUtils;
 import com.cielcompanion.util.EnglishNumber;
-import com.cielcompanion.util.PhonoKana;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -333,7 +332,7 @@ public class AstronomyService {
                     String meta = AstronomyMetaReferences.referenceFor(p.id());
                     String suffix = meta.isBlank() ? "" : " Meta reference: " + meta + ".";
                     visibleLines.add(line.text() + dynamicBodyDetail(p, alt)
-                            + (suffix.isBlank() ? "" : PhonoKana.getInstance().toKatakana(suffix)));
+                            + suffix);
                 });
             }
             
@@ -351,8 +350,8 @@ public class AstronomyService {
             if (uranus != null && config.enabled("show.uranusPuns", true)
                     && LocalDate.now(ZoneId.of(LocationService.getTimezone())).getDayOfYear() % 7 == 0
                     && currentAltitude(uranus, now) >= 20.0 && isPlanetObservable(uranus)) {
-                sequentialEvents.put("uranus_note", PhonoKana.getInstance().toKatakana(
-                        "Uranus is up there tonight. It is not a naked-eye target, but a small telescope can help you find your Uranus."));
+                sequentialEvents.put("uranus_note",
+                        "Uranus is up there tonight. It is not a naked-eye target, but a small telescope can help you find your Uranus.");
             }
         } else {
              checkVisiblePlanetsStatic(sequentialEvents);
@@ -372,9 +371,9 @@ public class AstronomyService {
         for (int i = 0; i < visible.size(); i++) {
             CombinedAstronomyData.PlanetCoordinate p = visible.get(i);
             sequentialEvents.put("deep_sky_" + i,
-                    PhonoKana.getInstance().toKatakana((p.name() == null ? p.id() : p.name())
+                    (p.name() == null ? p.id() : p.name())
                             + " is above the " + AstroUtils.compassDirection(currentAzimuth(p, now))
-                            + " horizon.") + dynamicBodyDetail(p, currentAltitude(p, now)));
+                            + " horizon." + dynamicBodyDetail(p, currentAltitude(p, now)));
         }
     }
 
@@ -439,7 +438,7 @@ public class AstronomyService {
         if (p.hasPhotometry()) english.append(" and has an apparent magnitude near ")
                 .append(String.format(Locale.ROOT, "%.1f", p.magnitude()));
         english.append(".");
-        return PhonoKana.getInstance().toKatakana(english.toString());
+        return english.toString();
     }
 
     private static void checkVisiblePlanetsStatic(Map<String, String> sequentialEvents) {
@@ -505,8 +504,8 @@ public class AstronomyService {
                     .limit(6)
                     .map(CombinedAstronomyData.PlanetCoordinate::constellationName)
                     .distinct().reduce((a, b) -> a + ", " + b).orElse("");
-            sequentialEvents.put("constellation_anchors", PhonoKana.getInstance().toKatakana(
-                    "The strongest named-star anchors are in " + names + "."));
+            sequentialEvents.put("constellation_anchors",
+                    "The strongest named-star anchors are in " + names + ".");
         }
     }
 
@@ -528,7 +527,7 @@ public class AstronomyService {
             english.append(" with about ").append(Math.round(moon.phaseFraction() * 100.0)).append(" percent illumination");
         }
         english.append(".");
-        ambientLines.add(PhonoKana.getInstance().toKatakana(english.toString()));
+        ambientLines.add(english.toString());
     }
 
     private static void checkNoteworthyAlignments(Map<String, String> sequentialEvents) {
@@ -548,7 +547,7 @@ public class AstronomyService {
                 String english = closePlanets.size() > 1
                         ? "The Moon is close to " + joined + " tonight, making a striking grouping."
                         : "The Moon is close to " + joined + " tonight; look for them together.";
-                sequentialEvents.put("special_alignment", PhonoKana.getInstance().toKatakana(english));
+                sequentialEvents.put("special_alignment", english);
                 return;
             }
         }
@@ -567,7 +566,7 @@ public class AstronomyService {
                 String references = group.stream().map(p -> AstronomyMetaReferences.referenceFor(p.id()))
                         .filter(s -> s != null && !s.isBlank()).distinct().reduce((a, b) -> a + "; " + b).orElse("");
                 String metaSuffix = references.isBlank() ? "" : " If you are thinking of Re:Zero, the names echo " + references + ".";
-                sequentialEvents.put("special_alignment", PhonoKana.getInstance().toKatakana(names + " form a loose line in the " + AstroUtils.compassDirection(currentAzimuth(group.get(0), now)) + " sky tonight." + metaSuffix));
+                sequentialEvents.put("special_alignment", names + " form a loose line in the " + AstroUtils.compassDirection(currentAzimuth(group.get(0), now)) + " sky tonight." + metaSuffix);
                 return;
             }
         }
@@ -575,14 +574,14 @@ public class AstronomyService {
             CombinedAstronomyData.PlanetCoordinate a = brightBodies.get(i), b = brightBodies.get(j);
             double separation = angularSeparation(a.ra(), a.dec(), b.ra(), b.dec());
             if (Double.isFinite(separation) && separation <= 6.0) {
-                sequentialEvents.put("special_alignment", PhonoKana.getInstance().toKatakana((a.name() == null ? a.id() : a.name()) + " and " + (b.name() == null ? b.id() : b.name()) + " are close together tonight. Look toward " + AstroUtils.compassDirection(currentAzimuth(a, now)) + "."));
+                sequentialEvents.put("special_alignment", (a.name() == null ? a.id() : a.name()) + " and " + (b.name() == null ? b.id() : b.name()) + " are close together tonight. Look toward " + AstroUtils.compassDirection(currentAzimuth(a, now)) + ".");
                 return;
             }
         }
         CombinedAstronomyData.PlanetCoordinate pleiades = bodyOrFixedStar("pleiades");
         double pleiadesAltitude = currentAltitude(pleiades, now);
         double pleiadesSeparation = moon == null ? Double.NaN : angularSeparation(moon.ra(), moon.dec(), pleiades.ra(), pleiades.dec());
-        if (pleiadesAltitude >= 10.0 && Double.isFinite(pleiadesSeparation) && pleiadesSeparation <= 8.0) sequentialEvents.put("special_alignment", PhonoKana.getInstance().toKatakana("The Moon is close to the Pleiades, the Seven Sisters, tonight."));
+        if (pleiadesAltitude >= 10.0 && Double.isFinite(pleiadesSeparation) && pleiadesSeparation <= 8.0) sequentialEvents.put("special_alignment", "The Moon is close to the Pleiades, the Seven Sisters, tonight.");
     }
 
     private static double angularSeparation(double ra1, double dec1, double ra2, double dec2) {
@@ -697,7 +696,7 @@ public class AstronomyService {
                 if (!WeatherService.isSkyLikelyClear(date, time)) continue;
                 String when = date.equals(today) ? "Tonight around " + time.format(DateTimeFormatter.ofPattern("h:mm a")) : "On " + date.format(DateTimeFormatter.ofPattern("MMM d")) + " around " + time.format(DateTimeFormatter.ofPattern("h:mm a"));
                 String english = when + ", the " + event.primary() + " will be close to " + event.secondary() + ", about " + Math.round(event.separationDeg()) + " degrees apart. Look toward " + AstroUtils.compassDirection(event.primaryAzimuthDeg()) + ", roughly " + Math.round(event.primaryAltitudeDeg()) + " degrees above the horizon.";
-                sequentialEvents.put("upcoming_sky_" + added++, PhonoKana.getInstance().toKatakana(english));
+                sequentialEvents.put("upcoming_sky_" + added++, english);
                 if (added >= 2) break;
             } catch (Exception ignored) { }
         }
@@ -731,8 +730,9 @@ public class AstronomyService {
                 config.getDouble("meteors.minAltitudeDeg", 20.0)
             );
             if (!showers.isEmpty()) {
-                String showerName = PhonoKana.getInstance().toKatakana(showers.get(0).shower.name);
-                ambientLines.add("ザ " + showerName + " ミーティア シャワー イズ アクティブ アラウンド ディス タイム。");
+                MeteorShowers.Candidate candidate = showers.get(0);
+                String showerName = candidate.shower.name;
+                ambientLines.add(showerName + " is active around this date. For the best chance, look toward its radiant after midnight when the sky is dark and clear.");
             }
         } catch (Exception e) {
             System.err.println("Ciel Error: Failed to check for meteor showers fallback. " + e.getMessage());
@@ -749,7 +749,7 @@ public class AstronomyService {
             long daysUntil = java.time.temporal.ChronoUnit.DAYS.between(today, event.date());
             String lineKey = (daysUntil == 0) ? "today" : (daysUntil > 0) ? "upcoming" : "aftermath";
             if (!isVisible) lineKey = "notvisible";
-            String katakanaDesc = PhonoKana.getInstance().toKatakana(event.description());
+            String katakanaDesc = event.description();
             LineManager.getEclipseLine(typeKey + "_" + lineKey).ifPresent(line ->
                 sequentialEvents.put("eclipse", line.text().replace("{event_desc}", katakanaDesc))
             );

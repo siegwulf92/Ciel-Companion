@@ -106,21 +106,21 @@ public class FinanceService {
 
     private static void executeSilentMarketCheck(FinanceSchedulePolicy.Job job) {
         if (!isFinanceRouterReady()) {
-            System.out.println("[Raphael â€” Financial Analysis] Deferred: local AI router is not ready; existing briefing and retry timestamps preserved.");
+            System.out.println("[Raphael — Financial Analysis] Deferred: local AI router is not ready; existing briefing and retry timestamps preserved.");
             return;
         }
         if (CodexAgentService.isMaintenanceActive()) {
-            System.out.println("[Raphael â€” Financial Analysis] Deferred while the daily health review is active.");
+            System.out.println("[Raphael — Financial Analysis] Deferred while the daily health review is active.");
             return;
         }
         if (!analysisRunning.compareAndSet(false, true)) {
-            System.out.println("[Raphael â€” Financial Analysis] A finance run is already active; skipping this schedule tick.");
+            System.out.println("[Raphael — Financial Analysis] A finance run is already active; skipping this schedule tick.");
             return;
         }
         // Close the race where daily maintenance claims its window after the first check.
         if (CodexAgentService.isMaintenanceActive()) {
             analysisRunning.set(false);
-            System.out.println("[Raphael â€” Financial Analysis] Deferred while the daily health review is active.");
+            System.out.println("[Raphael — Financial Analysis] Deferred while the daily health review is active.");
             return;
         }
         recordSchedule(job, null);
@@ -132,7 +132,7 @@ public class FinanceService {
         latestRecommendations = "Recommendations pending portfolio update.";
         latestPortfolioDataStatus = "Portfolio refresh in progress.";
 
-        System.out.println("[Raphael â€” Financial Analysis] Starting " + job + " with market scan and portfolio refresh.");
+        System.out.println("[Raphael — Financial Analysis] Starting " + job + " with market scan and portfolio refresh.");
         CompletableFuture<String> rawMarketTask = runFinanceTask(
                 "Market scan", "[FINANCE_MARKET_SCAN]", "Fetch macro market data.");
         CompletableFuture<String> portfolioTask = runFinanceTask(
@@ -156,14 +156,14 @@ public class FinanceService {
                     "Generate strategic advice.");
         }).thenApply(result -> {
             latestRecommendations = result;
-            System.out.println("[Raphael â€” Financial Analysis] Recommendation narrative saved (" + result.length() + " chars).");
+            System.out.println("[Raphael — Financial Analysis] Recommendation narrative saved (" + result.length() + " chars).");
             return result;
         });
 
         CompletableFuture.allOf(marketTask, portfolioTask, recommendationsTask)
                 .whenComplete((ignored, error) -> {
                     if (error != null) {
-                        System.err.println("[Raphael â€” Financial Analysis] Pipeline failed: " + error);
+                        System.err.println("[Raphael — Financial Analysis] Pipeline failed: " + error);
                         latestRecommendations = "Finance pipeline failed: " + error;
                     }
                     boolean runSucceeded = error == null
@@ -178,10 +178,10 @@ public class FinanceService {
                         localSyncTimeMs = System.currentTimeMillis();
                         saveTimestamp(SYNC_FILE, localSyncTimeMs);
                     } else {
-                        System.err.println("[Raphael â€” Financial Analysis] Run incomplete; last successful briefing preserved and retry remains eligible.");
+                        System.err.println("[Raphael — Financial Analysis] Run incomplete; last successful briefing preserved and retry remains eligible.");
                     }
                     analysisRunning.set(false);
-                    System.out.println("[Raphael â€” Financial Analysis] Background run complete.");
+                    System.out.println("[Raphael — Financial Analysis] Background run complete.");
                     // A failed full briefing must not indefinitely starve the hourly news watch.
                     evaluateMarketSchedule();
                 });
@@ -251,18 +251,18 @@ public class FinanceService {
 
     private static CompletableFuture<String> runFinanceTask(String label, String prompt, String context) {
         return CompletableFuture.supplyAsync(() -> {
-            System.out.println("[Raphael â€” Financial Analysis] Starting stage: " + label);
+            System.out.println("[Raphael — Financial Analysis] Starting stage: " + label);
             try {
                 String result = AIEngine.generateSilentLogic(prompt, context, "Financial Report Generation").get(10, TimeUnit.MINUTES);
                 if (result == null || result.isBlank()) {
-                    System.err.println("[Raphael â€” Financial Analysis] Stage '" + label + "' returned an empty result.");
+                    System.err.println("[Raphael — Financial Analysis] Stage '" + label + "' returned an empty result.");
                     return label + " returned no result.";
                 }
-                System.out.println("[Raphael â€” Financial Analysis] Stage '" + label + "' completed (" + result.length() + " chars).");
+                System.out.println("[Raphael — Financial Analysis] Stage '" + label + "' completed (" + result.length() + " chars).");
                 return result;
             } catch (Exception e) {
                 String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                System.err.println("[Raphael â€” Financial Analysis] Stage '" + label + "' failed: " + message);
+                System.err.println("[Raphael — Financial Analysis] Stage '" + label + "' failed: " + message);
                 return label + " failed: " + message;
             }
         }, financeExecutor);
@@ -331,7 +331,7 @@ public class FinanceService {
             // Copy to root
             Path briefingPath = financeDir.resolve("Latest_Financial_Briefing.md");
             writeAtomically(briefingPath, content);
-            System.out.println("[Raphael â€” Financial Analysis] Markdown written: daily=" + dailyReport.toAbsolutePath()
+            System.out.println("[Raphael — Financial Analysis] Markdown written: daily=" + dailyReport.toAbsolutePath()
                     + " (" + Files.size(dailyReport) + " bytes), latest=" + briefingPath.toAbsolutePath()
                     + " (" + Files.size(briefingPath) + " bytes).");
             return true;

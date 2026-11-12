@@ -82,6 +82,8 @@ public class HabitTrackerService {
     private static volatile long stremioNextDeepScrapeTime = 0;
     private static volatile String cachedPlaybackState = "UNCONFIRMED";
     private static volatile long lastPlaybackEvidenceAt = 0;
+    private static volatile long lastConfirmedTransportAt = 0;
+    private static volatile String lastConfirmedTransportState = "";
     private static volatile long lastMediaDeferredLogAt = 0;
     
     private static volatile long lastExceptionLogTime = 0;
@@ -359,8 +361,20 @@ public class HabitTrackerService {
                         if (mediaData != null) {
                             long observedAt = System.currentTimeMillis();
                             String previousPlaybackState = cachedPlaybackState;
-                            cachedPlaybackState = mediaData.has("playback_state")
+                            String observedPlaybackState = mediaData.has("playback_state")
                                     ? mediaData.get("playback_state").getAsString() : "UNCONFIRMED";
+                            // A player scraper can briefly lose DOM access immediately
+                            // after a transport action. Preserve the confirmed action
+                            // for a short grace window instead of regressing to an
+                            // unconfirmed state and triggering recovery loops.
+                            if ("UNCONFIRMED".equalsIgnoreCase(observedPlaybackState)
+                                    && observedAt - lastConfirmedTransportAt < 45_000L
+                                    && ("PAUSED".equalsIgnoreCase(lastConfirmedTransportState)
+                                    || "PLAYING".equalsIgnoreCase(lastConfirmedTransportState))) {
+                                cachedPlaybackState = lastConfirmedTransportState;
+                            } else {
+                                cachedPlaybackState = observedPlaybackState;
+                            }
                             if ("PLAYING".equals(cachedPlaybackState)) lastPlaybackEvidenceAt = observedAt;
                             if(mediaData.has("dom")) {
                                 ViewingProgress.observe(mediaData.get("dom").getAsString(),cachedPlaybackState,
@@ -686,7 +700,14 @@ public class HabitTrackerService {
                 +" method="+(result.has("method")?result.get("method").getAsString():"unknown")
                 +" target="+(result.has("target")?result.get("target").getAsString():"unknown")
                 +" reason="+(result.has("reason")?result.get("reason").getAsString():"state verified"));
-            return process.exitValue()==0 && confirmed && (!requireChanged||changed);
+            boolean success = process.exitValue()==0 && confirmed && (!requireChanged||changed);
+            if (success) {
+                lastConfirmedTransportState = "pause".equalsIgnoreCase(action) ? "PAUSED" : "PLAYING";
+                lastConfirmedTransportAt = System.currentTimeMillis();
+                cachedPlaybackState = lastConfirmedTransportState;
+                if ("PLAYING".equals(lastConfirmedTransportState)) lastPlaybackEvidenceAt = lastConfirmedTransportAt;
+            }
+            return success;
         } catch(Exception error) {
             System.err.println("[Media Transport] "+action+" failed: "+error.getClass().getSimpleName());return false;
         } finally {if(process!=null)process.destroyForcibly();}
@@ -805,19 +826,21 @@ public class HabitTrackerService {
             boolean invalidSeries = series == null || series.isBlank() || series.toLowerCase(Locale.ROOT).contains("unknown")
                     || series.toLowerCase(Locale.ROOT).contains("to open this link") || series.toLowerCase(Locale.ROOT).contains("choose an app");
             boolean isEpisode = verifiedMetadata && series != null && ep != null && !ep.isBlank() && !invalidSeries;
-            boolean isFilm = !isEpisode && ("FILM".equalsIgnoreCase(mediaKind == null ? "" : mediaKind.trim())
-                    || "VIDEO".equalsIgnoreCase(mediaKind == null ? "" : mediaKind.trim()))
+            boolean isFilm = !isEpisode && "FILM".equalsIgnoreCase(mediaKind == null ? "" : mediaKind.trim())
+                    && verifiedMetadata && filmTitle != null && !filmTitle.isBlank();
+            boolean isVideo = !isEpisode && "VIDEO".equalsIgnoreCase(mediaKind == null ? "" : mediaKind.trim())
                     && verifiedMetadata && filmTitle != null && !filmTitle.isBlank();
             boolean playbackFresh = MediaObservation.freshPlayback(
                     cachedPlaybackState, lastPlaybackEvidenceAt, System.currentTimeMillis());
 
-            if (isEpisode || isFilm) {
+            if (isEpisode || isFilm || isVideo) {
                 if (isEpisode) {
                     currentMediaTitle = series.trim() + " - " + ep.trim();
                 } else {
                     currentMediaTitle = filmTitle.trim();
-                    String filmKey = "FILM_" + currentMediaTitle.toLowerCase().replaceAll("[^a-z0-9]", "");
-                    if (!filmKey.equals(currentEpisodeHash)) currentEpisodeHash = filmKey;
+                    String mediaKey = (isFilm ? "FILM_" : "VIDEO_")
+                            + currentMediaTitle.toLowerCase().replaceAll("[^a-z0-9]", "");
+                    if (!mediaKey.equals(currentEpisodeHash)) currentEpisodeHash = mediaKey;
                 }
 
                 int exposure = playbackFresh ? episodeExposureMinutes.merge(currentMediaTitle, 1, Integer::sum)
@@ -847,7 +870,7 @@ public class HabitTrackerService {
                         && System.currentTimeMillis() >= retryAfter) {
                     int targetSec = MediaObservation.commentaryTargetSeconds(isFilm, cachedDurationMinutes);
                     boolean reached = MediaObservation.commentaryTimeReached(cachedCurrentTimeSec, exposure, targetSec, cachedDurationMinutes);
-                    System.out.println("[HabitTracker] Media timing: kind=" + (isFilm ? "FILM" : "EPISODE")
+                    System.out.println("[HabitTracker] Media timing: kind=" + (isFilm ? "FILM" : (isVideo ? "VIDEO" : "EPISODE"))
                             + ", title='" + currentMediaTitle + "', runtime=" + cachedDurationMinutes
                             + "m, playback=" + cachedCurrentTimeSec + "s, target=" + targetSec
                             + "s, exposure=" + exposure + "m, timingSource="
@@ -855,7 +878,7 @@ public class HabitTrackerService {
                             + ", reached=" + reached);
                     if (reached) triggerSequentialMediaCommentary(currentMediaTitle, activeTitle, cachedActiveUrl, cachedDomText, currentEpisodeHash);
                 } else if (currentEpisodeHash.isEmpty() || !hasAcquiredEpisodeMetadata) {
-                    System.out.println("[HabitTracker] Media dialogue skipped: metadata/hash not ready (kind=" + (isFilm ? "FILM" : "EPISODE")
+                    System.out.println("[HabitTracker] Media dialogue skipped: metadata/hash not ready (kind=" + (isFilm ? "FILM" : (isVideo ? "VIDEO" : "EPISODE"))
                             + ", metadata=" + hasAcquiredEpisodeMetadata + ", duration=" + cachedDurationMinutes + "m, playback=" + cachedCurrentTimeSec + "s)");
                 }
                 if (isEpisode) updateSeriesIfHigher(series, ep);

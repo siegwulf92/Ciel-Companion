@@ -98,8 +98,8 @@ public class HolidayService {
                     ? "It is " + holiday + " today, Master. A thoughtful message or small kindness would be a fitting way to mark it."
                     : holiday + " is tomorrow, Master. Shall we plan a thoughtful message or small kindness?";
             case "N7 Day" -> today
-                    ? "It is N7 Day today, Master. A little spacefaring nostalgia seems appropriate."
-                    : "N7 Day is tomorrow, Master. Shall we make room for a little spacefaring nostalgia?";
+                    ? "It is N Seven Day today, Master. A little spacefaring nostalgia seems appropriate."
+                    : "N Seven Day is tomorrow, Master. Shall we make room for a little spacefaring nostalgia?";
             default -> "It is " + holiday + " " + relation + ", Master. Shall we mark the occasion in a way that suits us?";
         };
     }

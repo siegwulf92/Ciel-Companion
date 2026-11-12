@@ -85,6 +85,11 @@ public final class LoreDocumentStore {
         mirrorTree(cielRoot.resolve("lore").resolve("Indexes"), generated.resolve("Indexes"));
         mirrorTree(cielRoot.resolve("lore").resolve("Review").resolve("Tensura"),
                 generated.resolve("Review").resolve("Tensura"));
+        // Keep the human-facing Obsidian navigation (volume READMEs and the
+        // coverage manifest) beside the mirrored source/review data in the
+        // campaign vault. Raw files remain immutable and review candidates
+        // remain explicitly marked as unapproved.
+        mirrorTree(cielRoot.resolve("lore").resolve("Tensura"), generated.resolve("Tensura"));
         ensureIndexRawLinks(generated.resolve("Indexes"), generated.resolve("Raw"));
     }
 

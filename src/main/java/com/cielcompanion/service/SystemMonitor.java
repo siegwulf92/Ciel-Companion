@@ -24,6 +24,7 @@ public class SystemMonitor {
     private static long[] prevLoadTicks = new long[CentralProcessor.TickType.values().length];
     private static volatile boolean cpuMetricsUnavailable = false;
     private static volatile boolean processInventoryUnavailable = false;
+    private static volatile long lastProcessInventoryFailure = 0;
 
     private static long virtualIdleStartTime = System.currentTimeMillis();
     private static long lastHardwareIdleMs = 0;
@@ -89,12 +90,13 @@ public class SystemMonitor {
         String activeTitle = WindowsApiService.getActiveWindowTitle(WindowsApiService.INSTANCE.GetForegroundWindow());
 
         Set<String> processes;
-        if (processInventoryUnavailable) {
-            processes = Set.of();
+        if (processInventoryUnavailable && System.currentTimeMillis() - lastProcessInventoryFailure < 60_000L) {
+            processes = fallbackProcessInventory();
         } else try {
             processes = os.getProcesses().stream()
                 .map(p -> p.getName().toLowerCase())
                 .collect(Collectors.toSet());
+            processInventoryUnavailable = false;
         } catch (RuntimeException unavailable) {
             // OSHI's Windows process-performance provider can be inaccessible
             // to a non-elevated logon task (WMI/CIM denial or missing counters).
@@ -102,9 +104,10 @@ public class SystemMonitor {
             // or flood the log until the JVM is killed.  Foreground-window and
             // hardware metrics remain usable, and the next refresh retries.
             processInventoryUnavailable = true;
-            System.err.println("Ciel Warning: Process inventory unavailable; using an empty process list for this session: "
+            lastProcessInventoryFailure = System.currentTimeMillis();
+            System.err.println("Ciel Warning: Process inventory unavailable; using the Windows process fallback temporarily: "
                     + unavailable.getMessage());
-            processes = Set.of();
+            processes = fallbackProcessInventory();
         }
 
         boolean isBrowser = activeProcName.matches(Settings.getBrowserProcessesRegex());
@@ -139,6 +142,21 @@ public class SystemMonitor {
             cpuLoad, memUsage, idleMin, String.valueOf(activePid), activeTitle, activeProcName,
             isStreaming, isMedia, isFullScreen, isBrowser, isHardMuted, processes
         );
+    }
+
+    private static Set<String> fallbackProcessInventory() {
+        try {
+            return ProcessHandle.allProcesses()
+                    .map(handle -> handle.info().command().orElse(""))
+                    .map(command -> {
+                        int slash = Math.max(command.lastIndexOf('\\'), command.lastIndexOf('/'));
+                        return (slash >= 0 ? command.substring(slash + 1) : command).toLowerCase();
+                    })
+                    .filter(name -> !name.isBlank())
+                    .collect(Collectors.toSet());
+        } catch (RuntimeException ignored) {
+            return Set.of();
+        }
     }
 
     private static int getPidFromHwnd(com.sun.jna.platform.win32.WinDef.HWND hwnd) {

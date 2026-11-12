@@ -19,6 +19,7 @@ import java.util.Map;
 
 /** Durable, cross-device observation history for games. It never claims story completion. */
 final class GameProgress {
+    private static final long LAUNCH_COMMENTARY_COOLDOWN_MS = 12L * 60L * 60L * 1000L;
     record Context(int priorSessions, long priorSeconds, List<String> earlierTitles,
                    List<String> recentComments) {
         String promptContext() {
@@ -76,6 +77,37 @@ final class GameProgress {
         LAST_WRITE.put(title, now);
         write(title, current, now);
         return context;
+    }
+
+    /**
+     * Claim the one launch commentary opportunity for a still-running process.
+     * Ciel can restart while a game remains open; the PID and durable claim
+     * prevent that restart from spending TTS credits on the same launch line.
+     */
+    static synchronized boolean claimLaunchCommentary(String title, long pid, long now) {
+        String key = launchClaimKey(title);
+        JsonObject previous = MemoryService.getFact(key).flatMap(fact -> {
+            try { return java.util.Optional.of(JsonParser.parseString(fact.value()).getAsJsonObject()); }
+            catch (Exception ignored) { return java.util.Optional.empty(); }
+        }).orElse(null);
+        if (previous != null) {
+            long claimedAt = number(previous, "claimed_at");
+            // A Ciel restart can observe the same foreground game with a new
+            // PID, and a launcher can briefly recreate the game process. Do
+            // not spend another model/TTS request on the same title during a
+            // normal play window; a fresh commentary opportunity opens after
+            // the bounded cooldown.
+            if (number(previous, "pid") == pid
+                    || (claimedAt > 0 && now - claimedAt < LAUNCH_COMMENTARY_COOLDOWN_MS)) return false;
+        }
+        JsonObject claim = new JsonObject();
+        claim.addProperty("title", title);
+        claim.addProperty("pid", pid);
+        claim.addProperty("claimed_at", now);
+        claim.addProperty("evidence", "same foreground process; suppress duplicate launch commentary across Ciel restarts");
+        MemoryService.addFact(new Fact(key, claim.toString(), now,
+                "system,game_progress", "foreground_process_observation", 1));
+        return true;
     }
 
     static synchronized void observe(String title, long sessionStartedAt, long now, boolean force) {
@@ -148,6 +180,14 @@ final class GameProgress {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(title.trim().toLowerCase(Locale.ROOT).getBytes(StandardCharsets.UTF_8));
             return "game_progress_" + HexFormat.of().formatHex(digest);
+        } catch (Exception error) { throw new IllegalStateException(error); }
+    }
+
+    private static String launchClaimKey(String title) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(("launch:" + title.trim().toLowerCase(Locale.ROOT)).getBytes(StandardCharsets.UTF_8));
+            return "game_launch_claim_" + HexFormat.of().formatHex(digest);
         } catch (Exception error) { throw new IllegalStateException(error); }
     }
 

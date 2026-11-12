@@ -35,19 +35,32 @@ public class WeatherService {
     private static WeatherData cachedWeatherData = null;
     private static final PhonoKana katakanaConverter = PhonoKana.getInstance();
     private static ScheduledExecutorService weatherScheduler;
+    private static volatile long lastWeatherFailureLogMillis;
+
+    private static void logWeatherFailure(String stage, Throwable error) {
+        long now = System.currentTimeMillis();
+        if (now - lastWeatherFailureLogMillis < TimeUnit.MINUTES.toMillis(10)) return;
+        lastWeatherFailureLogMillis = now;
+        String detail = error == null ? "unknown failure" : error.getClass().getSimpleName()
+                + (error.getMessage() == null || error.getMessage().isBlank() ? "" : ": " + error.getMessage());
+        System.err.println("[Weather] " + stage + " failed; retaining the last valid snapshot. " + detail);
+    }
 
     public static void initialize() {
         try (InputStream is = WeatherService.class.getResourceAsStream("/weather.properties")) {
-            if (is == null) return;
+            if (is == null) {
+                logWeatherFailure("configuration load", null);
+                return;
+            }
             weatherProps.load(new InputStreamReader(is, StandardCharsets.UTF_8));
             weatherScheduler = Executors.newSingleThreadScheduledExecutor();
             weatherScheduler.scheduleWithFixedDelay(WeatherService::proactiveWeatherCheck, 1, 15, TimeUnit.MINUTES);
             System.out.println("Ciel Debug: WeatherService initialized. Proactive alerts active.");
-        } catch (Exception e) { e.printStackTrace(); }
+        } catch (Exception e) { logWeatherFailure("service initialization", e); }
     }
 
     private static void proactiveWeatherCheck() {
-        try { getWeatherData(false); } catch (Exception ignored) {}
+        try { getWeatherData(false); } catch (Exception e) { logWeatherFailure("scheduled refresh", e); }
     }
 
     public static String getCurrentWeather() { return getWeatherData(false); }
@@ -102,7 +115,10 @@ public class WeatherService {
 
     private static String getWeatherData(boolean isForecast) {
         String apiKey = weatherProps.getProperty("weather.apiKey");
-        if (apiKey == null || apiKey.isBlank() || apiKey.equalsIgnoreCase("YOUR_API_KEY_HERE")) return "Weather API key not configured.";
+        if (apiKey == null || apiKey.isBlank() || apiKey.equalsIgnoreCase("YOUR_API_KEY_HERE")) {
+            logWeatherFailure("API configuration", null);
+            return "Weather API key not configured.";
+        }
 
         if (cachedWeatherData != null && Duration.between(Instant.ofEpochSecond(cachedWeatherData.fetchTimeEpochSeconds), Instant.now()).toMinutes() < 15) {
             return isForecast ? formatForecastReport(cachedWeatherData) : formatWeatherReport(cachedWeatherData);
@@ -128,7 +144,11 @@ public class WeatherService {
             URL url = new URL(urlString);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
-            if (conn.getResponseCode() != 200) return "Unable to retrieve weather data.";
+            int responseCode = conn.getResponseCode();
+            if (responseCode != 200) {
+                logWeatherFailure("API request (HTTP " + responseCode + ")", null);
+                return "Unable to retrieve weather data.";
+            }
 
             WeatherData newWeatherData = new Gson().fromJson(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8), WeatherData.class);
             newWeatherData.fetchTimeEpochSeconds = Instant.now().getEpochSecond();
@@ -139,7 +159,10 @@ public class WeatherService {
 
             conn.disconnect();
             return isForecast ? formatForecastReport(newWeatherData) : formatWeatherReport(newWeatherData);
-        } catch (Exception e) { return "Weather service error."; }
+        } catch (Exception e) {
+            logWeatherFailure("API request", e);
+            return "Weather service error.";
+        }
     }
 
     private static void evaluateAlerts(WeatherData data) {

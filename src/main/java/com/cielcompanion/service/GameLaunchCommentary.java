@@ -28,6 +28,8 @@ final class GameLaunchCommentary {
         if (response == null || response.isBlank() || response.contains("ABORT") || response.contains("DATA_DEFICIT"))
             return new Selection(fallback, false, "model unavailable or timed out");
         String candidate = response.trim();
+        if (containsSemanticJapaneseScript(candidate))
+            return new Selection(fallback, false, "model response contained Japanese semantic script; English source required");
         String lower = candidate.toLowerCase(Locale.ROOT);
         if (name.startsWith("Kingdom Hearts") && !(lower.contains("sora") || lower.contains("keyblade")
                 || lower.contains("heartless") || lower.contains("castle oblivion") || lower.contains("card")
@@ -38,6 +40,10 @@ final class GameLaunchCommentary {
         if (history.recentComments().stream().anyMatch(old -> similar(old, formatted)))
             return new Selection(fallback, false, "model repeated recent dialogue");
         return new Selection(formatted, true, "grounded model response");
+    }
+
+    private static boolean containsSemanticJapaneseScript(String text) {
+        return text != null && text.matches("(?s).*[぀-ゟ一-鿿].*");
     }
 
     private static List<String> fallbackLines(String name, GameProgress.Context history) {

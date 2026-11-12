@@ -13,6 +13,15 @@ public final class PhonoKana {
     private final Map<String, String> letterNames;
     private static final String EXTERNAL_FILE = "config/custom_phonetics.properties";
 
+    /** Resolve the same user-editable override file regardless of launch cwd. */
+    private static File externalFile() {
+        String configuredRoot = System.getenv("CIEL_ROOT");
+        if (configuredRoot != null && !configuredRoot.isBlank()) return new File(configuredRoot, EXTERNAL_FILE);
+        File fromCwd = new File(EXTERNAL_FILE);
+        if (fromCwd.exists() || fromCwd.getParentFile().exists()) return fromCwd;
+        return new File(System.getProperty("user.dir", "."), EXTERNAL_FILE);
+    }
+
     private PhonoKana(Map<String, String> exceptions, Map<Pattern, String> rules, Map<String, String> letterNames) {
         this.exceptions = exceptions;
         this.rules = rules;
@@ -31,7 +40,7 @@ public final class PhonoKana {
 
     private void saveExternalExceptions() {
         try {
-            File file = new File(EXTERNAL_FILE);
+            File file = externalFile();
             file.getParentFile().mkdirs();
             Properties props = new Properties();
             // We only save the "new" ones or current state to the external file
@@ -275,7 +284,7 @@ public final class PhonoKana {
         } catch (Exception e) { e.printStackTrace(); }
 
         // Load External overrides
-        File external = new File(EXTERNAL_FILE);
+        File external = externalFile();
         if (external.exists()) {
             try (InputStream is = new FileInputStream(external)) {
                 Properties props = new Properties();

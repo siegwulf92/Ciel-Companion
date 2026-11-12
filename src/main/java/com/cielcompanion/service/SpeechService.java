@@ -97,6 +97,8 @@ public class SpeechService {
     private static boolean enqueueSpeech() {
         synchronized (pauseLock) {
             boolean mediaActiveForQueue = false;
+            boolean gamingActive = ShortTermMemoryService.getMemory().isInGamingSession()
+                    || "Gaming".equalsIgnoreCase(HabitTrackerService.getCurrentCategory());
             if (speechQueueCount.getAndIncrement() == 0) {
                 SystemMonitor.SystemMetrics metrics = SystemMonitor.getSystemMetrics();
                 String currentCategory = HabitTrackerService.getCurrentCategory();
@@ -109,25 +111,16 @@ public class SpeechService {
                         activeProcLower.contains("crunchyroll");
                 mediaActiveForQueue = isMediaActive;
 
-                boolean isGamingActive = ShortTermMemoryService.getMemory().isInGamingSession() || "Gaming".equalsIgnoreCase(currentCategory);
+                boolean isGamingActive = gamingActive;
 
                 if (isMediaActive && !isGamingActive) {
                     mediaWasPausedForSpeech = HabitTrackerService.pauseMediaForSpeech();
                     System.out.println("[Media Transport] Speech owns pause=" + mediaWasPausedForSpeech);
                 }
 
-                if (isGamingActive && HabitTrackerService.isCurrentGamePausable()) {
-                    System.out.println("Ciel Debug: Global Speech Queue active. Suspending game immediately.");
-                    gameWasPausedForSpeech = true;
-                    try {
-                        Robot robot = new Robot();
-                        AzureSpeechService.isSimulatingKeystroke = true;
-                        AzureSpeechService.lastSimulatedInputTime = System.currentTimeMillis();
-                        robot.keyPress(KeyEvent.VK_ESCAPE);
-                        robot.keyRelease(KeyEvent.VK_ESCAPE);
-                        Thread.sleep(600);
-                        AzureSpeechService.isSimulatingKeystroke = false;
-                    } catch (AWTException | InterruptedException ignored) {}
+                if (isGamingActive) {
+                    System.out.println("Ciel Debug: Game speech deferred; no verified game pause adapter is available.");
+                    gameWasPausedForSpeech = false;
                 }
             } else {
                 // A chained line inherits the first line's media ownership
@@ -138,6 +131,7 @@ public class SpeechService {
             // though no pause transition occurred.  Previously this returned
             // false and media commentary was discarded as an unconfirmed
             // pause, which made paused YouTube videos appear silently ignored.
+            if (gamingActive && !gameWasPausedForSpeech) return false;
             return !mediaActiveForQueue || mediaWasPausedForSpeech || HabitTrackerService.isMediaPlaybackPaused();
         }
     }
@@ -295,6 +289,7 @@ public class SpeechService {
             }
             String cleanText = matcher.replaceAll("").trim();
             cleanText = cleanText.replaceAll("\\*.*?\\*", "").trim();
+            final String speechKeyBase = stableSpeechKey(key, cleanText);
 
             // All dialogue remains English internally. The Japanese voice
             // receives Katakana-English only at the final speech boundary;
@@ -376,7 +371,7 @@ public class SpeechService {
                     // contain collapsed initialisms (for example DD -> ディディ).
                     // v5 invalidates clips generated before the contextual
                     // pronunciation audit and high-impact word overrides.
-                    String cacheKey = requiresPhonokana ? "phonokana-v5:" + key : key;
+                    String cacheKey = requiresPhonokana ? "phonokana-v5:" + speechKeyBase : speechKeyBase;
                     String speechKey = com.cielcompanion.util.SpeechText.cacheKey(cacheKey, finalCleanText, langCode);
                     boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, finalStyle, langCode);
 
@@ -418,7 +413,7 @@ public class SpeechService {
 
                     boolean audible = executeSpeechBlocking(textToSpeak, speechKey, Settings.getTtsRate(),
                             finalStyle, finalPitch, langCode, taskGeneration,
-                            shouldUseBreeze(key, isAlreadyCached));
+                            shouldUseBreeze(speechKeyBase, isAlreadyCached));
                     completed = audible && taskGeneration == speechGeneration.get() && !Thread.currentThread().isInterrupted();
                 } finally {
                     if (hasEnqueued) {
@@ -435,7 +430,16 @@ public class SpeechService {
     }
 
     private static boolean containsSemanticJapaneseScript(String text) {
-        return text != null && text.matches("(?s).*[぀-ゟ一-鿿].*");
+        // The router returns Katakana for phonetic English.  The former
+        // range accepted Hiragana/Kanji but omitted Katakana, so valid output
+        // was logged as successful and then rejected before TTS playback.
+        return text != null && text.matches("(?s).*[ぁ-ゟァ-ヺ一-鿿].*");
+    }
+
+    /** Give generated/unkeyed lines a readable, deterministic cache namespace. */
+    private static String stableSpeechKey(String key, String text) {
+        if (key != null && !key.isBlank()) return key;
+        return "dynamic." + Integer.toUnsignedString(text == null ? 0 : text.hashCode(), 16);
     }
 
     public static void speakSequentially(List<DialogueLine> lines, long delayMs, boolean preformatted, Runnable onComplete) {
@@ -476,6 +480,7 @@ public class SpeechService {
                         }
                         textToSpeak = matcher.replaceAll("").trim();
                         textToSpeak = textToSpeak.replaceAll("\\*.*?\\*", "").trim();
+                        String lineKey = stableSpeechKey(line.key(), textToSpeak);
 
                         if (emotionToTrigger != null && !emotionToTrigger.isBlank()) {
                             final String finalEmotion = emotionToTrigger;
@@ -500,12 +505,12 @@ public class SpeechService {
                         String langCode = CielVoiceManager.getActiveLanguageCode();
 
                         boolean needsLanguageConversion = false;
-                        boolean requiresPhonokana = !line.key().startsWith("boot_greeting")
-                                && !line.key().startsWith("login_greeting")
-                                && !line.key().startsWith("warm_login")
+                        boolean requiresPhonokana = !lineKey.startsWith("boot_greeting")
+                                && !lineKey.startsWith("login_greeting")
+                                && !lineKey.startsWith("warm_login")
                                 && langCode.equals("ja-JP")
                                 && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find();
-                        String cacheKey = requiresPhonokana ? "phonokana-v5:" + line.key() : line.key();
+                        String cacheKey = requiresPhonokana ? "phonokana-v5:" + lineKey : lineKey;
                         String speechKey = com.cielcompanion.util.SpeechText.cacheKey(cacheKey, textToSpeak, langCode);
                         boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, style, langCode);
 
@@ -520,8 +525,8 @@ public class SpeechService {
 
                             if (requiresPhonokana) {
                                 textToSpeak = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
-                            } else if (!line.key().startsWith("boot_greeting") && !line.key().startsWith("login_greeting")
-                                    && !line.key().startsWith("warm_login") && CielVoiceManager.isLanguageLocked()) {
+                            } else if (!lineKey.startsWith("boot_greeting") && !lineKey.startsWith("login_greeting")
+                                    && !lineKey.startsWith("warm_login") && CielVoiceManager.isLanguageLocked()) {
                                 textToSpeak = TranslationService.toJapanese(textToSpeak);
                             }
                         }
@@ -534,7 +539,7 @@ public class SpeechService {
 
                         if (taskGeneration != speechGeneration.get() || Thread.currentThread().isInterrupted()) break;
                         executeSpeechBlocking(textToSpeak, speechKey, Settings.getTtsRate(), style, pitch, langCode, taskGeneration,
-                                shouldUseBreeze(line.key(), isAlreadyCached));
+                                shouldUseBreeze(lineKey, isAlreadyCached));
 
                         if (sequenceCancelled || Thread.currentThread().isInterrupted()
                                 || taskGeneration != speechGeneration.get()) {
@@ -599,7 +604,9 @@ public class SpeechService {
                 azureSuccess = AzureSpeechService.speak(text, key, style, pitch, langCode);
                 if (azureSuccess) {
                     System.out.println("Ciel Debug: Azure Speech successful (Key: " + (key != null ? key : "Dynamic") + ", Style: " + style + ")");
-                    queueBreezePrefetch(text, key, style, pitch, langCode);
+                    if (!isNonPrefetchableSpeechKey(key)) {
+                        queueBreezePrefetch(text, key, style, pitch, langCode);
+                    }
                 } else {
                     System.out.println("Ciel Warning: Azure Speech failed or skipped; trying Breeze generation.");
                 }
@@ -689,6 +696,13 @@ public class SpeechService {
         // Provider order is enforced in executeSpeechBlocking. This flag keeps
         // Breeze available for cache hits and for the final hosted fallback.
         return BreezeSpeechService.isAvailable();
+    }
+
+    private static boolean isNonPrefetchableSpeechKey(String key) {
+        if (key == null || key.isBlank()) return true;
+        String normalized = key.toLowerCase(java.util.Locale.ROOT);
+        return normalized.equals("game_launch") || normalized.equals("media_commentary")
+                || normalized.startsWith("dynamic.");
     }
 
     private static void queueBreezePrefetch(String text, String key, String style, String pitch, String langCode) {

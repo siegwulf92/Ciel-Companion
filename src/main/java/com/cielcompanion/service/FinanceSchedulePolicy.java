@@ -37,7 +37,11 @@ public final class FinanceSchedulePolicy {
         if (attempt > success && millis - attempt < retryMinutes(failures) * 60_000) return false;
         if (success == 0) return true;
         if (job == Job.NEWS_WATCH) return millis - success >= 60 * 60_000;
-        return !Instant.ofEpochMilli(success).atZone(now.getZone()).toLocalDate().equals(now.toLocalDate())
-                && millis - success >= 20 * 60 * 60_000;
+        // The market-day briefing is a calendar-day obligation, not a rolling
+        // 20-hour timer. If yesterday's run finished late, the next market day
+        // must still receive its own report at the next schedule tick.
+        LocalDate lastSuccess = Instant.ofEpochMilli(success).atZone(now.getZone()).toLocalDate();
+        if (job == Job.DAILY_BRIEFING) return lastSuccess.isBefore(now.toLocalDate());
+        return lastSuccess.isBefore(now.toLocalDate()) && millis - success >= 20 * 60 * 60_000;
     }
 }

@@ -477,8 +477,10 @@ public final class BreezeSpeechService {
                 ? "Speak as " + name + ", a " + persona + " with a subtle Japanese accent. "
                 : custom.trim() + " ";
         return base
-                + "Use natural human timing and breath, with a " + safeStyle + " delivery at " + safePitch
-                + ". Preserve the supplied phonokana wording exactly; do not translate it or add a Japanese paragraph.";
+                + "Use natural human timing with clean phrase boundaries, with a " + safeStyle + " delivery at " + safePitch
+                + ". Keep a steady conversational pace: do not add stutters, repeated words, repeated syllables, filler sounds, or exaggerated breaths. "
+                + "Pause only at the supplied punctuation and never restart a sentence. "
+                + "Preserve the supplied phonokana wording exactly; do not translate it or add a Japanese paragraph.";
     }
 
     private static byte[] readAll(InputStream input) throws Exception {
