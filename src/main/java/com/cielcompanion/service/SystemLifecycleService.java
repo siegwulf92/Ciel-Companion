@@ -33,6 +33,7 @@ public class SystemLifecycleService {
         isSequenceActive = true;
 
         System.out.println("Ciel Debug: Initiating System Lifecycle Sequence -> " + action.name());
+        SessionRecoveryService.requestShutdown("planned_ciel_" + action.name().toLowerCase());
 
         // Lock microphone on to listen for "Abort" without needing wake word
         ShortTermMemoryService.getMemory().setPrivilegedMode(true, 45);

@@ -494,7 +494,8 @@ public class SpeechService {
     }
 
     private static boolean containsSemanticJapaneseScript(String text) {
-        return text != null && text.matches("(?s).*[぀-ゟ一-鿿].*");
+        // Katakana is the phonetic-English output sent to the Japanese voice.
+        return text != null && text.matches("(?s).*[ぁ-ゟァ-ヺ一-鿿].*");
     }
 
     /** English speech may reach Nanami only after a complete model conversion. */

@@ -67,6 +67,9 @@ public class CielCompanion {
 
         FileLogger.initialize();
         System.out.println("Ciel Companion starting... (Clean Lock Acquired)");
+        // Initialize recovery bookkeeping before heavier services so a boot
+        // failure is still visible on the next launch.
+        SessionRecoveryService.startup(ProjectPaths.root());
         boolean updateBoot = reportUpdaterStatus();
         
         try {
@@ -210,6 +213,8 @@ public class CielCompanion {
             }
             
             releaseInstanceLock();
+            SessionRecoveryService.markGracefulShutdown(
+                    CielState.isPerformingColdShutdown() ? "planned_ciel_shutdown" : "planned_ciel_restart");
             System.out.println("Ciel Companion shutdown complete.");
         }));
     }

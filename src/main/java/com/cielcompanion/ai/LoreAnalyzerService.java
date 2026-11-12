@@ -25,16 +25,12 @@ public class LoreAnalyzerService {
     private static boolean pipelineInUse = false;
 
     public static void initialize() {
-        loreScheduler = Executors.newSingleThreadScheduledExecutor();
-
-        new File(RAW_DIR).mkdirs();
-        new File(CLEAN_DIR).mkdirs();
-        new File(ARCHIVE_DIR).mkdirs();
-
-        // Run the transcript cleaner every 5 minutes
-        loreScheduler.scheduleWithFixedDelay(LoreAnalyzerService::processRawTranscripts, 1, 5, TimeUnit.MINUTES);
-
-        System.out.println("Ciel Debug: Simplified Lore Analyzer (Transcript Cleaner) initialized.");
+        // VaultService owns the ordered, checkpointed LN pipeline. The former
+        // five-minute cleaner used a second Raw_Transcripts/Cleaned_Transcripts
+        // tree, bypassed volume ordering, and could race the canonical queue.
+        // Keep this class for binary/source compatibility, but do not start a
+        // competing scheduler or create a second lore corpus.
+        System.out.println("Ciel Debug: Legacy Lore Analyzer disabled; VaultService is the canonical lore pipeline.");
     }
 
     private static void processRawTranscripts() {

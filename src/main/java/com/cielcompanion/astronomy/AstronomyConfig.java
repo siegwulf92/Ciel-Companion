@@ -2,7 +2,11 @@ package com.cielcompanion.astronomy;
 
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Properties;
 
 public class AstronomyConfig {
@@ -17,17 +21,41 @@ public class AstronomyConfig {
     }
 
     public static AstronomyConfig loadFromResource(String resourcePath) throws Exception {
-        System.out.println("Ciel Debug (AstronomyConfig): Attempting to load resource from classpath: " + resourcePath);
-        InputStream is = AstronomyConfig.class.getResourceAsStream(resourcePath);
+        String normalizedPath = resourcePath.startsWith("/") ? resourcePath : "/" + resourcePath;
+        String fileName = normalizedPath.substring(1);
+        System.out.println("Ciel Debug (AstronomyConfig): Attempting to load resource from classpath: " + normalizedPath);
+        InputStream is = AstronomyConfig.class.getResourceAsStream(normalizedPath);
+        String source = "classpath:" + normalizedPath;
 
         if (is == null) {
-            System.err.println("Ciel FATAL ERROR (AstronomyConfig): FAILED to find resource '" + resourcePath + "' on the classpath.");
-            throw new Exception("Resource not found: " + resourcePath);
+            Path workingDirectory = Paths.get(System.getProperty("user.dir", "."));
+            List<Path> candidates = List.of(
+                    workingDirectory.resolve(Paths.get("config", fileName)),
+                    workingDirectory.resolve(Paths.get("src", "main", "resources", fileName)),
+                    workingDirectory.resolve(Paths.get("target", "classes", fileName)),
+                    workingDirectory.resolve(fileName));
+            for (Path candidate : candidates) {
+                if (Files.isRegularFile(candidate) && Files.isReadable(candidate)) {
+                    try {
+                        is = Files.newInputStream(candidate);
+                        source = candidate.toString();
+                        break;
+                    } catch (java.io.IOException ignored) {
+                        // Try the next candidate; a transient file-lock must not
+                        // prevent the later live-location fallback from running.
+                    }
+                }
+            }
         }
 
-        System.out.println("Ciel Debug (AstronomyConfig): Resource '" + resourcePath + "' found successfully. Loading properties...");
+        if (is == null) {
+            System.err.println("Ciel Warning (AstronomyConfig): Fallback resource unavailable: '" + normalizedPath + "'.");
+            throw new Exception("Resource not found: " + normalizedPath);
+        }
+
+        System.out.println("Ciel Debug (AstronomyConfig): Resource '" + source + "' found successfully. Loading properties...");
         Properties props = new Properties();
-        try (InputStreamReader isr = new InputStreamReader(is, StandardCharsets.UTF_8)) {
+        try (InputStream input = is; InputStreamReader isr = new InputStreamReader(input, StandardCharsets.UTF_8)) {
             props.load(isr);
             System.out.println("Ciel Debug (AstronomyConfig): Properties loaded successfully.");
             return new AstronomyConfig(props);

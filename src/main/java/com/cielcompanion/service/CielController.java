@@ -239,12 +239,12 @@ public class CielController {
                         try {
                             com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(commentary).getAsJsonObject();
                             String kata = json.has("katakana") && !json.get("katakana").getAsString().isBlank() ? json.get("katakana").getAsString() : json.get("commentary").getAsString();
-                            SpeechService.speakChunk(kata);
+                            SpeechService.speakPreformatted(kata, "media_commentary", false, false);
                         } catch (Exception e) {
-                            SpeechService.speakPreformatted(commentary, "media_commentary", false, false);
+                            SpeechService.speakMediaCommentary(commentary, spoken -> { });
                         }
                     } else {
-                        SpeechService.speakPreformatted(commentary, "media_commentary", false, false);
+                        SpeechService.speakMediaCommentary(commentary, spoken -> { });
                     }
                     scheduleNextSpeakBasedOnPhase(ShortTermMemoryService.getMemory().getCurrentPhase());
                 } 
@@ -268,21 +268,23 @@ public class CielController {
     private static void pollSwarmForEmotionalState(SystemMetrics metrics, ShortTermMemory memory, long currentTime) {
         boolean isSpeaking = SpeechService.isActivelySpeaking();
         boolean isGaming = memory.isInGamingSession() || "Gaming".equalsIgnoreCase(HabitTrackerService.getCurrentCategory());
+        boolean isMedia = "Media".equalsIgnoreCase(HabitTrackerService.getCurrentCategory());
         
         long pollInterval;
-        if (isGaming) {
-            pollInterval = 300000; // 5 minutes while gaming (save resources)
+        if (isGaming || isMedia) {
+            pollInterval = 300000; // Do not compete with games or active media.
         } else if (isSpeaking) {
-            pollInterval = 15000; // 15 seconds while actively interacting/speaking
+            pollInterval = 30000; // 30 seconds while actively interacting/speaking
         } else {
-            pollInterval = 60000; // 60 seconds normal idle polling
+            pollInterval = 300000; // Background mood is slow-changing; avoid a minute-by-minute model call.
         }
         
         if (currentTime - lastEmotionPollTime > pollInterval) {
             lastEmotionPollTime = currentTime;
             
-            // If gaming, skip local polling entirely to preserve game FPS
-            if (isGaming) return; 
+            // Games and media already provide activity signals; skip a
+            // redundant model call so local models can be unloaded promptly.
+            if (isGaming || isMedia) return;
 
             // CielState is initialized after several services come online. Use
             // that authoritative timestamp as a second guard so class loading
@@ -692,6 +694,18 @@ public class CielController {
                     loggedWaitingFor2m = true;
                 }
                 if (now >= startTime + loginDelayMs) {
+                    boolean busy = memory.isInGamingSession()
+                            || metrics.isPlayingMedia() || metrics.isStreaming()
+                            || metrics.isInFullScreen() || CielState.isManuallyMuted()
+                            || SpeechService.isActivelySpeaking();
+                    if (busy) {
+                        // The two-minute greeting is optional. Once a game or
+                        // media session owns the foreground, do not interrupt
+                        // it later just because Ciel finished booting.
+                        System.out.println("Ciel Debug: Skipping 2m login greeting because gaming/media is active.");
+                        CielState.setLoginGreetingPlayed(true);
+                        return;
+                    }
                     System.out.println("Ciel Debug: 2m Login Greeting Timer HIT. Sending to SpeechService.");
                     speakRandomLine(LineManager.getLoginGreetingLines(), null, 1, false, false);
                     
