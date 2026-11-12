@@ -12,6 +12,15 @@ import java.util.Locale;
 
 public class Settings {
 
+    private static long parseLong(String raw, long fallback, long min, long max) {
+        try {
+            long value = Long.parseLong(raw == null ? "" : raw.trim());
+            return Math.max(min, Math.min(max, value));
+        } catch (RuntimeException ex) {
+            return fallback;
+        }
+    }
+
     private static final Object SETTINGS_LOCK = new Object();
     private static volatile long profileLastModified = Long.MIN_VALUE;
     private static volatile long secretsLastModified = Long.MIN_VALUE;
@@ -63,6 +72,9 @@ public class Settings {
 
     private static boolean HOTKEY_ENABLED;
     private static String HOTKEY_KEY;
+    private static boolean HOTKEY_ALT_FALLBACK;
+    private static boolean HOTKEY_CTRL_ALT_FALLBACK;
+    private static long HOTKEY_RELEASE_TIMEOUT_MS;
     
     private static String DND_CAMPAIGN_PATH;
     private static String DND_KNOWLEDGE_MODE;
@@ -219,6 +231,9 @@ public class Settings {
             
             HOTKEY_ENABLED = Boolean.parseBoolean(props.getProperty("ciel.hotkey.enabled", "true"));
             HOTKEY_KEY = props.getProperty("ciel.hotkey.key", "F12");
+            HOTKEY_ALT_FALLBACK = Boolean.parseBoolean(props.getProperty("ciel.hotkey.altFallback", "true"));
+            HOTKEY_CTRL_ALT_FALLBACK = Boolean.parseBoolean(props.getProperty("ciel.hotkey.ctrlAltFallback", "true"));
+            HOTKEY_RELEASE_TIMEOUT_MS = parseLong(props.getProperty("ciel.hotkey.releaseTimeoutMs", "1200"), 1200L, 250L, 10000L);
             
             DND_CAMPAIGN_PATH = props.getProperty("dnd.campaignPath", "");
             DND_KNOWLEDGE_MODE = props.getProperty("dnd.knowledgeMode", "player").trim().toLowerCase(Locale.ROOT);
@@ -369,6 +384,9 @@ public class Settings {
     public static int getMutePersistenceThresholdMs() { return MUTE_PERSISTENCE_THRESHOLD_MS; }
     public static boolean isHotkeyEnabled() { return HOTKEY_ENABLED; }
     public static String getHotkeyKey() { return HOTKEY_KEY; }
+    public static boolean isHotkeyAltFallbackEnabled() { return HOTKEY_ALT_FALLBACK; }
+    public static boolean isHotkeyCtrlAltFallbackEnabled() { return HOTKEY_CTRL_ALT_FALLBACK; }
+    public static long getHotkeyReleaseTimeoutMs() { return HOTKEY_RELEASE_TIMEOUT_MS; }
     public static String getDndCampaignPath() { return DND_CAMPAIGN_PATH; }
     public static String getDndKnowledgeMode() { return DND_KNOWLEDGE_MODE; }
     public static String getDndLiveStatePath() { return DND_LIVE_STATE_PATH; }
