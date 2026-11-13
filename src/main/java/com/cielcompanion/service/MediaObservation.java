@@ -20,7 +20,8 @@ public final class MediaObservation {
     public static boolean verified(String dom) {
         if ("VIDEO".equalsIgnoreCase(field(dom, "MEDIA_KIND"))
                 && "PUBLISHER".equalsIgnoreCase(field(dom, "METADATA_STATUS"))) {
-            return "youtube_publisher".equals(field(dom, "METADATA_SOURCES"))
+            return ("youtube_publisher".equals(field(dom, "METADATA_SOURCES"))
+                    || "youtube_ui_title".equals(field(dom, "METADATA_SOURCES")))
                     && !field(dom, "MEDIA_TITLE").isBlank()
                     && !field(dom, "DESCRIPTION").isBlank();
         }

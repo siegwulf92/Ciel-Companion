@@ -468,11 +468,11 @@ public class AzureSpeechService {
             if (!clip.isOpen()) throw new IllegalStateException("Java Sound output line did not open");
             if (playbackStream != audioStream) playbackStream.close();
 
-            // Start the deliberately quiet output wake *before* Ciel takes
-            // ownership of media playback.  This prevents a 2.5 s silent gap
-            // after a pause on sleeping speakers.  For unprimed output, take
-            // the pause immediately before the first frame instead.
-            if (prerollFrames == 0 && !SpeechService.ensureMediaPausedBeforePlayback()) {
+            // Claim media ownership before starting either the speaker warm-up
+            // or the first speech frame. The old path started the warm-up while
+            // the show was still playing and only paused afterwards, making
+            // speech appear to begin before the player stopped.
+            if (!SpeechService.ensureMediaPausedBeforePlayback()) {
                 clip.close();
                 activeClip = null;
                 System.err.println("[Media Transport] Audio handoff cancelled; verified pause was unavailable.");
@@ -491,13 +491,6 @@ public class AzureSpeechService {
             }
             if (clip.getLongFramePosition() < prerollFrames)
                 throw new IllegalStateException("Speaker pre-roll did not complete before timeout");
-            if (prerollFrames > 0 && !SpeechService.ensureMediaPausedBeforePlayback()) {
-                clip.stop();
-                clip.close();
-                activeClip = null;
-                System.err.println("[Media Transport] Audio handoff cancelled; verified pause was unavailable.");
-                return false;
-            }
             // The orb must only enter SPEAKING at the same boundary that the
             // player is confirmed paused and the first real speech frame can
             // be heard.  The pre-roll stays in THINKING rather than faking a

@@ -585,7 +585,11 @@ public class HabitTrackerService {
                 // 10 seconds caused the caller to abandon valid in-flight results.
                 conn.setReadTimeout(65000);
             } else {
-                conn.setReadTimeout(3000);   
+                // UI Automation may need several seconds to walk a browser's
+                // accessibility tree (especially Firefox). Three seconds
+                // caused normal shallow YouTube polls to time out before the
+                // title/timer fallback could be returned.
+                conn.setReadTimeout(10000);
             }
             
             int responseCode = conn.getResponseCode();
@@ -698,7 +702,12 @@ public class HabitTrackerService {
         return "VERIFIED".equalsIgnoreCase(status == null ? "" : status.trim())
                 || ("VIDEO".equalsIgnoreCase(kind == null ? "" : kind.trim())
                     && "PUBLISHER".equalsIgnoreCase(status == null ? "" : status.trim())
-                    && "youtube_publisher".equals(sources == null ? "" : sources.trim()));
+                    && ("youtube_publisher".equals(sources == null ? "" : sources.trim())
+                        || "youtube_ui_title".equals(sources == null ? "" : sources.trim()))
+                    && extractFirstMatch(dom, "(?m)^MEDIA_TITLE:[\\t ]*([^\\r\\n]*)") != null
+                    && !extractFirstMatch(dom, "(?m)^MEDIA_TITLE:[\\t ]*([^\\r\\n]*)").isBlank()
+                    && extractFirstMatch(dom, "(?m)^DESCRIPTION:[\\t ]*([^\\r\\n]*)") != null
+                    && !extractFirstMatch(dom, "(?m)^DESCRIPTION:[\\t ]*([^\\r\\n]*)").isBlank());
     }
 
     private static JsonObject getLocalFallbackMediaData(String activeTitle, String platform) {
@@ -1120,8 +1129,7 @@ public class HabitTrackerService {
                 + "Mention the identified title naturally and say you will wait for playback; do not summarize plot, "
                 + "invent details, or use Japanese script. Latin letters only.";
         try {
-            AIEngine.generateSilentLogicWithModel(prompt, "You are Manas: Ciel.", CielTools.getBackgroundModel(),
-                    0.5, "Paused Media Recognition").whenComplete((response, error) -> {
+            requestMediaCommentaryWithFailover(prompt, "Paused Media Recognition").whenComplete((response, error) -> {
                 boolean handedToSpeech = false;
                 try {
                     if (error != null || response == null || response.isBlank()
@@ -1184,19 +1192,25 @@ public class HabitTrackerService {
             + "Do not describe the output contract or return a language label.";
         
         try {
-            AIEngine.generateSilentLogicWithModel(prompt, "You are Manas: Ciel.", CielTools.getBackgroundModel(), 0.7, "Media Persona Commentary")
+            // Let the scored router choose and fail over between eligible models.  Passing the
+            // background model here hard-pinned media commentary to one local candidate, so a
+            // timeout became silence even when another local/cloud slot was available.
+            requestMediaCommentaryWithFailover(prompt, "Media Persona Commentary")
                 .whenComplete((response, error) -> {
                     boolean handedToSpeech = false;
                     try {
-                        if (error != null) {
-                            mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(15));
-                            System.err.println("[HabitTracker] Media commentary failed for '" + cleanTitle + "' (" + error.getClass().getSimpleName() + "): " + error.getMessage());
-                        } else if (response == null || response.isBlank() || response.contains("ABORT") || response.contains("DATA_DEFICIT")) {
-                            mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(15));
-                            System.out.println("[HabitTracker] Media commentary returned no speakable response for '" + cleanTitle + "'; retry deferred for 15 minutes.");
-                        } else if (containsJapaneseScript(response)) {
-                            mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(15));
-                            System.err.println("[HabitTracker] Media commentary rejected non-English script for '" + cleanTitle + "'; retry deferred for 15 minutes.");
+                        boolean unusableResponse = error != null || response == null || response.isBlank()
+                                || response.contains("ABORT") || response.contains("DATA_DEFICIT")
+                                || containsJapaneseScript(response);
+                        if (unusableResponse) {
+                            long retryMinutes = mediaCommentaryRetryMinutes(error, response);
+                            mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis()
+                                    + TimeUnit.MINUTES.toMillis(retryMinutes));
+                            String reason = error != null ? error.getClass().getSimpleName()
+                                    : (response == null || response.isBlank() ? "empty-response"
+                                    : containsJapaneseScript(response) ? "non-english-script" : "contract-rejected");
+                            System.err.println("[HabitTracker] Media commentary model chain unavailable for '" + cleanTitle
+                                    + "' (" + reason + "); no speech emitted; retry deferred for " + retryMinutes + " minutes.");
                         } else {
                             if (!hashToLog.equals(currentEpisodeHash) || (cachedDurationMinutes > 0
                                     && cachedCurrentTimeSec >= cachedDurationMinutes * 60)) {
@@ -1204,7 +1218,7 @@ public class HabitTrackerService {
                                 return;
                             }
                             System.out.println("[HabitTracker] Commentary generated; passing response to SpeechService for '" + cleanTitle + "'.");
-                            SpeechService.speakMediaCommentary(response, spoken -> {
+                            SpeechService.speakMediaCommentary(response.trim(), spoken -> {
                                 if (spoken) {
                                     loggedMediaToday.add(hashToLog);
                                     mediaCommentaryRetryAfter.remove(hashToLog);
@@ -1241,6 +1255,41 @@ public class HabitTrackerService {
                 (codePoint >= 0x3040 && codePoint <= 0x30ff) ||
                 (codePoint >= 0x3400 && codePoint <= 0x9fff) ||
                 (codePoint >= 0xff66 && codePoint <= 0xff9f));
+    }
+
+    /** Retry media generation across scored providers when one model fails. */
+    private static CompletableFuture<String> requestMediaCommentaryWithFailover(String prompt, String taskIntent) {
+        return requestMediaCommentaryWithFailover(prompt, taskIntent, 1);
+    }
+
+    private static CompletableFuture<String> requestMediaCommentaryWithFailover(String prompt, String taskIntent, int attempt) {
+        CompletableFuture<String> request;
+        try {
+            request = AIEngine.generateSilentLogicWithModel(prompt, "You are Manas: Ciel.", null,
+                    "Paused Media Recognition".equals(taskIntent) ? 0.5 : 0.7, taskIntent);
+        } catch (Throwable failure) {
+            request = CompletableFuture.completedFuture(null);
+        }
+        return request.handle((response, error) -> {
+            boolean usable = error == null && response != null && !response.isBlank()
+                    && !response.contains("ABORT") && !response.contains("DATA_DEFICIT")
+                    && !containsJapaneseScript(response);
+            if (usable || attempt >= 3) return CompletableFuture.completedFuture(response);
+            String reason = error == null ? "empty-or-rejected-response" : error.getClass().getSimpleName();
+            System.err.println("[HabitTracker] Media model attempt " + attempt + "/3 failed (" + reason
+                    + "); asking the scored router for another eligible model.");
+            long delaySeconds = Math.min(6L, Math.max(1L, attempt * 2L));
+            return CompletableFuture.runAsync(() -> { },
+                    CompletableFuture.delayedExecutor(delaySeconds, TimeUnit.SECONDS))
+                    .thenCompose(ignored -> requestMediaCommentaryWithFailover(prompt, taskIntent, attempt + 1));
+        }).thenCompose(future -> future);
+    }
+
+    private static long mediaCommentaryRetryMinutes(Throwable error, String response) {
+        String details = ((error == null ? "" : error.toString()) + " " + (response == null ? "" : response)).toLowerCase();
+        if (details.contains("429") || details.contains("rate") || details.contains("quota")) return 30;
+        if (details.contains("401") || details.contains("403") || details.contains("404") || details.contains("auth")) return 60;
+        return 15;
     }
 
     private static void evaluateEmotionalResonance() {
