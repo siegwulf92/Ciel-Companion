@@ -89,7 +89,15 @@ public class FinanceService {
                 Path profile = Paths.get(System.getProperty("user.dir"), "Ciel", "finance", "investor_profile.json");
                 if (Files.exists(profile) && Files.getLastModifiedTime(profile).toMillis() > success) success = 0;
             }
-            if (FinanceSchedulePolicy.due(now, job,
+            boolean holiday = FinanceSchedulePolicy.isFullDayHoliday(now.toLocalDate());
+            if (holiday && FinanceSchedulePolicy.holidayCatchupDue(now,
+                    Long.parseLong(state.getProperty(FinanceSchedulePolicy.Job.DAILY_BRIEFING.name() + ".success", "0")),
+                    Long.parseLong(state.getProperty(FinanceSchedulePolicy.Job.DAILY_BRIEFING.name() + ".attempt", "0")),
+                    Integer.parseInt(state.getProperty(FinanceSchedulePolicy.Job.DAILY_BRIEFING.name() + ".failures", "0")))) {
+                executeSilentMarketCheck(FinanceSchedulePolicy.Job.DAILY_BRIEFING);
+                return;
+            }
+            if (!holiday && FinanceSchedulePolicy.due(now, job,
                     success,
                     Long.parseLong(state.getProperty(key + "attempt", "0")),
                     Integer.parseInt(state.getProperty(key + "failures", "0")))) {

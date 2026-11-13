@@ -13,7 +13,7 @@ public final class FinanceSchedulePolicy {
     public enum Job { DAILY_BRIEFING, CLOSED_MARKET_PLAN, NEWS_WATCH }
     // NYSE published full-day closures. Refresh this table before 2029.
     private static final Map<Integer, Set<LocalDate>> NYSE_CLOSURES = Map.of(
-            2026, dates(2026, "01-01", "01-19", "02-16", "04-03", "05-25", "06-19", "07-03", "09-07", "11-26", "12-25"),
+            2026, dates(2026, "01-01", "01-19", "02-16", "04-03", "05-25", "06-19", "07-03", "09-07", "11-11", "11-26", "12-25"),
             2027, dates(2027, "01-01", "01-18", "02-15", "03-26", "05-31", "06-18", "07-05", "09-06", "11-25", "12-24"),
             2028, dates(2028, "01-17", "02-21", "04-14", "05-29", "06-19", "07-04", "09-04", "11-23", "12-25"));
     private static Set<LocalDate> dates(int year, String... monthDays) {
@@ -23,8 +23,25 @@ public final class FinanceSchedulePolicy {
     }
     public static boolean marketClosed(LocalDate date) {
         DayOfWeek day = date.getDayOfWeek();
-        return day == DayOfWeek.SATURDAY || day == DayOfWeek.SUNDAY
-                || NYSE_CLOSURES.getOrDefault(date.getYear(), Set.of()).contains(date);
+        return day == DayOfWeek.SATURDAY || day == DayOfWeek.SUNDAY || isFullDayHoliday(date);
+    }
+    public static boolean isFullDayHoliday(LocalDate date) {
+        return NYSE_CLOSURES.getOrDefault(date.getYear(), Set.of()).contains(date);
+    }
+    /**
+     * On a full-day exchange holiday, permit one after-hours catch-up for the
+     * most recent market day that was missed. This never creates a briefing
+     * for the holiday itself; it only clears an older missed obligation.
+     */
+    public static boolean holidayCatchupDue(ZonedDateTime now, long success, long attempt, int failures) {
+        if (!isFullDayHoliday(now.toLocalDate()) || now.getHour() < 16) return false;
+        if (attempt > success && now.toInstant().toEpochMilli() - attempt
+                < retryMinutes(failures) * 60_000) return false;
+        LocalDate previousMarketDay = now.toLocalDate().minusDays(1);
+        while (marketClosed(previousMarketDay)) previousMarketDay = previousMarketDay.minusDays(1);
+        if (success == 0) return true;
+        LocalDate lastSuccess = Instant.ofEpochMilli(success).atZone(now.getZone()).toLocalDate();
+        return lastSuccess.isBefore(previousMarketDay);
     }
     public static Job briefingAt(ZonedDateTime now) {
         return marketClosed(now.toLocalDate()) ? Job.CLOSED_MARKET_PLAN : Job.DAILY_BRIEFING;

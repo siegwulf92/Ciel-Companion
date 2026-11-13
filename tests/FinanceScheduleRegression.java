@@ -10,6 +10,14 @@ public class FinanceScheduleRegression {
         check(FinanceSchedulePolicy.briefingAt(saturday)==CLOSED_MARKET_PLAN);
         check(FinanceSchedulePolicy.briefingAt(monday)==DAILY_BRIEFING);
         check(FinanceSchedulePolicy.briefingAt(monday.withHour(23))==DAILY_BRIEFING);
+        var veteransDay=ZonedDateTime.parse("2026-11-11T12:00:00-05:00[America/New_York]");
+        check(FinanceSchedulePolicy.isFullDayHoliday(veteransDay.toLocalDate()));
+        check(FinanceSchedulePolicy.briefingAt(veteransDay)==CLOSED_MARKET_PLAN);
+        long nov10 = veteransDay.minusDays(1).withHour(18).toInstant().toEpochMilli();
+        long nov9 = veteransDay.minusDays(2).withHour(18).toInstant().toEpochMilli();
+        check(!FinanceSchedulePolicy.holidayCatchupDue(veteransDay.withHour(12), nov9, 0, 0));
+        check(FinanceSchedulePolicy.holidayCatchupDue(veteransDay.withHour(18), nov9, 0, 0));
+        check(!FinanceSchedulePolicy.holidayCatchupDue(veteransDay.withHour(18), nov10, 0, 0));
         check(!FinanceSchedulePolicy.due(monday,CLOSED_MARKET_PLAN,0,0,0));
         check(FinanceSchedulePolicy.due(saturday,CLOSED_MARKET_PLAN,0,0,0));
         long now=saturday.toInstant().toEpochMilli();
