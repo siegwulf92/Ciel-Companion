@@ -3,6 +3,7 @@ package com.cielcompanion.service;
 import java.time.DayOfWeek;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.ZonedDateTime;
 import java.util.Map;
 import java.util.Set;
@@ -35,13 +36,21 @@ public final class FinanceSchedulePolicy {
         if (job == null || (job != Job.NEWS_WATCH && briefingAt(now) != job)) return false;
         long millis = now.toInstant().toEpochMilli();
         if (attempt > success && millis - attempt < retryMinutes(failures) * 60_000) return false;
+        if (job == Job.DAILY_BRIEFING) {
+            // A pre-open run (for example after a 2 AM login) cannot satisfy
+            // today's market-day briefing. Wait until the market opens, then
+            // require a success recorded at or after 09:30 local exchange time.
+            ZonedDateTime marketOpen = now.with(LocalTime.of(9, 30)).withSecond(0).withNano(0);
+            if (now.isBefore(marketOpen)) return false;
+            if (success == 0) return true;
+            return success < marketOpen.toInstant().toEpochMilli();
+        }
         if (success == 0) return true;
         if (job == Job.NEWS_WATCH) return millis - success >= 60 * 60_000;
         // The market-day briefing is a calendar-day obligation, not a rolling
         // 20-hour timer. If yesterday's run finished late, the next market day
         // must still receive its own report at the next schedule tick.
         LocalDate lastSuccess = Instant.ofEpochMilli(success).atZone(now.getZone()).toLocalDate();
-        if (job == Job.DAILY_BRIEFING) return lastSuccess.isBefore(now.toLocalDate());
         return lastSuccess.isBefore(now.toLocalDate()) && millis - success >= 20 * 60 * 60_000;
     }
 }

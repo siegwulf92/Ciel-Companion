@@ -19,12 +19,16 @@ public class FinanceScheduleRegression {
         check(!FinanceSchedulePolicy.due(saturday,CLOSED_MARKET_PLAN,0,now-16*60000,2));
         check(FinanceSchedulePolicy.retryMinutes(99)==240);
         check(FinanceSchedulePolicy.due(saturday.plusDays(1),CLOSED_MARKET_PLAN,now,0,0));
+        var preOpen=ZonedDateTime.parse("2026-10-19T02:22:00-04:00[America/New_York]");
+        check(!FinanceSchedulePolicy.due(preOpen,DAILY_BRIEFING,0,0,0));
+        check(!FinanceSchedulePolicy.due(preOpen,DAILY_BRIEFING,yesterdayOrZero(preOpen),0,0));
         long mon=monday.toInstant().toEpochMilli();
         long yesterday=monday.minusDays(1).withHour(22).toInstant().toEpochMilli();
         check(FinanceSchedulePolicy.due(monday,DAILY_BRIEFING,yesterday,0,0));
-        check(!FinanceSchedulePolicy.due(monday,DAILY_BRIEFING,mon-3600000,0,0));
-        check(!FinanceSchedulePolicy.due(monday,DAILY_BRIEFING,mon-59*60000,0,0));
+        check(FinanceSchedulePolicy.due(monday,DAILY_BRIEFING,monday.withHour(2).toInstant().toEpochMilli(),0,0));
+        check(!FinanceSchedulePolicy.due(monday,DAILY_BRIEFING,monday.withHour(9).withMinute(45).toInstant().toEpochMilli(),0,0));
         check(FinanceSchedulePolicy.due(monday,DAILY_BRIEFING,mon-24*60*60000L,0,0));
         System.out.println("Finance weekday/weekend schedule and retry regressions passed.");
     }
+    static long yesterdayOrZero(ZonedDateTime day) { return day.minusDays(1).withHour(22).toInstant().toEpochMilli(); }
 }
