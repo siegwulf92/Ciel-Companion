@@ -18,6 +18,9 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.UUID;
 import java.util.Base64;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -441,6 +444,10 @@ public class AzureSpeechService {
     private static boolean playWav(File file, String key, boolean primeOutput, String speechText) {
         Clip clip = null;
         byte[] analysisPcm = null;
+        if (!isPlayableWav(file)) {
+            quarantineInvalidAudio(file, "invalid-wav");
+            return false;
+        }
         try (javax.sound.sampled.AudioInputStream audioStream = AudioSystem.getAudioInputStream(file)) {
             AudioFormat format = audioStream.getFormat();
             if (audioStream.getFrameLength() >= 0 && audioStream.getFrameLength() * Math.max(1, format.getFrameSize()) <= 16_000_000L) {
@@ -564,6 +571,9 @@ public class AzureSpeechService {
             Thread.currentThread().interrupt();
             return true;
         } catch (Exception e) {
+            if (e instanceof UnsupportedAudioFileException || e instanceof IllegalArgumentException) {
+                quarantineInvalidAudio(file, "unsupported-format");
+            }
             System.err.println("[Azure TTS] Cached audio playback failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return false;
         } finally {
@@ -573,6 +583,36 @@ public class AzureSpeechService {
                 try { clip.close(); } catch (Exception ignored) {}
                 if (activeClip == clip) activeClip = null;
             }
+        }
+    }
+
+    public static boolean isPlayableWav(File file) {
+        if (file == null || !file.isFile() || file.length() < 64) return false;
+        try (javax.sound.sampled.AudioInputStream stream = AudioSystem.getAudioInputStream(file)) {
+            AudioFormat format = stream.getFormat();
+            return format != null && format.getFrameSize() > 0 && format.getFrameRate() > 0
+                    && (stream.getFrameLength() < 0 || stream.getFrameLength() <= 100_000_000L);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    public static void quarantineInvalidAudio(File file, String reason) {
+        if (file == null || !file.isFile()) return;
+        try {
+            Path source = file.toPath();
+            Path parent = source.getParent() == null ? Path.of("voice_cache") : source.getParent();
+            Path quarantine = parent.resolve(".invalid-audio");
+            Files.createDirectories(quarantine);
+            String safe = file.getName().replaceAll("[^A-Za-z0-9._-]", "_");
+            Path destination = quarantine.resolve(safe + "." + (reason == null ? "invalid" : reason)
+                    + "." + UUID.randomUUID() + ".wav");
+            Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
+            System.err.println("[Speech Cache] Quarantined unusable audio " + file.getName()
+                    + " reason=" + (reason == null ? "invalid" : reason));
+        } catch (Exception error) {
+            System.err.println("[Speech Cache] Could not quarantine unusable audio: "
+                    + error.getClass().getSimpleName());
         }
     }
 
