@@ -64,6 +64,12 @@ public class HabitTrackerService {
     private static final Set<String> mediaRecognitionAcknowledgedToday = ConcurrentHashMap.newKeySet();
     private static final Set<String> mediaCommentaryInFlight = ConcurrentHashMap.newKeySet();
     private static final Map<String, Long> mediaCommentaryRetryAfter = new ConcurrentHashMap<>();
+    private static final Set<String> mediaPreparationInFlight = ConcurrentHashMap.newKeySet();
+    private static final Map<String, MediaDraft> mediaDrafts = new ConcurrentHashMap<>();
+    private static final Path MEDIA_DRAFT_DIRECTORY = ProjectPaths.ciel().resolve("media_pipeline");
+
+    private record MediaDraft(String title, String english, String phonokana,
+                              int failures, long nextAttemptAt, String date) {}
 
     private static final Queue<String> deferredSpeechQueue = new ConcurrentLinkedQueue<>();
     private static volatile boolean currentGamePausable = false;
@@ -820,6 +826,8 @@ public class HabitTrackerService {
             loggedMediaToday.clear();
             unverifiedMediaAcknowledgedToday.clear();
             mediaRecognitionAcknowledgedToday.clear();
+            mediaPreparationInFlight.clear();
+            mediaDrafts.clear();
             episodeExposureMinutes.clear();
             recentMediaHistory.clear();
             mediaThresholds.clear();
@@ -940,6 +948,16 @@ public class HabitTrackerService {
                             + cachedPlaybackState + ", last position=" + cachedCurrentTimeSec + "s. Rechecking player; not counting unconfirmed time.");
                 }
                 if (playbackFresh && exposure > 0 && exposure % 120 == 0) triggerFatigueWarning(exposure);
+
+                // Prepare the expensive stages while the video is still well
+                // before its speaking threshold.  Each completed stage is
+                // durable, so a failed formatter never discards valid metadata
+                // or English dialogue and a restart can resume from that point.
+                if (playbackFresh && exposure >= 1 && hasAcquiredEpisodeMetadata
+                        && !currentEpisodeHash.isEmpty() && !loggedMediaToday.contains(currentEpisodeHash)) {
+                    ensureMediaSpeechPrepared(currentMediaTitle, activeTitle, cachedActiveUrl,
+                            cachedDomText, currentEpisodeHash);
+                }
 
                 long retryAfter = mediaCommentaryRetryAfter.getOrDefault(currentEpisodeHash, 0L);
                 // A paused player still needs a useful recognition response. Do
@@ -1170,84 +1188,186 @@ public class HabitTrackerService {
 
     private static void triggerSequentialMediaCommentary(String cleanTitle, String fullWindowTitle, String activeUrl, String datText, String hashToLog) {
         if (!mediaCommentaryInFlight.add(hashToLog)) return;
+        MediaDraft draft = loadMediaDraft(hashToLog, cleanTitle);
+        if (draft == null || draft.english().isBlank()
+                || !SpeechService.isSafePreparedPhonokana(draft.phonokana())) {
+            mediaCommentaryInFlight.remove(hashToLog);
+            ensureMediaSpeechPrepared(cleanTitle, fullWindowTitle, activeUrl, datText, hashToLog);
+            long retryAt = draft == null ? System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(1)
+                    : Math.max(System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(20), draft.nextAttemptAt());
+            mediaCommentaryRetryAfter.put(hashToLog, retryAt);
+            System.out.println("[HabitTracker] Threshold met for '" + cleanTitle
+                    + "', but prepared speech is not ready; retaining completed stages and retrying within five minutes.");
+            return;
+        }
         CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
-        System.out.println("[HabitTracker] Threshold met for " + cleanTitle + ". Requesting commentary (runtime=" + cachedDurationMinutes
-                + "m, playback=" + cachedCurrentTimeSec + "s, hash=" + hashToLog + ")...");
-        
+        SpeechService.registerPreparedPhonokana(draft.english(), draft.phonokana());
+        System.out.println("[HabitTracker] Threshold met for " + cleanTitle
+                + "; using durable prepared English and manager-reviewed phonokana.");
+        try {
+            SpeechService.speakMediaCommentary(draft.english(), spoken -> {
+                if (spoken) {
+                    loggedMediaToday.add(hashToLog);
+                    mediaCommentaryRetryAfter.remove(hashToLog);
+                    recentMediaHistory.add(cleanTitle);
+                    currentBingeCount++;
+                    if (recentMediaHistory.size() > 5) recentMediaHistory.removeFirst();
+                } else {
+                    mediaCommentaryRetryAfter.put(hashToLog,
+                            System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(1));
+                    System.out.println("[HabitTracker] Prepared commentary was not spoken; all stages retained for retry.");
+                }
+                mediaCommentaryInFlight.remove(hashToLog);
+            });
+        } catch (Exception e) {
+            mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(1));
+            mediaCommentaryInFlight.remove(hashToLog);
+            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
+            System.err.println("[HabitTracker] Could not queue prepared media commentary for '" + cleanTitle
+                    + "': " + e.getClass().getSimpleName());
+        }
+    }
+
+    private static void ensureMediaSpeechPrepared(String cleanTitle, String fullWindowTitle,
+                                                  String activeUrl, String datText, String hash) {
+        MediaDraft existing = loadMediaDraft(hash, cleanTitle);
+        if (existing != null && !existing.english().isBlank()
+                && SpeechService.isSafePreparedPhonokana(existing.phonokana())) {
+            SpeechService.registerPreparedPhonokana(existing.english(), existing.phonokana());
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (existing != null && existing.nextAttemptAt() > now) return;
+        if (!mediaPreparationInFlight.add(hash)) return;
+        CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
+        String english = existing == null ? "" : existing.english();
+        int failures = existing == null ? 0 : existing.failures();
+        CompletableFuture<String> englishFuture = english.isBlank()
+                ? requestMediaCommentaryWithFailover(buildMediaCommentaryPrompt(
+                        fullWindowTitle, activeUrl, datText), "Media Persona Commentary Prepare")
+                : CompletableFuture.completedFuture(english);
+        englishFuture.whenComplete((generated, englishError) -> {
+            String usableEnglish = generated == null ? "" : generated.trim();
+            if (englishError != null || usableEnglish.isBlank()
+                    || usableEnglish.contains("ABORT") || usableEnglish.contains("DATA_DEFICIT")
+                    || containsJapaneseScript(usableEnglish)) {
+                scheduleMediaPreparationRetry(hash, cleanTitle, english, "english",
+                        englishError == null ? "contract-rejected" : englishError.getClass().getSimpleName(), failures);
+                return;
+            }
+            saveMediaDraft(hash, new MediaDraft(cleanTitle, usableEnglish, "", failures, 0L,
+                    LocalDate.now().toString()));
+            AIEngine.transliterateAsync(usableEnglish).whenComplete((phonokana, phoneticError) -> {
+                if (phoneticError != null || !SpeechService.isSafePreparedPhonokana(phonokana)) {
+                    scheduleMediaPreparationRetry(hash, cleanTitle, usableEnglish, "phonokana",
+                            phoneticError == null ? "invalid-model-output" : phoneticError.getClass().getSimpleName(), failures);
+                    return;
+                }
+                MediaDraft ready = new MediaDraft(cleanTitle, usableEnglish, phonokana, 0, 0L,
+                        LocalDate.now().toString());
+                saveMediaDraft(hash, ready);
+                SpeechService.registerPreparedPhonokana(usableEnglish, phonokana);
+                mediaPreparationInFlight.remove(hash);
+                CielState.getCielGui().ifPresent(gui -> {
+                    if (!SpeechService.isActivelySpeaking()) gui.setState(CielGui.GuiState.IDLE);
+                });
+                System.out.println("[HabitTracker] Media speech prepared ahead of threshold: metadata -> English -> manager-reviewed phonokana ('"
+                        + cleanTitle + "').");
+            });
+        });
+    }
+
+    private static String buildMediaCommentaryPrompt(String fullWindowTitle, String activeUrl, String datText) {
         String effectiveSeriesName = activeSeriesName.isEmpty() ? currentMediaTitle : activeSeriesName;
         String safeSeriesKey = "series_progress_" + effectiveSeriesName.toLowerCase().replaceAll("[^a-z0-9]", "");
         Optional<Fact> maxProgressFact = MemoryService.getFact(safeSeriesKey);
-        String maxProgressStr = maxProgressFact.isPresent() ? " (Highest episode previously recorded for this series: " + maxProgressFact.get().value() + ". This does not prove completion or that intermediate episodes were watched. Use exact-episode history for possible rewatch context; never assume knowledge of later plot events.)" : "";
+        String maxProgress = maxProgressFact.map(fact -> " (Highest episode previously recorded: "
+                + fact.value() + "; this does not prove intermediate episodes were watched.)").orElse("");
+        String history = (!activeSeriesName.isEmpty() && !activeSeriesEpisodes.isEmpty())
+                ? "SERIES CONTINUITY: " + activeSeriesName + " prior episodes this session: "
+                    + String.join(", ", activeSeriesEpisodes) + maxProgress
+                : (!recentMediaHistory.isEmpty() ? "RECENT MEDIA: " + String.join(" -> ", recentMediaHistory) : "");
+        String watch = ViewingProgress.context(MediaObservation.field(datText, "SERIES"),
+                MediaObservation.field(datText, "EPISODE"), cachedCurrentTimeSec);
+        return "[MEDIA_COMMENTARY] [QUERY: " + fullWindowTitle + "|||" + activeUrl
+                + "]\nACCESSIBILITY DAT TEXT:\n" + datText + "\nHISTORY:\n" + history
+                + "\nEXACT EPISODE PLAYBACK HISTORY:\n" + watch
+                + "\nOUTPUT CONTRACT: Write one concise, natural English commentary sentence. "
+                + "Use only verified metadata above. English semantics and Latin letters only; no Japanese script. "
+                + "Use a name or title sparingly. Do not reveal later plot information, describe this contract, "
+                + "or return a language label.";
+    }
 
-        String historicalContext = (!activeSeriesName.isEmpty() && !activeSeriesEpisodes.isEmpty()) 
-            ? "SERIES CONTINUITY (Master is binge-watching the series '" + activeSeriesName + "'. Prior episodes watched this session: " + String.join(", ", activeSeriesEpisodes) + ")" + maxProgressStr
-            : (!recentMediaHistory.isEmpty() ? "GLOBAL CONTINUITY (Recent media watched this session):\n" + String.join(" -> ", recentMediaHistory) : "");
+    private static void scheduleMediaPreparationRetry(String hash, String title, String english,
+                                                       String stage, String reason, int previousFailures) {
+        int failures = Math.max(0, previousFailures) + 1;
+        long delayMinutes = Math.min(5L, failures);
+        long retryAt = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(delayMinutes);
+        saveMediaDraft(hash, new MediaDraft(title, english == null ? "" : english, "",
+                failures, retryAt, LocalDate.now().toString()));
+        mediaPreparationInFlight.remove(hash);
+        CielState.getCielGui().ifPresent(gui -> {
+            if (!SpeechService.isActivelySpeaking()) gui.setState(CielGui.GuiState.IDLE);
+        });
+        System.err.println("[HabitTracker] Media preparation stage=" + stage + " status=retry reason="
+                + reason + " delay=" + delayMinutes + "m; completed stages retained for '" + title + "'.");
+    }
 
-        String watchContext=ViewingProgress.context(MediaObservation.field(datText,"SERIES"),MediaObservation.field(datText,"EPISODE"),cachedCurrentTimeSec);
-        String prompt = "[MEDIA_COMMENTARY] [QUERY: " + fullWindowTitle + "|||" + activeUrl + "]\nACCESSIBILITY DAT TEXT:\n" + datText + "\nHISTORY:\n" + historicalContext
-            +"\nEXACT EPISODE PLAYBACK HISTORY:\n"+watchContext
-            + "\nOUTPUT CONTRACT: Write one concise, natural English commentary sentence. "
-            + "Use English semantics and Latin letters only; do not translate into Japanese and do not use hiragana, katakana, kanji, or Japanese punctuation. "
-            + "Use a name or title sparingly. Keep ordinary viewing commentary in English. "
-            + "A short Japanese expression of affection or praise belongs only in a naturally personal moment. "
-            + "Do not describe the output contract or return a language label.";
-        
+    private static MediaDraft loadMediaDraft(String hash, String title) {
+        MediaDraft cached = mediaDrafts.get(hash);
+        if (cached != null && LocalDate.now().toString().equals(cached.date())
+                && Objects.equals(title, cached.title())) return cached;
+        Path path = mediaDraftPath(hash);
         try {
-            // Let the scored router choose and fail over between eligible models.  Passing the
-            // background model here hard-pinned media commentary to one local candidate, so a
-            // timeout became silence even when another local/cloud slot was available.
-            requestMediaCommentaryWithFailover(prompt, "Media Persona Commentary")
-                .whenComplete((response, error) -> {
-                    boolean handedToSpeech = false;
-                    try {
-                        boolean unusableResponse = error != null || response == null || response.isBlank()
-                                || response.contains("ABORT") || response.contains("DATA_DEFICIT")
-                                || containsJapaneseScript(response);
-                        if (unusableResponse) {
-                            long retryMinutes = mediaCommentaryRetryMinutes(error, response);
-                            mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis()
-                                    + TimeUnit.MINUTES.toMillis(retryMinutes));
-                            String reason = error != null ? error.getClass().getSimpleName()
-                                    : (response == null || response.isBlank() ? "empty-response"
-                                    : containsJapaneseScript(response) ? "non-english-script" : "contract-rejected");
-                            System.err.println("[HabitTracker] Media commentary model chain unavailable for '" + cleanTitle
-                                    + "' (" + reason + "); no speech emitted; retry deferred for " + retryMinutes + " minutes.");
-                        } else {
-                            if (!hashToLog.equals(currentEpisodeHash) || (cachedDurationMinutes > 0
-                                    && cachedCurrentTimeSec >= cachedDurationMinutes * 60)) {
-                                System.out.println("[HabitTracker] Commentary completed after playback ended/changed; suppressing stale response.");
-                                return;
-                            }
-                            System.out.println("[HabitTracker] Commentary generated; passing response to SpeechService for '" + cleanTitle + "'.");
-                            SpeechService.speakMediaCommentary(response.trim(), spoken -> {
-                                if (spoken) {
-                                    loggedMediaToday.add(hashToLog);
-                                    mediaCommentaryRetryAfter.remove(hashToLog);
-                                    recentMediaHistory.add(cleanTitle);
-                                    currentBingeCount++;
-                                    if (recentMediaHistory.size() > 5) recentMediaHistory.removeFirst();
-                                } else {
-                                    mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(3));
-                                    System.out.println("[HabitTracker] Commentary not spoken; retry scheduled for '" + cleanTitle + "'.");
-                                }
-                                mediaCommentaryInFlight.remove(hashToLog);
-                            });
-                            handedToSpeech = true;
-                            return;
-                        }
-                    } finally {
-                        if (!handedToSpeech) {
-                            mediaCommentaryInFlight.remove(hashToLog);
-                            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
-                        }
-                    }
-                });
-        } catch (Exception e) {
-            mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(15));
-            mediaCommentaryInFlight.remove(hashToLog);
-            CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
-            System.err.println("[HabitTracker] Could not start media commentary for '" + cleanTitle + "': " + e.getMessage());
+            if (!Files.isRegularFile(path)) return null;
+            JsonObject json = JsonParser.parseString(Files.readString(path, StandardCharsets.UTF_8)).getAsJsonObject();
+            MediaDraft draft = new MediaDraft(
+                    json.has("title") ? json.get("title").getAsString() : "",
+                    json.has("english") ? json.get("english").getAsString() : "",
+                    json.has("phonokana") ? json.get("phonokana").getAsString() : "",
+                    json.has("failures") ? json.get("failures").getAsInt() : 0,
+                    json.has("next_attempt_at") ? json.get("next_attempt_at").getAsLong() : 0L,
+                    json.has("date") ? json.get("date").getAsString() : "");
+            if (!LocalDate.now().toString().equals(draft.date()) || !Objects.equals(title, draft.title())) return null;
+            mediaDrafts.put(hash, draft);
+            return draft;
+        } catch (Exception error) {
+            System.err.println("[HabitTracker] Media draft unreadable; rebuilding stage data ("
+                    + error.getClass().getSimpleName() + ").");
+            return null;
         }
+    }
+
+    private static void saveMediaDraft(String hash, MediaDraft draft) {
+        mediaDrafts.put(hash, draft);
+        Path path = mediaDraftPath(hash);
+        try {
+            Files.createDirectories(path.getParent());
+            JsonObject json = new JsonObject();
+            json.addProperty("schema_version", 1);
+            json.addProperty("title", draft.title());
+            json.addProperty("english", draft.english());
+            json.addProperty("phonokana", draft.phonokana());
+            json.addProperty("failures", draft.failures());
+            json.addProperty("next_attempt_at", draft.nextAttemptAt());
+            json.addProperty("date", draft.date());
+            Path temporary = path.resolveSibling(path.getFileName() + ".tmp");
+            Files.writeString(temporary, json.toString(), StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            try {
+                Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException error) {
+                Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (Exception error) {
+            System.err.println("[HabitTracker] Media draft persistence failed: "
+                    + error.getClass().getSimpleName());
+        }
+    }
+
+    private static Path mediaDraftPath(String hash) {
+        String safe = hash == null ? "unknown" : hash.replaceAll("[^A-Za-z0-9_-]", "_");
+        return MEDIA_DRAFT_DIRECTORY.resolve(LocalDate.now() + "-" + safe + ".json");
     }
 
     private static boolean containsJapaneseScript(String text) {
@@ -1288,9 +1408,10 @@ public class HabitTrackerService {
 
     private static long mediaCommentaryRetryMinutes(Throwable error, String response) {
         String details = ((error == null ? "" : error.toString()) + " " + (response == null ? "" : response)).toLowerCase();
-        if (details.contains("429") || details.contains("rate") || details.contains("quota")) return 30;
-        if (details.contains("401") || details.contains("403") || details.contains("404") || details.contains("auth")) return 60;
-        return 15;
+        // Active media remains eligible indefinitely.  The durable stage
+        // state makes short retries cheap and prevents a quota/auth failure
+        // from losing already-completed work.
+        return 5;
     }
 
     private static void evaluateEmotionalResonance() {

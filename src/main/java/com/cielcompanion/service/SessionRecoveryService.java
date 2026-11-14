@@ -47,6 +47,7 @@ public final class SessionRecoveryService {
     private static String sessionId;
     private static ScheduledExecutorService heartbeat;
     private static boolean started;
+    private static Path pendingIncidentReport;
 
     private SessionRecoveryService() {}
 
@@ -108,6 +109,11 @@ public final class SessionRecoveryService {
                     current.addProperty("last_reported_incident_id", incidentId);
                     current.addProperty("last_health_report_at", Instant.now().toString());
                     System.out.println("Ciel Recovery: report=" + report);
+                    if (interrupted && !planned) {
+                        pendingIncidentReport = report;
+                        current.addProperty("recovery_review_state", "pending_agent_analysis");
+                        current.addProperty("recovery_report", report.toAbsolutePath().toString());
+                    }
                 }
             }
             writeState(current);
@@ -121,6 +127,27 @@ public final class SessionRecoveryService {
                     HEARTBEAT_SECONDS, TimeUnit.SECONDS);
             System.out.println("Ciel Recovery: session ledger active; classification=" + classification
                     + ", previous_session=" + (previousId == null ? "none" : previousId));
+        }
+    }
+
+    /** A genuine or unexplained interruption is analyzed read-only before repair. */
+    public static Path getPendingIncidentReport() {
+        synchronized (LOCK) {
+            return pendingIncidentReport != null && Files.isRegularFile(pendingIncidentReport)
+                    ? pendingIncidentReport : null;
+        }
+    }
+
+    public static void markRecoveryAnalysisComplete(Path analysisReport) {
+        synchronized (LOCK) {
+            if (!started || pendingIncidentReport == null) return;
+            JsonObject state = readState();
+            state.addProperty("recovery_review_state", "analysis_saved_no_changes_applied");
+            if (analysisReport != null) state.addProperty("recovery_analysis_report",
+                    analysisReport.toAbsolutePath().toString());
+            state.addProperty("recovery_analysis_completed_at", Instant.now().toString());
+            writeState(state);
+            pendingIncidentReport = null;
         }
     }
 

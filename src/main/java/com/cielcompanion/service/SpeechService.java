@@ -22,6 +22,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Random;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.CompletableFuture;
@@ -65,6 +67,13 @@ public class SpeechService {
     // long post-speech grace period. The queue count still protects chained
     // lines from resuming playback between utterances.
     private static final long SPEECH_HANDOFF_SETTLE_MS = 180L;
+    /**
+     * Final, manager-reviewed phonokana prepared before a timed media comment.
+     * The English source remains the identity and log text; only the final TTS
+     * payload uses this value.  The bounded map is repopulated from the durable
+     * media draft when Ciel restarts.
+     */
+    private static final Map<String, String> preparedPhonokana = new ConcurrentHashMap<>();
 
     /**
      * Boot invokes this once for the priority path and once after the heavy
@@ -352,6 +361,19 @@ public class SpeechService {
         }, null);
     }
 
+    public static boolean registerPreparedPhonokana(String english, String phonokana) {
+        if (english == null || english.isBlank() || !isSafePhonokana(phonokana)) return false;
+        if (preparedPhonokana.size() >= 64 && !preparedPhonokana.containsKey(english)) {
+            preparedPhonokana.clear();
+        }
+        preparedPhonokana.put(english, phonokana);
+        return true;
+    }
+
+    public static boolean isSafePreparedPhonokana(String text) {
+        return isSafePhonokana(text);
+    }
+
     private static void queuePreformatted(String text, String key, boolean isRare, boolean flushQueue,
                                           java.util.function.Consumer<Boolean> onComplete) {
         queuePreformatted(text, key, isRare, flushQueue, onComplete, null, false);
@@ -498,7 +520,12 @@ public class SpeechService {
                         }
 
                         if (requiresPhonokana) {
-                            String converted = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
+                            String converted = preparedPhonokana.get(textToSpeak);
+                            if (isSafePhonokana(converted)) {
+                                System.out.println("[Speech Phonetics] status=ready source=media-prepared");
+                            } else {
+                                converted = com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(textToSpeak);
+                            }
                             if (!isSafePhonokana(converted)) {
                                 System.err.println("[Speech Phonetics] status=aborted reason=model-output-unavailable; refusing non-Katakana TTS input.");
                                 return;
