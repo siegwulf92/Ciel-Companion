@@ -826,8 +826,12 @@ public class VaultService {
 
     private static boolean isErrorResponse(String response) {
         if (response == null || response.isBlank()) return true;
-        String l = response.toLowerCase();
-        return l.contains("timeout") || l.contains("[system_error]") || l.contains("[error") || l.contains("crashed");
+        String l = response.strip().toLowerCase(Locale.ROOT);
+        // Valid lore prose may mention a timeout, error, or crash. Only the
+        // explicit transport/router sentinels represent a failed response.
+        return l.equals("timeout") || l.equals("timeout_exception")
+                || l.startsWith("[system_error]") || l.startsWith("[error")
+                || l.startsWith("[ai error") || l.startsWith("error:");
     }
 
     private static void startLoreBatch() {

@@ -18,3 +18,14 @@ modification timestamps. Back up each runtime before deploying a paired release.
 Validation: Java 21 Maven package build, ten Java regression programs, and 113
 offline Python checks in the private companion candidate. Python code is excluded
 from this public repository. Automatic deployment is a separate installation step.
+
+## Local drift review
+
+The paired updater computes deterministic text similarity for local source
+drift and asks the local Ciel router for a bounded, redacted semantic review.
+Signed release commits and the Java artifact SHA-256 remain authoritative.
+Automatic supersession requires at least 90% deterministic similarity, low
+model-reported risk, and at least 95% model confidence. Secrets, trigger keys,
+binary files, and materially different edits remain manual-review items.
+Review records contain only paths, metrics, provider status and a short reason
+under `.local/code-sync/reconciliation`.
