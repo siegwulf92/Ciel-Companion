@@ -35,6 +35,15 @@ public final class ProjectPaths {
             Path windowless = configured.resolveSibling("pythonw.exe");
             if (java.nio.file.Files.isRegularFile(windowless)) return windowless.toString();
         }
+        if (configured.toString().equalsIgnoreCase("python") && System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT).contains("win")) {
+            for (String directory : System.getenv().getOrDefault("PATH", "")
+                    .split(java.io.File.pathSeparator)) {
+                if (directory.isBlank()) continue;
+                Path windowless = Paths.get(directory.replace("\"", "")).resolve("pythonw.exe");
+                if (java.nio.file.Files.isRegularFile(windowless)) return windowless.toString();
+            }
+        }
         return pythonExecutable();
     }
 
@@ -49,7 +58,34 @@ public final class ProjectPaths {
         List<String> wrapped = new ArrayList<>();
         wrapped.add(pythonBackgroundExecutable());
         wrapped.add("-c");
-        wrapped.add("import subprocess,sys; p=subprocess.run(sys.argv[1:], creationflags=0x08000000); raise SystemExit(p.returncode)");
+        wrapped.add("import subprocess,sys; sys.exit(subprocess.call(sys.argv[1:], creationflags=subprocess.CREATE_NO_WINDOW))");
+        wrapped.addAll(child);
+        return wrapped;
+    }
+
+    /** An opt-in visible retry is limited to a launch denied before the child ran. */
+    public static List<String> windowlessCommand(List<String> child, Path input, Path diagnostic) {
+        if (!System.getProperty("os.name", "").toLowerCase().contains("win")) return new ArrayList<>(child);
+        List<String> wrapped = new ArrayList<>();
+        wrapped.add(pythonBackgroundExecutable());
+        wrapped.add("-c");
+        wrapped.add("""
+                import subprocess, sys
+                with open(sys.argv[1], 'rb') as prompt, open(sys.argv[2], 'ab') as diagnostic:
+                    try:
+                        process = subprocess.Popen(sys.argv[3:], stdin=prompt, stdout=subprocess.DEVNULL,
+                                                 stderr=diagnostic, creationflags=subprocess.CREATE_NO_WINDOW)
+                    except OSError as error:
+                        if getattr(error, 'winerror', None) != 5:
+                            raise
+                        diagnostic.write(b'[Console Launch] Hidden launch denied; attempting one visible launch.\\n')
+                        diagnostic.flush()
+                        process = subprocess.Popen(sys.argv[3:], stdin=prompt, stderr=diagnostic,
+                                                 creationflags=subprocess.CREATE_NEW_CONSOLE)
+                raise SystemExit(process.wait())
+                """);
+        wrapped.add(input.toString());
+        wrapped.add(diagnostic.toString());
         wrapped.addAll(child);
         return wrapped;
     }

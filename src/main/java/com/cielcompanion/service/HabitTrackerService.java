@@ -1188,7 +1188,8 @@ public class HabitTrackerService {
             +"\nEXACT EPISODE PLAYBACK HISTORY:\n"+watchContext
             + "\nOUTPUT CONTRACT: Write one concise, natural English commentary sentence. "
             + "Use English semantics and Latin letters only; do not translate into Japanese and do not use hiragana, katakana, kanji, or Japanese punctuation. "
-            + "Short romaji affection or praise such as 'daisuki' is allowed only when it fits naturally. "
+            + "Use a name or title sparingly. Keep ordinary viewing commentary in English. "
+            + "A short Japanese expression of affection or praise belongs only in a naturally personal moment. "
             + "Do not describe the output contract or return a language label.";
         
         try {

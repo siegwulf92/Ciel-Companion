@@ -140,17 +140,10 @@ public class AIEngine {
             if (englishText == null || englishText.isBlank()) return "";
             if (!ALPHA_NUM_PATTERN.matcher(englishText).find()) return englishText;
 
-            // Make all-caps initialisms and standalone letter names unambiguous
-            // to both the hosted formatter and the offline G2P path. Without
-            // this, "DD" can be rendered as ディディ rather than the English
-            // letter names ディー ディー, and "G" can lose its long vowel.
-            // This only touches standalone 2-6 letter tokens; ordinary words
-            // such as "address" remain unchanged.
-            final String phoneticSource = expandInitialisms(englishText);
 
             String lastFailure = "unavailable";
             for (int attempt = 1; attempt <= PHONOKANA_MAX_ATTEMPTS; attempt++) {
-                PhonokanaAttempt result = attemptTransliteration(phoneticSource, attempt);
+                PhonokanaAttempt result = attemptTransliteration(englishText, attempt);
                 if (result.katakana() != null) return result.katakana();
                 lastFailure = result.failure();
                 if (attempt < PHONOKANA_MAX_ATTEMPTS) {
@@ -168,46 +161,6 @@ public class AIEngine {
                     + " policy=contextual-model-required");
             throw new IllegalStateException("Contextual phonokana model unavailable: " + lastFailure);
         }, translationExecutor);
-    }
-
-    private static String expandInitialisms(String text) {
-        java.util.regex.Matcher matcher = java.util.regex.Pattern
-                // Include a standalone capital letter (G, D, etc.) so it is
-                // sent as an English letter name rather than a guessed word.
-                .compile("(?<![A-Za-z])([A-Z]{1,6})(?![A-Za-z])")
-                .matcher(text);
-        StringBuffer out = new StringBuffer();
-        while (matcher.find()) {
-            String token = matcher.group(1);
-            // A and I are ordinary English words in a sentence, not
-            // standalone initialisms. Preserve them for contextual review.
-            if ("A".equals(token) || "I".equals(token)) {
-                matcher.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(token));
-                continue;
-            }
-            java.util.Map<Character, String> names = java.util.Map.ofEntries(
-                    java.util.Map.entry('A', "ay"), java.util.Map.entry('B', "bee"),
-                    java.util.Map.entry('C', "see"), java.util.Map.entry('D', "dee"),
-                    java.util.Map.entry('E', "ee"), java.util.Map.entry('F', "eff"),
-                    java.util.Map.entry('G', "gee"), java.util.Map.entry('H', "aitch"),
-                    java.util.Map.entry('I', "eye"), java.util.Map.entry('J', "jay"),
-                    java.util.Map.entry('K', "kay"), java.util.Map.entry('L', "el"),
-                    java.util.Map.entry('M', "em"), java.util.Map.entry('N', "en"),
-                    java.util.Map.entry('O', "oh"), java.util.Map.entry('P', "pee"),
-                    java.util.Map.entry('Q', "cue"), java.util.Map.entry('R', "ar"),
-                    java.util.Map.entry('S', "ess"), java.util.Map.entry('T', "tee"),
-                    java.util.Map.entry('U', "you"), java.util.Map.entry('V', "vee"),
-                    java.util.Map.entry('W', "double you"), java.util.Map.entry('X', "ex"),
-                    java.util.Map.entry('Y', "why"), java.util.Map.entry('Z', "zee"));
-            StringBuilder separated = new StringBuilder();
-            for (int i = 0; i < token.length(); i++) {
-                if (i > 0) separated.append(' ');
-                separated.append(names.getOrDefault(token.charAt(i), String.valueOf(token.charAt(i))));
-            }
-            matcher.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(separated.toString()));
-        }
-        matcher.appendTail(out);
-        return out.toString();
     }
 
     public static String transliterateToKatakanaSync(String englishText) {
@@ -253,7 +206,7 @@ public class AIEngine {
                 JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
                 String audit = json.has("audit") ? json.get("audit").getAsString().toLowerCase(java.util.Locale.ROOT) : "missing";
                 boolean audited = audit.equals("word-aligned")
-                        || audit.equals("word-aligned-cache");
+                        || audit.equals("word-aligned-cache") || audit.equals("preformatted");
                 String result = json.has("katakana") ? json.get("katakana").getAsString() : "";
                 if (audited && isStrictKatakana(result)) {
                     String path = json.has("status") ? safeLogValue(json.get("status").getAsString()) : "unknown";
@@ -284,12 +237,15 @@ public class AIEngine {
 
     /** Reject semantic translations, Latin leftovers, and malformed provider payloads. */
     private static boolean isStrictKatakana(String value) {
-        if (value == null || value.isBlank() || value.contains("エラー") || ALPHA_PATTERN.matcher(value).find()) return false;
+        if (value == null || value.isBlank() || ALPHA_PATTERN.matcher(value).find()) return false;
         for (int i = 0; i < value.length(); i++) {
             char ch = value.charAt(i);
             boolean allowed = Character.isWhitespace(ch)
                     || (ch >= '\u30A0' && ch <= '\u30FF')
                     || (ch >= '\u3000' && ch <= '\u303F')
+                    || (ch >= '\u3041' && ch <= '\u309f')
+                    || (ch >= '\u3400' && ch <= '\u9fff')
+                    || ch == '？' || ch == '！'
                     || Character.isDigit(ch);
             if (!allowed) return false;
         }

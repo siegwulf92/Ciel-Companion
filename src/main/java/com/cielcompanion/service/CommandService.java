@@ -913,7 +913,7 @@ public class CommandService {
         System.out.println("[Ciel Debug] Cancel command received - aborting shutdown sequence.");
         
         try {
-            Runtime.getRuntime().exec("shutdown -a");
+            new ProcessBuilder(ProjectPaths.windowlessCommand(List.of("shutdown.exe", "-a"))).start();
         } catch (IOException ignored) {}
 
         synchronized (shutdownLock) {
@@ -1030,13 +1030,15 @@ public class CommandService {
                     System.out.println("[Ciel Debug] 30s mark. Scheduling OS shutdown/reboot after Java cleanup.");
                     try {
                         if (isReboot) {
-                            Runtime.getRuntime().exec("shutdown -r -t 20");
+                            new ProcessBuilder(ProjectPaths.windowlessCommand(
+                                    List.of("shutdown.exe", "-r", "-t", "20"))).start();
                         } else if (isLogout) {
                             new ProcessBuilder(ProjectPaths.windowlessCommand(List.of(
                                     "powershell.exe", "-NoProfile", "-Command",
                                     "Start-Sleep -Seconds 20; shutdown.exe -l"))).start();
                         } else {
-                            Runtime.getRuntime().exec("shutdown -s -t 20");
+                            new ProcessBuilder(ProjectPaths.windowlessCommand(
+                                    List.of("shutdown.exe", "-s", "-t", "20"))).start();
                         }
                     } catch (IOException e) {
                         e.printStackTrace();

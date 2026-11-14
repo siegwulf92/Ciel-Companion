@@ -57,10 +57,8 @@ public final class SpeechText {
     }
 
     public static String localKatakana(String source) {
-        // Keep contextual homographs, but use dictionary/phoneme conversion.
-        // Never spell a failed English word letter by letter.
         return normalizeKana(com.cielcompanion.ai.AIEngine.transliterateToKatakanaSync(
-                contextualRead(normalizeSource(source))));
+                normalizeSource(source)));
     }
 
     public static String cacheKey(String key, String source, String lang) {

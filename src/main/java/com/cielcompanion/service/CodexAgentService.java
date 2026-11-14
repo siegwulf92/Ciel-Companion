@@ -593,19 +593,29 @@ public final class CodexAgentService {
         String nonce = Long.toUnsignedString(System.nanoTime(), 36);
         Path answerFile = tempDir.resolve("answer-" + nonce + ".md");
         Path errorFile = tempDir.resolve("stderr-" + nonce + ".log");
+        Path promptFile = tempDir.resolve("prompt-" + nonce + ".txt");
         String executable = System.getProperty("ciel.codex.executable",
                 System.getenv().getOrDefault("CIEL_CODEX_EXECUTABLE", "codex"));
         List<String> command = List.of(executable, "exec", "--ephemeral", "--sandbox", sandbox,
                 "--skip-git-repo-check", "-C", workingDirectory.toString(), "--output-last-message", answerFile.toString(), "-");
         Process process = null;
         try {
-            ProcessBuilder builder = new ProcessBuilder(command).redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                    .redirectError(errorFile.toFile());
-            process = builder.start();
-            try (var stdin = process.getOutputStream()) {
-                stdin.write(prompt.getBytes(StandardCharsets.UTF_8));
+            String consolePolicy = """
+                    On Windows, run background PowerShell and cmd helpers without allocating a console.
+                    Use CREATE_NO_WINDOW or an existing windowless project helper for child processes.
+                    Never repeat a command that already ran merely because it returned an error.
+                    """;
+            Files.writeString(promptFile, consolePolicy + "\n" + prompt, StandardCharsets.UTF_8);
+            ProcessBuilder builder = new ProcessBuilder(com.cielcompanion.util.ProjectPaths.windowlessCommand(
+                    command, promptFile, errorFile))
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.appendTo(errorFile.toFile()));
+            if (!System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win")) {
+                builder.redirectInput(promptFile.toFile());
             }
+            process = builder.start();
             if (!process.waitFor(timeoutMinutes, TimeUnit.MINUTES)) {
+                process.descendants().forEach(ProcessHandle::destroyForcibly);
                 process.destroyForcibly();
                 throw new IllegalStateException("Codex exceeded its " + timeoutMinutes + " minute limit.");
             }
@@ -613,12 +623,19 @@ public final class CodexAgentService {
                 String diagnostic = Files.exists(errorFile) ? abbreviate(Files.readString(errorFile), 1500) : "No CLI diagnostic was written.";
                 throw new IllegalStateException("Codex exited with status " + process.exitValue() + ": " + diagnostic);
             }
+            if (Files.exists(errorFile) && Files.readString(errorFile).contains("[Console Launch] Hidden launch denied;")) {
+                System.out.println("[Codex] One visible launch succeeded after Windows denied the hidden launch.");
+            }
             if (!Files.exists(answerFile)) throw new IllegalStateException("Codex exited successfully without a final response file.");
             return Files.readString(answerFile, StandardCharsets.UTF_8);
         } finally {
-            if (process != null && process.isAlive()) process.destroyForcibly();
+            if (process != null && process.isAlive()) {
+                process.descendants().forEach(ProcessHandle::destroyForcibly);
+                process.destroyForcibly();
+            }
             Files.deleteIfExists(answerFile);
             Files.deleteIfExists(errorFile);
+            Files.deleteIfExists(promptFile);
         }
     }
 

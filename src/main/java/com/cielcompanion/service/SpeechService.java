@@ -481,11 +481,10 @@ public class SpeechService {
                     boolean needsLanguageConversion = false;
                     boolean requiresPhonokana = !isGreeting && langCode.equals("ja-JP")
                             && Pattern.compile("[a-zA-Z]").matcher(finalCleanText).find();
-                    // v4 invalidates older cached transliterations that could
-                    // contain collapsed initialisms (for example DD -> ディディ).
-                    // v5 invalidates clips generated before the contextual
-                    // pronunciation audit and high-impact word overrides.
-                    String cacheKey = requiresPhonokana ? "phonokana-v6-model:" + speechKeyBase : speechKeyBase;
+                    // Keep dynamic keys uncached, and version reusable clips
+                    // generated before the manager-reviewed phonetics path.
+                    String cacheKey = requiresPhonokana && !AzureSpeechService.isDynamicKey(speechKeyBase)
+                            ? "phonokana-v7-reviewed:" + speechKeyBase : speechKeyBase;
                     String speechKey = com.cielcompanion.util.SpeechText.cacheKey(cacheKey, finalCleanText, langCode);
                     boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, finalStyle, langCode);
 
@@ -643,7 +642,8 @@ public class SpeechService {
                                 && !lineKey.startsWith("warm_login")
                                 && langCode.equals("ja-JP")
                                 && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find();
-                        String cacheKey = requiresPhonokana ? "phonokana-v6-model:" + lineKey : lineKey;
+                        String cacheKey = requiresPhonokana && !AzureSpeechService.isDynamicKey(lineKey)
+                                ? "phonokana-v7-reviewed:" + lineKey : lineKey;
                         String speechKey = com.cielcompanion.util.SpeechText.cacheKey(cacheKey, textToSpeak, langCode);
                         boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, style, langCode);
 
