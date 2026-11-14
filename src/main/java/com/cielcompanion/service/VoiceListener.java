@@ -277,7 +277,15 @@ public class VoiceListener {
         try {
             java.nio.file.Path saved = Paths.get(System.getProperty("user.dir"), ".local", "listening-state.json");
             java.nio.file.Files.createDirectories(saved.getParent());
-            java.nio.file.Files.writeString(saved, "{\"muted\":" + newMuteState + "}");
+            java.nio.file.Path temp = saved.resolveSibling(".listening-state.json.tmp");
+            java.nio.file.Files.writeString(temp, "{\"muted\":" + newMuteState
+                    + ",\"updatedAt\":" + System.currentTimeMillis() + "}");
+            try {
+                java.nio.file.Files.move(temp, saved, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+                java.nio.file.Files.move(temp, saved, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (Exception e) {
             System.err.println("Ciel Warning: Could not save listening preference: " + e.getClass().getSimpleName());
         }
