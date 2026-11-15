@@ -37,6 +37,7 @@ public final class SessionRecoveryService {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final long HEARTBEAT_SECONDS = 60L;
     private static final long DAILY_REPORT_SECONDS = 24L * 60L * 60L;
+    private static final long PLANNED_RESTART_TTL_SECONDS = 30L * 60L;
     private static final Pattern SECRET_PATTERN = Pattern.compile(
             "(?i)(api[_-]?key|token|secret|password)\\s*[:=]\\s*[^\\s,;]+")
             ;
@@ -68,6 +69,8 @@ public final class SessionRecoveryService {
             String previousId = text(previous, "session_id");
             String previousTerminal = text(previous, "terminal_state");
             String previousIntent = text(previous, "shutdown_intent");
+            String durablePlannedIntent = consumePlannedRestartMarker(root, previousId);
+            if (durablePlannedIntent != null) previousIntent = durablePlannedIntent;
             String previousStarted = text(previous, "started_at");
             String previousHeartbeat = text(previous, "last_heartbeat");
             String systemEvents = collectSystemEvents();
@@ -194,6 +197,33 @@ public final class SessionRecoveryService {
         if ("clean_shutdown".equals(state)) return "clean_shutdown";
         if ("running".equals(state) || state.isBlank()) return "interrupted_session";
         return "unknown_interruption";
+    }
+
+    /**
+     * Consume the updater's one-shot marker.  It is deliberately separate from
+     * the heartbeat ledger: an updater and the heartbeat may otherwise replace
+     * the same JSON file concurrently and lose the planned-restart intent.
+     */
+    static String consumePlannedRestartMarker(Path root, String previousSessionId) {
+        Path marker = root.resolve(".local/ciel-session/planned-restart.json");
+        if (!Files.isRegularFile(marker)) return null;
+        try {
+            JsonObject value = JsonParser.parseString(Files.readString(marker, StandardCharsets.UTF_8))
+                    .getAsJsonObject();
+            String markerSession = text(value, "session_id");
+            String intent = text(value, "intent");
+            String createdAt = text(value, "created_at");
+            boolean sameSession = previousSessionId != null && previousSessionId.equals(markerSession);
+            long markerAge = secondsSince(createdAt);
+            boolean recent = markerAge >= 0 && markerAge <= PLANNED_RESTART_TTL_SECONDS;
+            return sameSession && recent && intent.toLowerCase(Locale.ROOT).startsWith("planned_")
+                    ? intent : null;
+        } catch (Exception e) {
+            System.err.println("Ciel Warning: Planned-restart marker unreadable; ignoring it: " + e.getMessage());
+            return null;
+        } finally {
+            try { Files.deleteIfExists(marker); } catch (IOException ignored) {}
+        }
     }
 
     private static boolean containsEvent(String evidence, int id) {
