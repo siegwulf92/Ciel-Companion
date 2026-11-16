@@ -1217,8 +1217,7 @@ public class HabitTrackerService {
         }
         CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
         if (!draft.emotion().isBlank()) {
-            CielState.getEmotionManager().ifPresent(em ->
-                    em.triggerEmotion(draft.emotion(), 0.8, "Media Dialogue Tag"));
+            applyMediaEmotion(draft.emotion());
         }
         SpeechService.registerPreparedPhonokana(draft.english(), draft.phonokana());
         System.out.println("[HabitTracker] Threshold met for " + cleanTitle
@@ -1245,6 +1244,28 @@ public class HabitTrackerService {
             System.err.println("[HabitTracker] Could not queue prepared media commentary for '" + cleanTitle
                     + "': " + e.getClass().getSimpleName());
         }
+    }
+
+    /** Map media voice attitudes to a valid GUI emotion while preserving TTS styling. */
+    private static void applyMediaEmotion(String rawEmotion) {
+        if (rawEmotion == null || rawEmotion.isBlank()) return;
+        String attitude = rawEmotion.trim();
+        String visualEmotion = switch (attitude.toLowerCase(Locale.ROOT)) {
+            case "amused", "playful", "affectionate", "cheerful" -> "Happy";
+            case "curious", "observing" -> "Curious";
+            case "excited" -> "Excited";
+            case "sad", "lonely" -> "Lonely";
+            case "angry", "annoyed", "impatient" -> "Annoyed";
+            case "concerned", "focused", "professional", "smug", "judging" -> "Focused";
+            default -> "Focused";
+        };
+        CielState.getEmotionManager().ifPresent(em -> {
+            String cause = "Amused".equalsIgnoreCase(attitude) ? "Dialogue Tag" : "Media Dialogue Tag";
+            em.triggerEmotion(visualEmotion, 0.8, cause);
+            if (MoodConfig.getAttitudeDef(attitude).isPresent()) em.setAttitude(attitude);
+            System.out.println("Ciel Debug (Emotion): media attitude=" + attitude
+                    + " visual=" + visualEmotion);
+        });
     }
 
     private static void ensureMediaSpeechPrepared(String cleanTitle, String fullWindowTitle,
