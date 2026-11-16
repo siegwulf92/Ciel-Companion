@@ -176,7 +176,19 @@ public class SpeechService {
                 mediaPauseDeferredForSpeech = false;
                 return true;
             }
-            mediaWasPausedForSpeech = HabitTrackerService.pauseMediaForSpeech();
+            mediaWasPausedForSpeech = false;
+            for (int attempt = 1; attempt <= 3 && !mediaWasPausedForSpeech; attempt++) {
+                mediaWasPausedForSpeech = HabitTrackerService.pauseMediaForSpeech();
+                System.out.println("[Media Transport] pause-before-audio attempt=" + attempt
+                        + " confirmed=" + mediaWasPausedForSpeech);
+                if (!mediaWasPausedForSpeech && attempt < 3) {
+                    try { Thread.sleep(350L); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
             mediaPauseDeferredForSpeech = false;
             mediaPauseFailedForSpeech = !mediaWasPausedForSpeech;
             System.out.println("[Media Transport] Speech owns pause=" + mediaWasPausedForSpeech + " (audio handoff)");
@@ -494,7 +506,11 @@ public class SpeechService {
                     deliverySource, finalStyle, finalPitch);
 
             currentSpeechTask = speechExecutor.submit(() -> {
-                if (taskGeneration != speechGeneration.get()) return;
+                if (taskGeneration != speechGeneration.get()) {
+                    System.out.println("[Speech Delivery] status=cancelled reason=generation_changed_before_start key="
+                            + safeSpeechLogKey(speechKeyBase));
+                    return;
+                }
                 boolean hasEnqueued = false;
                 boolean completed = false;
                 try {
@@ -558,12 +574,19 @@ public class SpeechService {
                         }
                     }
 
-                    if (taskGeneration != speechGeneration.get() || Thread.currentThread().isInterrupted()) return;
+                    if (taskGeneration != speechGeneration.get() || Thread.currentThread().isInterrupted()) {
+                        System.out.println("[Speech Delivery] status=cancelled reason=generation_changed_before_provider key="
+                                + safeSpeechLogKey(speechKeyBase));
+                        return;
+                    }
 
                     boolean audible = executeSpeechBlocking(textToSpeak, speechKey, Settings.getTtsRate(),
                             finalStyle, finalPitch, langCode, taskGeneration,
                             shouldUseBreeze(speechKeyBase, isAlreadyCached));
                     completed = audible && taskGeneration == speechGeneration.get() && !Thread.currentThread().isInterrupted();
+                } catch (Throwable failure) {
+                    System.err.println("[Speech Delivery] status=failed reason=task_exception type="
+                            + failure.getClass().getSimpleName() + " key=" + safeSpeechLogKey(speechKeyBase));
                 } finally {
                     if (hasEnqueued) {
                         dequeueSpeech();
