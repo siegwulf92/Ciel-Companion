@@ -1215,7 +1215,7 @@ public class HabitTrackerService {
                 } else {
                     mediaCommentaryRetryAfter.put(hashToLog,
                             System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(1));
-                    System.out.println("[HabitTracker] Prepared commentary was not spoken; all stages retained for retry.");
+                    System.out.println("[HabitTracker] Prepared commentary was not spoken; all stages retained for retry. reason=provider_or_media_handoff");
                 }
                 mediaCommentaryInFlight.remove(hashToLog);
             });

@@ -128,12 +128,14 @@ public class AIEngine {
         System.out.println("[Raphael — Japanese Speech Formatting] Models load on demand; startup inference warm-up skipped.");
     }
 
-    private static final int PHONOKANA_MAX_ATTEMPTS = 3;
-    private static final long PHONOKANA_ATTEMPT_TIMEOUT_SECONDS = 35L;
+    // Python owns the three-model formatter/manager repair chain. Retrying
+    // that entire endpoint in Java multiplied one failure into nine attempts.
+    private static final int PHONOKANA_MAX_ATTEMPTS = 1;
+    private static final long PHONOKANA_ATTEMPT_TIMEOUT_SECONDS = 300L;
     // This covers three bounded router calls plus short retry backoff.  It is
     // deliberately larger than a single model turn, while still preventing a
     // stuck formatter from holding the speech worker forever.
-    private static final long PHONOKANA_TOTAL_TIMEOUT_SECONDS = 115L;
+    private static final long PHONOKANA_TOTAL_TIMEOUT_SECONDS = 305L;
 
     public static CompletableFuture<String> transliterateAsync(String englishText) {
         return CompletableFuture.supplyAsync(() -> {
