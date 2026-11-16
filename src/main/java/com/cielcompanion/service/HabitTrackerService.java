@@ -1017,8 +1017,13 @@ public class HabitTrackerService {
                     String safeSeries = series.trim().replaceAll("[\\r\\n\\t]", " ")
                             .replace("[", "").replace("]", "");
                     if (safeSeries.length() > 90) safeSeries = safeSeries.substring(0, 90).trim();
-                    String line = "[Curious] Master, I see you're watching " + safeSeries
-                            + ". I'll stay with this episode and leave its surprises for you to discover.";
+                    String[] pendingAcknowledgements = {
+                            "[Curious] Master, I recognize " + safeSeries
+                                    + ". The synopsis is still loading, so I will keep this spoiler-free for now.",
+                            "[Curious] " + safeSeries + " is on screen, Master. I have the episode identity, but not a verified synopsis yet.",
+                            "[Curious] I found " + safeSeries + ", Master. I will wait for verified details before making a deeper observation."
+                    };
+                    String line = pendingAcknowledgements[Math.floorMod(episodeKey.hashCode(), pendingAcknowledgements.length)];
                     System.out.println("[HabitTracker] Speaking spoiler-safe series acknowledgment; synopsis verification remains pending.");
                     try {
                         SpeechService.speakMediaCommentary(line, spoken -> {
@@ -1149,15 +1154,18 @@ public class HabitTrackerService {
         String prompt = "[MEDIA_RECOGNITION] [QUERY: " + fullWindowTitle + "|||" + activeUrl + "]\n"
                 + "The player is paused. Use the verified title and publisher metadata below to acknowledge what the Master opened.\n"
                 + datText + "\nOUTPUT CONTRACT: Write exactly one concise, natural English sentence. "
-                + "Mention the identified title naturally and say you will wait for playback; do not summarize plot, "
-                + "invent details, or use Japanese script. Latin letters only.";
+                + "Mention the identified title naturally and acknowledge the specific thing opened. Vary the sentence "
+                + "structure; do not use a stock 'I will keep monitoring' or 'I will be watching' line, and do not "
+                + "claim to monitor the player. Do not summarize plot, invent details, or use Japanese script. Latin "
+                + "letters only.";
         try {
             requestMediaCommentaryWithFailover(prompt, "Paused Media Recognition").whenComplete((response, error) -> {
                 boolean handedToSpeech = false;
                 try {
                     if (error != null || response == null || response.isBlank()
                             || response.contains("ABORT") || response.contains("DATA_DEFICIT")
-                            || containsJapaneseScript(response)) {
+                            || containsJapaneseScript(response)
+                            || containsMediaMonitoringBoilerplate(response)) {
                         mediaCommentaryRetryAfter.put(hashToLog, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(10));
                         System.err.println("[HabitTracker] Paused media recognition unavailable for '" + cleanTitle + "'; retry deferred.");
                     } else if (!hashToLog.equals(currentEpisodeHash)) {
@@ -1299,8 +1307,11 @@ public class HabitTrackerService {
                 + "\nEXACT EPISODE PLAYBACK HISTORY:\n" + watch
                 + "\nOUTPUT CONTRACT: Write one concise, natural English commentary sentence. "
                 + "Use only verified metadata above. English semantics and Latin letters only; no Japanese script. "
-                + "Use a name or title sparingly. Do not reveal later plot information, describe this contract, "
-                + "or return a language label.";
+                + "Use a name or title sparingly. Vary the opening (reaction, observation, continuity reference, or a "
+                + "concise question) instead of repeating a template. Do not begin with or include 'I will keep monitoring', "
+                + "'I will be watching', 'I will continue monitoring', 'standing by', or similar monitoring boilerplate "
+                + "unless the metadata explicitly requires an operational warning. Do not reveal later plot information, "
+                + "describe this contract, or return a language label.";
     }
 
     private static void scheduleMediaPreparationRetry(String hash, String title, String english,
@@ -1383,6 +1394,20 @@ public class HabitTrackerService {
                 (codePoint >= 0xff66 && codePoint <= 0xff9f));
     }
 
+    private static boolean containsMediaMonitoringBoilerplate(String text) {
+        if (text == null) return false;
+        String lower = text.toLowerCase(Locale.ROOT).replaceAll("\\s+", " ").trim();
+        return lower.contains("i will keep monitoring")
+                || lower.contains("i'll keep monitoring")
+                || lower.contains("i will continue monitoring")
+                || lower.contains("i'll continue monitoring")
+                || lower.contains("i will be watching")
+                || lower.contains("i'll be watching")
+                || lower.contains("keep an eye on this")
+                || lower.equals("standing by")
+                || lower.startsWith("standing by, ");
+    }
+
     /** Retry media generation across scored providers when one model fails. */
     private static CompletableFuture<String> requestMediaCommentaryWithFailover(String prompt, String taskIntent) {
         return requestMediaCommentaryWithFailover(prompt, taskIntent, 1);
@@ -1399,7 +1424,8 @@ public class HabitTrackerService {
         return request.handle((response, error) -> {
             boolean usable = error == null && response != null && !response.isBlank()
                     && !response.contains("ABORT") && !response.contains("DATA_DEFICIT")
-                    && !containsJapaneseScript(response);
+                    && !containsJapaneseScript(response)
+                    && !containsMediaMonitoringBoilerplate(response);
             if (usable || attempt >= 3) return CompletableFuture.completedFuture(response);
             String reason = error == null ? "empty-or-rejected-response" : error.getClass().getSimpleName();
             System.err.println("[HabitTracker] Media model attempt " + attempt + "/3 failed (" + reason

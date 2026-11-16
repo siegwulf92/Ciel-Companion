@@ -126,6 +126,8 @@ public class EmotionalState {
         long time = System.currentTimeMillis();
         int emotionIndex = 0;
         float totalDynamicWeight = 0;
+        boolean hasConversationalMood = activeEmotions.values().stream()
+                .anyMatch(e -> !isVisualBaseline(e.name()) && e.intensity() >= 0.18);
 
         for (Emotion e : activeEmotions.values()) {
             Color emotionColor = getColorForEmotion(e);
@@ -135,7 +137,8 @@ public class EmotionalState {
             double timeShift = (Math.sin((time / 800.0) + (emotionIndex * Math.PI / 1.5)) + 1.0) / 2.0; 
             
             // Blend the emotion's base intensity with its current time-shifted peak
-            float dynamicWeight = (float) (e.intensity() * (0.3 + (timeShift * 0.7)));
+            float baselineScale = hasConversationalMood && isVisualBaseline(e.name()) ? 0.28f : 1.0f;
+            float dynamicWeight = (float) (e.intensity() * baselineScale * (0.3 + (timeShift * 0.7)));
             
             r += emotionColor.getRed() * dynamicWeight;
             g += emotionColor.getGreen() * dynamicWeight;
@@ -171,6 +174,11 @@ public class EmotionalState {
             }
             return parseColor(def.baseColor());
         }).orElse(Color.MAGENTA);
+    }
+
+    private static boolean isVisualBaseline(String emotionName) {
+        return "Focused".equalsIgnoreCase(emotionName)
+                || "Observing".equalsIgnoreCase(emotionName);
     }
 
     private Color parseColor(String rgb) {

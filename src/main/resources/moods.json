@@ -44,7 +44,12 @@
       "baseColor": "255, 223, 0",
       "animation": "GENTLE_PULSE",
       "ssmlStyle": "cheerful",
-      "pitch": "+3%"
+      "pitch": "+3%",
+      "causes": {
+        "Interaction": { "colorTint": "255, 128, 210" },
+        "UserReturn": { "colorTint": "255, 128, 210" },
+        "Dialogue Tag": { "colorTint": "255, 128, 210" }
+      }
     },
     "Curious": {
       "baseColor": "173, 216, 230",
