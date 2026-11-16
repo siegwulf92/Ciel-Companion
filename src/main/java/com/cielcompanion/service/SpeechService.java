@@ -598,6 +598,9 @@ public class SpeechService {
                 } catch (Throwable failure) {
                     System.err.println("[Speech Delivery] status=failed reason=task_exception type="
                             + failure.getClass().getSimpleName() + " key=" + safeSpeechLogKey(speechKeyBase));
+                    // Keep the bounded failure visible enough to repair the
+                    // exact handoff without flooding normal success logs.
+                    failure.printStackTrace(System.err);
                 } finally {
                     if (hasEnqueued) {
                         dequeueSpeech();
