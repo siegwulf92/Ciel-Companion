@@ -189,7 +189,7 @@ public final class BreezeSpeechService {
             return played;
         }
         Path legacy = dynamic ? null : legacyCachePath(text, style, pitch, languageCode);
-        if (Settings.isBreezeCacheEnabled() && Files.isRegularFile(legacy)) {
+        if (!dynamic && Settings.isBreezeCacheEnabled() && legacy != null && Files.isRegularFile(legacy)) {
             if (!playAudio) return true;
             boolean played = AzureSpeechService.playProviderWavFile(legacy.toFile(), key == null ? "BreezeLegacyCached" : key,
                     Settings.isBreezePrimeOutput(), text);
