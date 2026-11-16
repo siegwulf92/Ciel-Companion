@@ -68,8 +68,10 @@ public class HabitTrackerService {
     private static final Map<String, MediaDraft> mediaDrafts = new ConcurrentHashMap<>();
     private static final Path MEDIA_DRAFT_DIRECTORY = ProjectPaths.ciel().resolve("media_pipeline");
 
-    private record MediaDraft(String title, String english, String phonokana,
+    private record MediaDraft(String title, String english, String phonokana, String emotion,
                               int failures, long nextAttemptAt, String date) {}
+
+    private record MediaSpeechPayload(String english, String emotion) {}
 
     private static final Queue<String> deferredSpeechQueue = new ConcurrentLinkedQueue<>();
     private static volatile boolean currentGamePausable = false;
@@ -1214,6 +1216,10 @@ public class HabitTrackerService {
             return;
         }
         CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.THINKING));
+        if (!draft.emotion().isBlank()) {
+            CielState.getEmotionManager().ifPresent(em ->
+                    em.triggerEmotion(draft.emotion(), 0.8, "Media Dialogue Tag"));
+        }
         SpeechService.registerPreparedPhonokana(draft.english(), draft.phonokana());
         System.out.println("[HabitTracker] Threshold met for " + cleanTitle
                 + "; using durable prepared English and manager-reviewed phonokana.");
@@ -1260,23 +1266,25 @@ public class HabitTrackerService {
                         fullWindowTitle, activeUrl, datText), "Media Persona Commentary Prepare")
                 : CompletableFuture.completedFuture(english);
         englishFuture.whenComplete((generated, englishError) -> {
-            String usableEnglish = generated == null ? "" : generated.trim();
+            MediaSpeechPayload payload = normalizeMediaSpeech(generated);
+            String usableEnglish = payload.english();
+            String mediaEmotion = payload.emotion();
             if (englishError != null || usableEnglish.isBlank()
                     || usableEnglish.contains("ABORT") || usableEnglish.contains("DATA_DEFICIT")
                     || containsJapaneseScript(usableEnglish)) {
-                scheduleMediaPreparationRetry(hash, cleanTitle, english, "english",
+                scheduleMediaPreparationRetry(hash, cleanTitle, english, "", "english",
                         englishError == null ? "contract-rejected" : englishError.getClass().getSimpleName(), failures);
                 return;
             }
-            saveMediaDraft(hash, new MediaDraft(cleanTitle, usableEnglish, "", failures, 0L,
+            saveMediaDraft(hash, new MediaDraft(cleanTitle, usableEnglish, "", mediaEmotion, failures, 0L,
                     LocalDate.now().toString()));
             AIEngine.transliterateAsync(usableEnglish).whenComplete((phonokana, phoneticError) -> {
                 if (phoneticError != null || !SpeechService.isSafePreparedPhonokana(phonokana)) {
-                    scheduleMediaPreparationRetry(hash, cleanTitle, usableEnglish, "phonokana",
+                    scheduleMediaPreparationRetry(hash, cleanTitle, usableEnglish, mediaEmotion, "phonokana",
                             phoneticError == null ? "invalid-model-output" : phoneticError.getClass().getSimpleName(), failures);
                     return;
                 }
-                MediaDraft ready = new MediaDraft(cleanTitle, usableEnglish, phonokana, 0, 0L,
+                MediaDraft ready = new MediaDraft(cleanTitle, usableEnglish, phonokana, mediaEmotion, 0, 0L,
                         LocalDate.now().toString());
                 saveMediaDraft(hash, ready);
                 SpeechService.registerPreparedPhonokana(usableEnglish, phonokana);
@@ -1314,12 +1322,43 @@ public class HabitTrackerService {
                 + "describe this contract, or return a language label.";
     }
 
-    private static void scheduleMediaPreparationRetry(String hash, String title, String english,
+    /** Keep model emotion metadata out of the English sentence sent to TTS. */
+    private static MediaSpeechPayload normalizeMediaSpeech(String raw) {
+        if (raw == null) return new MediaSpeechPayload("", "");
+        String text = raw.trim();
+        String emotion = "";
+        Matcher bracket = Pattern.compile("(?i)\\[\\s*([a-z][a-z _-]*)\\s*\\]").matcher(text);
+        if (bracket.find()) {
+            emotion = bracket.group(1).trim();
+            text = bracket.replaceAll(" ").trim();
+        }
+        // Be defensive when a provider returns an unbracketed label despite
+        // the contract. Only strip a known label followed by punctuation, so
+        // ordinary prose such as "Amused by this" remains intact.
+        Matcher prefix = Pattern.compile("(?i)^\\s*(?:emotion|mood)\\s*[:=]\\s*"
+                + "([a-z][a-z _-]*)\\s*[-:]\\s*").matcher(text);
+        if (prefix.find()) {
+            if (emotion.isBlank()) emotion = prefix.group(1).trim();
+            text = text.substring(prefix.end()).trim();
+        }
+        if (emotion.isBlank()) {
+            Matcher leading = Pattern.compile("(?i)^\\s*(amused|curious|observing|smug|happy|concerned|"
+                    + "annoyed|sad|angry|proud|focused|playful|affectionate|excited|restless|impatient|"
+                    + "lonely|professional|judging|pain|glitched)\\s*[:\\-]\\s+").matcher(text);
+            if (leading.find()) {
+                emotion = leading.group(1).trim();
+                text = text.substring(leading.end()).trim();
+            }
+        }
+        return new MediaSpeechPayload(text, emotion);
+    }
+
+    private static void scheduleMediaPreparationRetry(String hash, String title, String english, String emotion,
                                                        String stage, String reason, int previousFailures) {
         int failures = Math.max(0, previousFailures) + 1;
         long delayMinutes = Math.min(5L, failures);
         long retryAt = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(delayMinutes);
-        saveMediaDraft(hash, new MediaDraft(title, english == null ? "" : english, "",
+        saveMediaDraft(hash, new MediaDraft(title, english == null ? "" : english, "", emotion == null ? "" : emotion,
                 failures, retryAt, LocalDate.now().toString()));
         mediaPreparationInFlight.remove(hash);
         CielState.getCielGui().ifPresent(gui -> {
@@ -1337,10 +1376,16 @@ public class HabitTrackerService {
         try {
             if (!Files.isRegularFile(path)) return null;
             JsonObject json = JsonParser.parseString(Files.readString(path, StandardCharsets.UTF_8)).getAsJsonObject();
+            int schemaVersion = json.has("schema_version") ? json.get("schema_version").getAsInt() : 1;
+            // Older drafts may contain an emotion tag transliterated into the
+            // phonokana payload. Rebuild them instead of risking that the TTS
+            // literally speaks "amused" or another metadata label.
+            if (schemaVersion < 2) return null;
             MediaDraft draft = new MediaDraft(
                     json.has("title") ? json.get("title").getAsString() : "",
                     json.has("english") ? json.get("english").getAsString() : "",
                     json.has("phonokana") ? json.get("phonokana").getAsString() : "",
+                    json.has("emotion") ? json.get("emotion").getAsString() : "",
                     json.has("failures") ? json.get("failures").getAsInt() : 0,
                     json.has("next_attempt_at") ? json.get("next_attempt_at").getAsLong() : 0L,
                     json.has("date") ? json.get("date").getAsString() : "");
@@ -1360,10 +1405,11 @@ public class HabitTrackerService {
         try {
             Files.createDirectories(path.getParent());
             JsonObject json = new JsonObject();
-            json.addProperty("schema_version", 1);
+            json.addProperty("schema_version", 2);
             json.addProperty("title", draft.title());
             json.addProperty("english", draft.english());
             json.addProperty("phonokana", draft.phonokana());
+            json.addProperty("emotion", draft.emotion());
             json.addProperty("failures", draft.failures());
             json.addProperty("next_attempt_at", draft.nextAttemptAt());
             json.addProperty("date", draft.date());
