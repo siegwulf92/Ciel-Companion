@@ -374,12 +374,23 @@ public class SpeechService {
     }
 
     public static boolean registerPreparedPhonokana(String english, String phonokana) {
-        if (english == null || english.isBlank() || !isSafePhonokana(phonokana)) return false;
-        if (preparedPhonokana.size() >= 64 && !preparedPhonokana.containsKey(english)) {
+        String normalizedEnglish = normalizePreparedSpeechKey(english);
+        if (normalizedEnglish.isBlank() || !isSafePhonokana(phonokana)) {
+            System.err.println("[Speech Phonetics] prepared registration rejected reason=invalid_payload");
+            return false;
+        }
+        if (preparedPhonokana.size() >= 64 && !preparedPhonokana.containsKey(normalizedEnglish)) {
             preparedPhonokana.clear();
         }
-        preparedPhonokana.put(english, phonokana);
+        preparedPhonokana.put(normalizedEnglish, phonokana.trim());
         return true;
+    }
+
+    /** Keep durable media drafts aligned with the queue's final text cleanup. */
+    private static String normalizePreparedSpeechKey(String text) {
+        if (text == null) return "";
+        return text.replaceAll("\\[([a-zA-Z]+)\\]", "")
+                .replaceAll("\\*.*?\\*", "").trim();
     }
 
     public static boolean isSafePreparedPhonokana(String text) {
@@ -536,7 +547,7 @@ public class SpeechService {
                         }
 
                         if (requiresPhonokana) {
-                            String converted = preparedPhonokana.get(textToSpeak);
+                            String converted = preparedPhonokana.get(normalizePreparedSpeechKey(textToSpeak));
                             if (isSafePhonokana(converted)) {
                                 System.out.println("[Speech Phonetics] status=ready source=media-prepared");
                             } else {
