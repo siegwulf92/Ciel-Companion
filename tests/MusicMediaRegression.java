@@ -21,6 +21,9 @@ public class MusicMediaRegression {
                 "ordinary episode was incorrectly classified as music");
         check((Boolean) shortForm.invoke(null, "A creator short", "MEDIA_KIND: VIDEO\n", "https://www.youtube.com/shorts/abc"),
                 "explicit Shorts URL was not classified as short-form media");
+        check(!(Boolean) shortForm.invoke(null, "How I Am Doing my Anime Vids (AI Workflow) - YouTube",
+                "MEDIA_KIND: VIDEO\nRELATED: YouTube Shorts\nDURATION_MINUTES: 24\n", "https://www.youtube.com/watch?v=abc"),
+                "long-form YouTube page was incorrectly classified from incidental Shorts text");
         check(!(Boolean) shortForm.invoke(null, "The Apothecary Diaries - Episode 4", "MEDIA_KIND: EPISODE\n", "https://example.test/episode"),
                 "ordinary episode was incorrectly classified as short-form media");
         System.out.println("Music media regressions passed.");

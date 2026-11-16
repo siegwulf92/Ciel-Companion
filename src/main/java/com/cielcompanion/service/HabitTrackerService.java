@@ -232,13 +232,18 @@ public class HabitTrackerService {
                 || dom.matches("(?s).*\\b(media_kind|media_type)\\s*:\\s*(music|song|audio)\\b.*");
     }
 
-    /** Explicit short-form feeds are non-interruptive even when duration is unavailable. */
+    /** Explicit short-form feeds are non-interruptive even when duration is unavailable.
+     *
+     * Do not search the entire DOM for the word "short": ordinary long-form
+     * pages often mention Shorts in navigation, recommendations, or scripts.
+     * Only URL routes and structured provider metadata are authoritative.
+     */
     static boolean isShortFormMedia(String title, String domText, String activeUrl) {
-        String combined = ((title == null ? "" : title) + " "
-                + (domText == null ? "" : domText) + " "
-                + (activeUrl == null ? "" : activeUrl)).toLowerCase(Locale.ROOT);
-        return combined.matches("(?s).*\\b(shorts?|short-form|reels?|tiktok)\\b.*")
-                || combined.contains("/shorts/") || combined.contains("/reel/");
+        String url = activeUrl == null ? "" : activeUrl.toLowerCase(Locale.ROOT);
+        if (url.contains("/shorts/") || url.contains("/reel/") || url.contains("/clips/")
+                || url.contains("/clip/")) return true;
+        String dom = domText == null ? "" : domText;
+        return dom.matches("(?im).*^(?:MEDIA_KIND|MEDIA_TYPE|VIDEO_TYPE|SHORT_FORM):[\\t ]*(?:SHORT|SHORTS|SHORT-FORM|REEL|REELS|CLIP|CLIPS)[\\t ]*$.*");
     }
 
     public static void initialize() {
