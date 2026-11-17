@@ -14,7 +14,8 @@ echo [DEBUG] Project Directory set to: %PROJECT_DIR%
 REM Paired releases replace the exact SNAPSHOT artifact. Prefer it so the
 REM updater's verified JAR is the one actually launched; shaded/legacy files
 REM are compatibility fallbacks only.
-set "JAR_PATH=%PROJECT_DIR%target\ciel-idle-companion-1.0-SNAPSHOT.jar"
+set "JAR_PATH=%PROJECT_DIR%target\ciel-idle-companion-1.0-SNAPSHOT-gui-watchdog.jar"
+if not exist "%JAR_PATH%" set "JAR_PATH=%PROJECT_DIR%target\ciel-idle-companion-1.0-SNAPSHOT.jar"
 if not exist "%JAR_PATH%" set "JAR_PATH=%PROJECT_DIR%target\ciel-idle-companion-1.0-SNAPSHOT-shaded.jar"
 if not exist "%JAR_PATH%" set "JAR_PATH=%PROJECT_DIR%target\ciel-idle-companion-1.0-SNAPSHOT-breeze.jar"
 if not exist "%JAR_PATH%" set "JAR_PATH=%PROJECT_DIR%target\ciel-idle-companion-1.0-SNAPSHOT-codex.jar"

@@ -191,6 +191,15 @@ public final class SessionRecoveryService {
         if (containsEvent(events, 1074) || containsEvent(events, 6006)) {
             return "planned_windows_shutdown";
         }
+        // The JVM shutdown hook records this intent before doing any blocking
+        // cleanup.  Windows can terminate a console/task process before the
+        // later clean_shutdown marker is written, so retain this durable
+        // intent as planned rather than misclassifying Start > Power > Shut
+        // down as a crash on the next boot.
+        if (requested.equals("windows_shutdown_pending")
+                || requested.equals("planned_windows_shutdown")) {
+            return "planned_windows_shutdown";
+        }
         if (requested.startsWith("ciel_") || requested.startsWith("planned_")) {
             return "planned_ciel_shutdown";
         }

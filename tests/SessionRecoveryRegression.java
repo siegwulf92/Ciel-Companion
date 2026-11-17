@@ -23,6 +23,16 @@ public final class SessionRecoveryRegression {
         require(SessionRecoveryService.consumePlannedRestartMarker(root, "session-a") == null,
                 "marker from another session was accepted");
         require(!Files.exists(marker), "rejected marker was not consumed");
+
+        require("planned_windows_shutdown".equals(
+                        SessionRecoveryService.classifyTermination("running", "windows_shutdown_pending", "")),
+                "durable Windows shutdown intent was not classified as planned");
+        require("planned_windows_shutdown".equals(
+                        SessionRecoveryService.classifyTermination("running", "planned_windows_shutdown", "")),
+                "explicit planned Windows shutdown intent was not classified as planned");
+        require("interrupted_session".equals(
+                        SessionRecoveryService.classifyTermination("running", "none", "")),
+                "unmarked running session was not retained as interrupted");
         System.out.println("Session recovery regression checks passed.");
     }
 

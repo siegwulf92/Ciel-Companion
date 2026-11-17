@@ -179,6 +179,17 @@ public class CielCompanion {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("Ciel Companion shutting down...");
 
+            // Persist the intent before diary generation, audio cleanup, and
+            // router teardown.  During a normal Windows Start-menu shutdown,
+            // the OS may stop this task before the hook reaches its final
+            // clean_shutdown write; this early marker keeps the next boot
+            // from reporting a false crash while still leaving genuine
+            // power loss/crash sessions unmarked.
+            SessionRecoveryService.requestShutdown(
+                    CielState.isPerformingColdShutdown()
+                            ? "planned_ciel_shutdown"
+                            : "windows_shutdown_pending");
+
             List<String> recentMemories = MemoryService.getRecentEpisodicMemories(50);
             String contextSummary = recentMemories.isEmpty() ? "No significant interactions recorded this session." : String.join("\n- ", recentMemories);
             boolean isReboot = !CielState.isPerformingColdShutdown();

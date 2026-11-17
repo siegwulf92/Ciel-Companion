@@ -10,6 +10,7 @@ import java.awt.geom.Ellipse2D;
 import java.awt.geom.Point2D;
 import java.awt.RadialGradientPaint;
 import java.util.Random;
+import java.util.concurrent.TimeUnit;
 
 public class CielGui {
 
@@ -23,6 +24,8 @@ public class CielGui {
     // Startup work can publish a visual state before Swing has created the
     // panel. Keep the latest state so it is not lost during that handoff.
     private volatile GuiState pendingState = GuiState.IDLE;
+    private volatile long stateEnteredNanos = System.nanoTime();
+    private volatile long lastActivityNanos = stateEnteredNanos;
 
     public void initialize() {
         frame = new JFrame();
@@ -57,11 +60,18 @@ public class CielGui {
             isInitialized = true;
             System.out.println("Ciel Debug: GUI Initialized (Visual Effects Restored).");
         });
+        // Defensive lease: if an asynchronous provider/phonetics failure returns
+        // before the speech queue owns the utterance, the state machine may not
+        // get its normal dequeue callback.  Hide the activity indicator after a
+        // bounded lease instead of leaving a stale orb on screen indefinitely.
+        new Timer(1000, e -> enforceVisibilityLease()).start();
     }
 
     public void setState(GuiState state) {
         if (state == null) state = GuiState.IDLE;
         pendingState = state;
+        stateEnteredNanos = System.nanoTime();
+        lastActivityNanos = stateEnteredNanos;
         final GuiState appliedState = state;
         CielPanel targetPanel = panel;
         if (targetPanel != null) {
@@ -85,7 +95,10 @@ public class CielGui {
 
     /** Feed the current output-envelope level (0..1) to the visualizer. */
     public void setSpeechLevel(float level) {
-        if (panel != null) panel.setSpeechLevel(level);
+        if (panel != null) {
+            lastActivityNanos = System.nanoTime();
+            panel.setSpeechLevel(level);
+        }
     }
 
     /** Feed a peak level from the final Windows speaker endpoint. */
@@ -103,7 +116,21 @@ public class CielGui {
 
     /** Mark a provider word boundary; used to make speech cadence visibly track output. */
     public void markSpeechWord() {
-        if (panel != null) panel.markSpeechWord();
+        if (panel != null) {
+            lastActivityNanos = System.nanoTime();
+            panel.markSpeechWord();
+        }
+    }
+
+    private void enforceVisibilityLease() {
+        if (frame == null || pendingState == GuiState.IDLE || GuiSettings.isVisibleWhenIdle()) return;
+        long idleMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - lastActivityNanos);
+        if (idleMs < GuiSettings.getMaxActiveMs()) return;
+        GuiState staleState = pendingState;
+        pendingState = GuiState.IDLE;
+        System.err.println("[GUI Watchdog] Clearing stale visible state=" + staleState
+                + " after " + idleMs + "ms without speech/provider activity.");
+        setState(GuiState.IDLE);
     }
 
     public void setVisualState(EmotionalState.VisualState state) { if (panel != null) panel.setCurrentVisualState(state); }

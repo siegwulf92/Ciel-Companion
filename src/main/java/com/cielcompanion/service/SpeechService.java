@@ -605,6 +605,14 @@ public class SpeechService {
                     if (hasEnqueued) {
                         dequeueSpeech();
                     }
+                    // Phonetic conversion can fail before enqueueSpeech() is
+                    // reached.  In that path the worker used to return while
+                    // leaving the GUI in THINKING forever.  Clear only when no
+                    // speech is active/queued so chained utterances retain
+                    // their visible handoff.
+                    if (!isActivelySpeaking.get() && speechQueueCount.get() == 0) {
+                        CielState.getCielGui().ifPresent(gui -> gui.setState(CielGui.GuiState.IDLE));
+                    }
                     if (onComplete != null) onComplete.accept(completed);
                 }
             });

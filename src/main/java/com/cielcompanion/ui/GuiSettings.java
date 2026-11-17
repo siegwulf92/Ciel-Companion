@@ -21,6 +21,7 @@ public class GuiSettings {
     private static double SPEAKING_BREATH_SPEED;
     private static double SPEAKING_FLICKER_SPEED;
     private static double SPEAKING_FLICKER_INTENSITY;
+    private static long MAX_ACTIVE_MS;
 
     public static void initialize() {
         Properties props = new Properties();
@@ -42,6 +43,8 @@ public class GuiSettings {
             SPEAKING_BREATH_SPEED = Double.parseDouble(props.getProperty("behavior.speaking.breathSpeed", "1.5"));
             SPEAKING_FLICKER_SPEED = Double.parseDouble(props.getProperty("behavior.speaking.flickerSpeed", "10.0"));
             SPEAKING_FLICKER_INTENSITY = Double.parseDouble(props.getProperty("behavior.speaking.flickerIntensity", "0.8"));
+            long maxActiveSeconds = Long.parseLong(props.getProperty("display.maxActiveSeconds", "300"));
+            MAX_ACTIVE_MS = Math.max(30_000L, Math.min(900_000L, maxActiveSeconds * 1000L));
 
             System.out.println("Ciel Debug: GUI settings loaded successfully.");
         } catch (Exception e) {
@@ -70,5 +73,6 @@ public class GuiSettings {
     public static double getSpeakingBreathSpeed() { return SPEAKING_BREATH_SPEED; }
     public static double getSpeakingFlickerSpeed() { return SPEAKING_FLICKER_SPEED; }
     public static double getSpeakingFlickerIntensity() { return SPEAKING_FLICKER_INTENSITY; }
+    public static long getMaxActiveMs() { return MAX_ACTIVE_MS > 0 ? MAX_ACTIVE_MS : 300_000L; }
 }
 
