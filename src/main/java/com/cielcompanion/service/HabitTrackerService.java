@@ -577,10 +577,15 @@ public class HabitTrackerService {
     }
     
     private static JsonObject getActiveMediaData(String activeTitle, String platform, boolean deepScrape) {
-        return getActiveMediaData(activeTitle,platform,deepScrape,false);
+        return getActiveMediaData(activeTitle, platform, deepScrape, false, 0);
     }
 
     private static JsonObject getActiveMediaData(String activeTitle, String platform, boolean deepScrape, boolean identityOnly) {
+        return getActiveMediaData(activeTitle, platform, deepScrape, identityOnly, 0);
+    }
+
+    private static JsonObject getActiveMediaData(String activeTitle, String platform, boolean deepScrape,
+                                                 boolean identityOnly, int transientAttempt) {
         long now = System.currentTimeMillis();
         String cleanTitleForPython = activeTitle.replaceAll("^\\(\\d+\\)\\s*", "").trim();
         
@@ -634,11 +639,19 @@ public class HabitTrackerService {
                 }
             } else {
                 conn.disconnect();
+                if (transientAttempt < 2 && responseCode >= 500) {
+                    sleepBeforeMediaRetry(transientAttempt);
+                    return getActiveMediaData(activeTitle, platform, deepScrape, identityOnly, transientAttempt + 1);
+                }
                 recordMediaContractFailure(activeTitle, "HTTP " + responseCode);
                 return getLocalFallbackMediaData(activeTitle, platform);
             }
         } catch (Exception e) {
             String exceptionMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            if (transientAttempt < 2 && isTransientMediaRouterFailure(e, exceptionMsg)) {
+                sleepBeforeMediaRetry(transientAttempt);
+                return getActiveMediaData(activeTitle, platform, deepScrape, identityOnly, transientAttempt + 1);
+            }
             recordMediaContractFailure(activeTitle, exceptionMsg);
             
             if (!exceptionMsg.equals(lastExceptionMessage) || (now - lastExceptionLogTime) > 300000) {
@@ -650,6 +663,23 @@ public class HabitTrackerService {
             }
             
             return getLocalFallbackMediaData(activeTitle, platform);
+        }
+    }
+
+    private static boolean isTransientMediaRouterFailure(Exception error, String message) {
+        String value = message == null ? "" : message.toLowerCase(java.util.Locale.ROOT);
+        return error instanceof java.net.ConnectException
+                || error instanceof java.net.SocketTimeoutException
+                || value.contains("connection refused")
+                || value.contains("connection reset")
+                || value.contains("timed out");
+    }
+
+    private static void sleepBeforeMediaRetry(int attempt) {
+        try {
+            Thread.sleep(attempt == 0 ? 500L : 1500L);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
         }
     }
 
