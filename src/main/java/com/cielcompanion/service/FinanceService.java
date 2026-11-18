@@ -250,6 +250,11 @@ public class FinanceService {
         // Only the explicitly marked fallback with usable holdings data is a
         // successful stage; malformed fallback output must still retry.
         if (isValidatedHoldingsFallback(normalized)) return false;
+        // A partial quote refresh is still a valid, dated portfolio snapshot
+        // when at least one row was refreshed and the remaining rows retained
+        // their prior prices. Keep the briefing and label the limitation;
+        // only a zero-row refresh remains fatal.
+        if (isUsablePartialPortfolioRefresh(normalized)) return false;
         // Ordinary prose may discuss unavailable quotes or past timeouts.
         // Only explicit stage/error markers establish a failed stage.
         return normalized.isEmpty() || normalized.startsWith("error:")
@@ -268,6 +273,16 @@ public class FinanceService {
                 || normalized.startsWith("master, the recommendation model was unavailable")
                 || normalized.startsWith("### market scan status\nthe narrative model was unavailable")
                 || normalized.matches("(?s)^(market scan|strategic recommendations|portfolio update|finance pipeline) (failed:|returned no result|timed out|unavailable).*" );
+    }
+
+    /** True only for a partial refresh with usable current/prior-price data. */
+    private static boolean isUsablePartialPortfolioRefresh(String normalized) {
+        if (normalized == null || !normalized.startsWith("portfolio refresh partial:")) return false;
+        if (!normalized.contains("unavailable quotes retain their prior prices")) return false;
+        java.util.regex.Matcher refreshed = java.util.regex.Pattern
+                .compile("\\b([1-9][0-9]*)/[0-9]+\\s+priced holding rows refreshed\\b")
+                .matcher(normalized);
+        return refreshed.find();
     }
 
     /** Validate the narrow deterministic fallback emitted by ciel_finance.py. */

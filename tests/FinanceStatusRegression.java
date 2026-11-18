@@ -9,7 +9,9 @@ public class FinanceStatusRegression {
         if ((boolean) method.invoke(null, "The analysis discusses unavailable historical data without claiming a failed pipeline.")) throw new AssertionError("Narrative words must not be used as stage status.");
         String safeMarketFallback = "### Market scan status\nThe narrative model was unavailable or failed validation; fetched evidence is preserved below without a directional conclusion.\n\n#### S&P 500 and VIX source data\nS&P 500: 5000\n\n#### Market news context\nNo fresh headlines.";
         if ((boolean) method.invoke(null, safeMarketFallback)) throw new AssertionError("Evidence-preserving market fallback must still permit a briefing write.");
-        for (String failed : new String[] {"Portfolio update failed: connection refused", "Portfolio refresh partial: 2/3", "Strategic recommendations failed: TimeoutException", "Market data unavailable", "Error: CSV is locked", "Master, the recommendation models did not return prose this cycle", "Weekday news watch unavailable: no source coverage", "Finance module error: TypeError"}) {
+        String usablePartial = "Portfolio refresh partial: 67/68 priced holding rows refreshed from Yahoo Finance; quote dates: 2026-11-17. Unavailable quotes retain their prior prices; source dates are recorded in the CSV. No trades were placed.";
+        if ((boolean) method.invoke(null, usablePartial)) throw new AssertionError("Usable partial refresh should not discard the daily briefing.");
+        for (String failed : new String[] {"Portfolio update failed: connection refused", "Portfolio refresh partial: 0/68", "Strategic recommendations failed: TimeoutException", "Market data unavailable", "Error: CSV is locked", "Master, the recommendation models did not return prose this cycle", "Weekday news watch unavailable: no source coverage", "Finance module error: TypeError"}) {
             if (!(boolean) method.invoke(null, failed)) throw new AssertionError("Missed explicit failure marker: " + failed);
         }
         System.out.println("Finance stage-status regressions passed.");
