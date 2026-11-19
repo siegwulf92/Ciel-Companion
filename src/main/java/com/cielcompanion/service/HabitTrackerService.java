@@ -261,6 +261,15 @@ public class HabitTrackerService {
         String lower = title != null ? title.toLowerCase() : "";
         String proc = processName != null ? processName.toLowerCase() : "";
         if (proc.contains("stremio") || lower.contains("stremio")) return "stremio";
+        // Browser captions are not reliable evidence of the active tab.  A
+        // browser may expose only its application name (or a localized title)
+        // while YouTube is in the foreground, so retain the process identity
+        // and let the Python observer validate the URL before creating media
+        // metadata.  This keeps generic browser pages safe while preventing a
+        // valid YouTube watch page from being skipped before URL inspection.
+        if (proc.contains("chrome") || proc.contains("msedge") || proc.contains("edge")
+                || proc.contains("firefox") || proc.contains("brave")
+                || proc.contains("vivaldi") || proc.contains("opera")) return "browser";
         if (lower.contains("crunchyroll")) return "crunchyroll";
         if (lower.contains("youtube") || lower.contains("youtu.be")) return "youtube";
         if (lower.contains("netflix")) return "netflix";
@@ -299,7 +308,16 @@ public class HabitTrackerService {
             // so a normal search/new-tab caption cannot trigger commentary.
             // Keeping the foreground-title gate avoids classifying a hidden
             // browser tab or launcher as the active show.
-            final boolean isMedia = isStremioProc || isMediaTitle(activeTitle);
+            final boolean isBrowserProc = activeProcess.contains("chrome") || activeProcess.contains("msedge")
+                    || activeProcess.contains("edge") || activeProcess.contains("firefox")
+                    || activeProcess.contains("brave") || activeProcess.contains("vivaldi")
+                    || activeProcess.contains("opera");
+            // Do not require the window caption to contain "YouTube".  Chrome
+            // and Edge can expose a generic/localized caption while their
+            // active tab is a watch page.  The Python endpoint performs the
+            // authoritative URL/watch-route check and returns
+            // VALID_WATCH_URL_NOT_FOUND for ordinary browser pages.
+            final boolean isMedia = isStremioProc || isMediaTitle(activeTitle) || isBrowserProc;
             
             // IF SpeechService is actively outputting, suppress new media DOM walks to prevent API loop collisions
             if (com.cielcompanion.service.SpeechService.isActivelySpeaking()) {
