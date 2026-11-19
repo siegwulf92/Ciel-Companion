@@ -83,8 +83,9 @@ public class WeatherAwareAstronomyEngine {
                         rawComplaint = "I cannot show you the stars right now due to current conditions.";
                     }
 
-                    String weatherComplaintKata = com.cielcompanion.util.PhonoKana.getInstance().toKatakana(rawComplaint);
-                    filteredEvents.put("visual_cancellation", weatherComplaintKata);
+                    // Keep generated prose in English until SpeechService's
+                    // contextual formatter and manager audit prepare phonokana.
+                    filteredEvents.put("visual_cancellation", rawComplaint);
                     
                     AstronomyReport filteredReport = new AstronomyReport(filteredEvents, filteredReportAmbient, rawReport.idleAmbientLines());
                     onComplete.accept(filteredReport);

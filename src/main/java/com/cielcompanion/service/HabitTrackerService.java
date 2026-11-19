@@ -77,6 +77,8 @@ public class HabitTrackerService {
     private static volatile boolean currentGamePausable = false;
 
     private static volatile String cachedActiveUrl = "";
+    private static volatile String observedBrowserTitle = "";
+    private static volatile long observedBrowserAt = 0;
     private static volatile String cachedDomText = "";
     private static volatile String lastTripwireTitle = "";
     private static volatile String lastTripwirePlatform = "";
@@ -410,6 +412,36 @@ public class HabitTrackerService {
                         JsonObject mediaData = getActiveMediaData(activeTitle, currentPlatform, doDeepScrape);
                         if (mediaData != null) {
                             long observedAt = System.currentTimeMillis();
+                            String incomingUrl = mediaData.has("url") && !mediaData.get("url").isJsonNull()
+                                    ? mediaData.get("url").getAsString() : "";
+                            if (MediaObservation.watchIdentityChanged(cachedActiveUrl, incomingUrl)) {
+                                hasAcquiredEpisodeMetadata = false;
+                                currentEpisodeHash = "";
+                                currentMediaTitle = "";
+                                cachedDomText = "";
+                                cachedStreamLink = null;
+                                cachedMagnetLink = null;
+                                cachedDurationMinutes = -1;
+                                cachedCurrentTimeSec = -1;
+                                lastPlaybackEvidenceAt = 0;
+                                observedBrowserTitle = "";
+                                observedBrowserAt = 0;
+                                stremioNextDeepScrapeTime = 0;
+                                System.out.println("[HabitTracker] Watch URL identity changed; discarded previous media context and requesting fresh metadata.");
+                            }
+                            if ((mediaData.has("dom") && hasUsableMediaMetadata(mediaData.get("dom").getAsString()))
+                                    || (activeTitle.equals(observedBrowserTitle) && mediaData.has("url")
+                                        && !cachedActiveUrl.isBlank()
+                                        && MediaObservation.watchIdentity(cachedActiveUrl).equals(
+                                            MediaObservation.watchIdentity(mediaData.get("url").getAsString()))
+                                        && hasUsableMediaMetadata(cachedDomText))) {
+                                observedBrowserTitle = activeTitle;
+                                observedBrowserAt = observedAt;
+                            } else if (mediaData.has("diagnostic_code")
+                                    && "VALID_WATCH_URL_NOT_FOUND".equals(mediaData.get("diagnostic_code").getAsString())) {
+                                observedBrowserTitle = "";
+                                observedBrowserAt = 0;
+                            }
                             String previousPlaybackState = cachedPlaybackState;
                             String observedPlaybackState = mediaData.has("playback_state")
                                     ? mediaData.get("playback_state").getAsString() : "UNCONFIRMED";
@@ -530,7 +562,9 @@ public class HabitTrackerService {
                                                     && filmTitle != null && !filmTitle.isBlank()) {
                                                 hasAcquiredEpisodeMetadata = true;
                                                 activeSeriesName = "";
-                                                String filmKey = "FILM_" + filmTitle.trim().toLowerCase().replaceAll("[^a-z0-9]", "");
+                                                String filmKey = "VIDEO".equalsIgnoreCase(mediaKind)
+                                                        ? MediaObservation.videoKey(filmTitle.trim(), incomingUrl)
+                                                        : "FILM_" + filmTitle.trim().toLowerCase().replaceAll("[^a-z0-9]", "");
                                                 if (!filmKey.equals(currentEpisodeHash)) {
                                                     currentEpisodeHash = filmKey;
                                                     currentMediaTitle = filmTitle.trim();
@@ -902,7 +936,10 @@ public class HabitTrackerService {
         String activeProcess = metrics.activeProcessName().toLowerCase();
 
         boolean isStremioProc = activeProcess.contains("stremio");
-        boolean isMedia = isMediaTitle(activeTitle) || isStremioProc; 
+        boolean isMedia = isMediaTitle(activeTitle) || isStremioProc
+                || (activeTitle.equals(observedBrowserTitle)
+                    && System.currentTimeMillis() - observedBrowserAt < 90_000
+                    && hasUsableMediaMetadata(cachedDomText));
         
         String cachedCategory = processCategoryCache.getOrDefault(activeProcess, "Analyzing...");
         
@@ -991,8 +1028,8 @@ public class HabitTrackerService {
                     currentMediaTitle = series.trim() + " - " + ep.trim();
                 } else {
                     currentMediaTitle = filmTitle.trim();
-                    String mediaKey = (isFilm ? "FILM_" : "VIDEO_")
-                            + currentMediaTitle.toLowerCase().replaceAll("[^a-z0-9]", "");
+                    String mediaKey = isFilm ? "FILM_" + currentMediaTitle.toLowerCase().replaceAll("[^a-z0-9]", "")
+                            : MediaObservation.videoKey(currentMediaTitle, cachedActiveUrl);
                     if (!mediaKey.equals(currentEpisodeHash)) currentEpisodeHash = mediaKey;
                 }
 

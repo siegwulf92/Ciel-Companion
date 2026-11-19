@@ -5,6 +5,13 @@ public class MediaObservationRegression {
         if (!value) throw new AssertionError(message);
     }
     public static void main(String[] args) {
+        String first = "https://www.youtube.com/watch?v=abc12345678";
+        String second = "https://www.youtube.com/watch?v=xyz12345678";
+        check(MediaObservation.watchIdentityChanged(first, second), "Identical captions hid a changed video URL");
+        check(!MediaObservation.watchIdentityChanged(first, first + "&t=120&list=example"), "Playback offset reset same video identity");
+        check(!MediaObservation.watchIdentityChanged(first, "https://youtu.be/abc12345678"), "YouTube URL alias reset identity");
+        check(!MediaObservation.watchIdentityChanged(first, ""), "Temporarily missing URL erased identity");
+        check(!MediaObservation.videoKey("Same title", first).equals(MediaObservation.videoKey("Same title", second)), "Prepared dialogue reused across same-title videos");
         String verified = "MEDIA_KIND: EPISODE\nSERIES: The Ghost in the Shell\nEPISODE: PHANTOM FUND\nMETADATA_STATUS: VERIFIED\nDESCRIPTION: supported\n";
         String browsing = "SERIES: Unknown\nEPISODE: \nMEDIA_KIND: UNKNOWN\nMETADATA_STATUS: BROWSING\nDURATION_MINUTES: 24\n";
         for (boolean update : new boolean[]{false, true}) {

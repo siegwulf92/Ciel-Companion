@@ -298,7 +298,7 @@ public class AIEngine {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
-                .timeout("Media Persona Commentary".equals(taskIntent) ? Duration.ofMinutes(3)
+                .timeout(isTimeSensitiveMediaTask(taskIntent) ? Duration.ofMinutes(3)
                         : "Game Launch Commentary".equals(taskIntent) ? Duration.ofSeconds(30)
                         : Duration.ofMinutes(45))
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(payload), StandardCharsets.UTF_8))
@@ -317,6 +317,11 @@ public class AIEngine {
                     return null;
                 })
                 .whenComplete((res, ex) -> activeSwarmTasks.decrementAndGet());
+    }
+
+    static boolean isTimeSensitiveMediaTask(String taskIntent) {
+        return taskIntent != null && (taskIntent.startsWith("Media Persona Commentary")
+                || taskIntent.equals("Paused Media Recognition"));
     }
 
     public static String generateDiaryEntrySync(String userMessage, String systemContext) {

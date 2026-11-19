@@ -6,6 +6,30 @@ import java.util.regex.*;
 /** Pure protocol helpers: UI text is evidence, never authoritative metadata. */
 public final class MediaObservation {
     private MediaObservation() {}
+    public static String watchIdentity(String url) {
+        if (url == null || url.isBlank()) return "";
+        try {
+            java.net.URI uri = java.net.URI.create(url);
+            String host = Objects.toString(uri.getHost(), "").toLowerCase(Locale.ROOT);
+            if (host.equals("youtu.be")) return "youtube:" + uri.getPath().replaceFirst("^/", "");
+            if (host.equals("youtube.com") || host.endsWith(".youtube.com")) {
+                for (String pair : Objects.toString(uri.getRawQuery(), "").split("&")) {
+                    if (pair.startsWith("v=")) return "youtube:" + pair.substring(2);
+                }
+            }
+            return url.split("#", 2)[0];
+        } catch (IllegalArgumentException malformed) { return url; }
+    }
+
+    public static boolean watchIdentityChanged(String previous, String incoming) {
+        return !watchIdentity(previous).isBlank() && !watchIdentity(incoming).isBlank()
+                && !watchIdentity(previous).equals(watchIdentity(incoming));
+    }
+
+    public static String videoKey(String title, String url) {
+        return "VIDEO_" + Objects.toString(title, "").toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "")
+                + "_" + UUID.nameUUIDFromBytes(watchIdentity(url).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
     private static final Set<String> IDENTITY = Set.of("SERIES", "EPISODE", "MEDIA_KIND",
             "MEDIA_TITLE", "DESCRIPTION", "METADATA_STATUS", "METADATA_SOURCES",
             "SERIES_DESCRIPTION", "SEASON", "EPISODE_NUMBER");
