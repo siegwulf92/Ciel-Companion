@@ -85,6 +85,22 @@ public class FinanceService {
             var state = scheduleState();
             String key = job.name() + ".";
             long success = Long.parseLong(state.getProperty(key + "success", "0"));
+            // A holdings import can land after the last briefing (for example,
+            // when the user refreshes the CSV after work).  Treat that as a
+            // new obligation on a market day so the next active tick uses the
+            // current file instead of silently accepting a pre-import report.
+            if (job == FinanceSchedulePolicy.Job.DAILY_BRIEFING && success > 0) {
+                Path portfolio = Paths.get(System.getProperty("user.dir"), "Ciel", "finance", "portfolio.csv");
+                try {
+                    if (Files.exists(portfolio) && Files.getLastModifiedTime(portfolio).toMillis() > success) {
+                        System.out.println("[Finance Schedule] portfolio.csv changed after the last briefing; scheduling a refreshed market-day run.");
+                        success = 0;
+                    }
+                } catch (java.io.IOException ignored) {
+                    // The normal schedule state remains authoritative if the
+                    // optional freshness probe cannot read the file.
+                }
+            }
             if (job == FinanceSchedulePolicy.Job.CLOSED_MARKET_PLAN) {
                 Path profile = Paths.get(System.getProperty("user.dir"), "Ciel", "finance", "investor_profile.json");
                 if (Files.exists(profile) && Files.getLastModifiedTime(profile).toMillis() > success) success = 0;
@@ -185,13 +201,24 @@ public class FinanceService {
                             && !isFinanceFailure(marketTask.getNow(null))
                             && !isFinanceFailure(portfolioTask.getNow(null))
                             && !isFinanceFailure(recommendationsTask.getNow(null));
-                    if (runSucceeded) runSucceeded = writeFiles();
-                    recordSchedule(job, runSucceeded);
-                    if (runSucceeded) {
+                    boolean reportWritten = runSucceeded && writeFiles();
+                    boolean strategicFallback = reportWritten
+                            && needsStrategicRetry(recommendationsTask.getNow(null));
+                    // Keep a dated, evidence-bounded report available, but do
+                    // not mark the strategic review complete when its model
+                    // output failed validation.  This preserves today's data
+                    // and lets the exponential retry schedule try again later
+                    // (including after a holdings import or market close).
+                    recordSchedule(job, reportWritten && !strategicFallback);
+                    if (reportWritten) {
                         CielController.noteMajorBackgroundActivity("I completed the "
                                 + (job == FinanceSchedulePolicy.Job.CLOSED_MARKET_PLAN ? "closed-market portfolio plan" : "daily portfolio briefing"));
-                        localSyncTimeMs = System.currentTimeMillis();
-                        saveTimestamp(SYNC_FILE, localSyncTimeMs);
+                        if (!strategicFallback) {
+                            localSyncTimeMs = System.currentTimeMillis();
+                            saveTimestamp(SYNC_FILE, localSyncTimeMs);
+                        } else {
+                            System.out.println("[Finance Schedule] Evidence-bounded fallback written; strategic narrative retry remains eligible.");
+                        }
                     } else {
                         System.err.println("[Raphael â€” Financial Analysis] Run incomplete; last successful briefing preserved and retry remains eligible.");
                     }
@@ -295,6 +322,11 @@ public class FinanceService {
                 && normalized.contains("tracked value is $")
                 && normalized.contains("rules-based read")
                 && normalized.contains("model status:");
+    }
+
+    /** A fallback is publishable evidence, but its strategic model pass is not complete. */
+    private static boolean needsStrategicRetry(String result) {
+        return isValidatedHoldingsFallback(result);
     }
 
     private static boolean isSafeMarketFallback(String result) {

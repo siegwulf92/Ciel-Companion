@@ -10,6 +10,8 @@ public class FinanceNarrativeRegression {
     public static void main(String[] args) throws Exception {
         Method method = FinanceService.class.getDeclaredMethod("isFinanceFailure", String.class);
         method.setAccessible(true);
+        Method retryMethod = FinanceService.class.getDeclaredMethod("needsStrategicRetry", String.class);
+        retryMethod.setAccessible(true);
 
         String validFallback = "Finance status: validated holdings fallback; no model narrative passed validation this cycle. "
                 + "Master, this is my rules-based read of the saved holdings—not a live-market forecast. "
@@ -20,6 +22,8 @@ public class FinanceNarrativeRegression {
         String hardFailure = "Strategic recommendations failed: timeout";
 
         check(!(Boolean) method.invoke(null, validFallback), "validated fallback must complete the finance run");
+        check((Boolean) retryMethod.invoke(null, validFallback), "validated fallback must remain eligible for a strategic retry");
+        check(!(Boolean) retryMethod.invoke(null, "### I. What changed\nA complete model narrative."), "complete narrative must not be retried");
         check((Boolean) method.invoke(null, malformedFallback), "malformed fallback must remain retryable");
         check((Boolean) method.invoke(null, hardFailure), "stage failure must remain retryable");
         System.out.println("Finance narrative status regression passed.");
