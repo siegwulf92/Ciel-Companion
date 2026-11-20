@@ -328,20 +328,14 @@ public class AstronomyService {
                 if (p == null || p.id() == null || p.id().equalsIgnoreCase("sun") || p.id().equalsIgnoreCase("moon")) continue;
                 double alt = currentAltitude(p, now);
                 if (alt < config.getDouble("astronomy.minPlanetAltitudeDeg", 10.0) || !isPlanetObservable(p)) continue;
-                LineManager.getPlanetLine(p.id().toLowerCase(Locale.ROOT)).ifPresent(line -> {
+                {
                     String meta = AstronomyMetaReferences.referenceFor(p.id());
                     String suffix = meta.isBlank() ? "" : " Meta reference: " + meta + ".";
-                    visibleLines.add(line.text() + dynamicBodyDetail(p, alt)
+                    visibleLines.add((p.name() == null ? p.id() : p.name()) + " is above the horizon." + dynamicBodyDetail(p, alt)
                             + suffix);
-                });
+                }
             }
             
-            boolean jupiter = visibleLines.stream().anyMatch(s -> s.contains("Jupiter") || s.contains("ジュピター"));
-            boolean saturn = visibleLines.stream().anyMatch(s -> s.contains("Saturn") || s.contains("サターン"));
-            if (jupiter && saturn) {
-                visibleLines.removeIf(s -> s.contains("Jupiter") || s.contains("Saturn"));
-                LineManager.getPlanetLine("jupitersaturn").ifPresent(line -> visibleLines.add(0, line.text()));
-            }
 
             for (int i = 0; i < visibleLines.size(); i++) {
                 sequentialEvents.put("planet_" + i, visibleLines.get(i));
@@ -443,10 +437,8 @@ public class AstronomyService {
 
     private static void checkVisiblePlanetsStatic(Map<String, String> sequentialEvents) {
         if (!config.enabled("show.visiblePlanets", true)) return;
-        List<String> planetLines = VisiblePlanets.getVisiblePlanetLines(LocalDate.now().getMonth());
-        for (int i = 0; i < planetLines.size(); i++) {
-            sequentialEvents.put("planet_" + i, planetLines.get(i));
-        }
+        // A month-only almanac is not evidence of a planet's current position
+        // or opposition in this year. Wait for ephemeris coordinates.
     }
     
     private static void checkSunriseSunset(Map<String, String> sequentialEvents) {
@@ -511,8 +503,10 @@ public class AstronomyService {
 
     private static void checkMoonPhase(List<String> ambientLines) {
         if (!config.enabled("show.moonPhase", true) || todaysApiData.moonPhase == null) return;
-        String simplifiedPhase = todaysApiData.moonPhase.toLowerCase().replace(" ", "").replace("_", "");
-        LineManager.getMoonPhaseLine(simplifiedPhase).ifPresent(line -> ambientLines.add(line.text()));
+        CombinedAstronomyData.PlanetCoordinate moon = body("moon");
+        if (moon == null) return;
+        String factual = com.cielcompanion.astronomy.AstronomyNarrativeFacts.moonIllumination(currentMoonIllumination(moon));
+        if (!factual.isBlank()) ambientLines.add(factual);
     }
 
     private static void checkMoonVisibility(List<String> ambientLines) {
@@ -523,11 +517,22 @@ public class AstronomyService {
         StringBuilder english = new StringBuilder("The Moon is currently ")
                 .append(Math.round(moonAltitude)).append(" degrees above the horizon toward ")
                 .append(AstroUtils.compassDirection(currentAzimuth(moon, ZonedDateTime.now(ZoneId.of(LocationService.getTimezone())))));
-        if (Double.isFinite(moon.phaseFraction())) {
-            english.append(" with about ").append(Math.round(moon.phaseFraction() * 100.0)).append(" percent illumination");
+        double illumination = currentMoonIllumination(moon);
+        if (Double.isFinite(illumination)) {
+            english.append(" with approximately ").append(Math.round(illumination * 100.0)).append(" percent illumination");
         }
         english.append(".");
         ambientLines.add(english.toString());
+    }
+
+    private static double currentMoonIllumination(CombinedAstronomyData.PlanetCoordinate moon) {
+        if (moon == null) return Double.NaN;
+        long age = Instant.now().getEpochSecond() - moon.capturedAtEpochSeconds();
+        if (age < 0 || age > 86400) return Double.NaN;
+        // Elongation is the measured Sun-Moon angular distance. Provider
+        // phase.fraction is retained as raw metadata but not trusted for TTS.
+        return com.cielcompanion.astronomy.AstronomyNarrativeFacts
+                .illuminationFromElongation(moon.elongation());
     }
 
     private static void checkNoteworthyAlignments(Map<String, String> sequentialEvents) {
@@ -731,8 +736,9 @@ public class AstronomyService {
             );
             if (!showers.isEmpty()) {
                 MeteorShowers.Candidate candidate = showers.get(0);
-                String showerName = candidate.shower.name;
-                ambientLines.add(showerName + " is active around this date. For the best chance, look toward its radiant after midnight when the sky is dark and clear.");
+                String factual = com.cielcompanion.astronomy.AstronomyNarrativeFacts.meteorWindow(
+                        candidate.shower.name, candidate.date, LocalDate.now(zone));
+                if (!factual.isBlank() && !skyTooObscured()) ambientLines.add(factual);
             }
         } catch (Exception e) {
             System.err.println("Ciel Error: Failed to check for meteor showers fallback. " + e.getMessage());

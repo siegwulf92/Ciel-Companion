@@ -101,6 +101,7 @@ public class Settings {
     private static boolean BREEZE_PREFER_ALL;
     private static boolean BREEZE_CACHE_ENABLED;
     private static boolean BREEZE_PREFETCH_ENABLED;
+    private static boolean BREEZE_REPORT_SYNTHESIS_ENABLED;
     private static boolean BREEZE_DYNAMIC_PRIMARY;
     private static long BREEZE_WARMUP_MIN_ENTRIES;
     private static boolean BREEZE_PRIME_OUTPUT;
@@ -267,6 +268,7 @@ public class Settings {
             BREEZE_PREFER_ALL = Boolean.parseBoolean(props.getProperty("breeze.tts.preferAll", "true"));
             BREEZE_CACHE_ENABLED = Boolean.parseBoolean(props.getProperty("breeze.tts.cache", "true"));
             BREEZE_PREFETCH_ENABLED = Boolean.parseBoolean(props.getProperty("breeze.tts.prefetch", "false"));
+            BREEZE_REPORT_SYNTHESIS_ENABLED = Boolean.parseBoolean(props.getProperty("breeze.tts.reportSynthesis", "false"));
             BREEZE_DYNAMIC_PRIMARY = Boolean.parseBoolean(props.getProperty("breeze.tts.dynamicPrimary", "false"));
             BREEZE_WARMUP_MIN_ENTRIES = Long.parseLong(props.getProperty("breeze.tts.warmupMinEntries", "50"));
             BREEZE_PRIME_OUTPUT = Boolean.parseBoolean(props.getProperty("breeze.tts.primeOutput", "false"));
@@ -407,6 +409,7 @@ public class Settings {
     public static boolean isBreezePreferAll() { return BREEZE_PREFER_ALL; }
     public static boolean isBreezeCacheEnabled() { return BREEZE_CACHE_ENABLED; }
     public static boolean isBreezePrefetchEnabled() { return BREEZE_PREFETCH_ENABLED; }
+    public static boolean isBreezeReportSynthesisEnabled() { return BREEZE_REPORT_SYNTHESIS_ENABLED; }
     public static boolean isBreezeDynamicPrimary() { return BREEZE_DYNAMIC_PRIMARY; }
     public static long getBreezeWarmupMinEntries() { return BREEZE_WARMUP_MIN_ENTRIES; }
     public static boolean isBreezePrimeOutput() { return BREEZE_PRIME_OUTPUT; }

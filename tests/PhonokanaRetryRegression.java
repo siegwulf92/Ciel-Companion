@@ -6,8 +6,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Exercises the real Java HTTP formatter contract: two bounded failures must
- * be visible and retried, and only a word-aligned Katakana response may win.
+ * Exercises the Java HTTP formatter contract: one endpoint failure must fail
+ * closed (Python owns retries); a later invocation may accept audited output.
  */
 public class PhonokanaRetryRegression {
     public static void main(String[] args) throws Exception {
@@ -17,7 +17,7 @@ public class PhonokanaRetryRegression {
             int call = calls.incrementAndGet();
             byte[] body;
             int status;
-            if (call < 3) {
+            if (call < 2) {
                 status = 503;
                 body = "{\"detail\":\"router temporarily unavailable\"}".getBytes(StandardCharsets.UTF_8);
             } else {
@@ -33,10 +33,13 @@ public class PhonokanaRetryRegression {
         try {
             System.setProperty("ciel.phonokana.endpoint",
                     "http://127.0.0.1:" + server.getAddress().getPort() + "/katakana");
+            String unavailable = AIEngine.transliterateToKatakanaSync("exit");
+            if (!unavailable.isEmpty() || calls.get() != 1)
+                throw new AssertionError("Java must fail closed after one endpoint call; Python owns model retries");
             String result = AIEngine.transliterateToKatakanaSync("exit");
             if (!"エクジット。".equals(result)) throw new AssertionError("Unexpected phonokana: " + result);
-            if (calls.get() != 3) throw new AssertionError("Expected exactly 3 bounded attempts, got " + calls.get());
-            System.out.println("Phonokana retry regression passed: retries were bounded and audited output won.");
+            if (calls.get() != 2) throw new AssertionError("Expected one request per invocation, got " + calls.get());
+            System.out.println("Phonokana endpoint regression passed: failure closed, no multiplied retries, audited recovery accepted.");
         } finally {
             server.stop(0);
             System.clearProperty("ciel.phonokana.endpoint");

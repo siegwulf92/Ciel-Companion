@@ -384,12 +384,29 @@ public class CommandService {
     }
 
     private boolean sendToAiWithData(String userQuery, String systemData) {
+        return sendToAiWithData(userQuery, systemData, null);
+    }
+
+    private boolean sendToAiWithData(String userQuery, String systemData, String speechKey) {
         String context = ContextBuilder.buildActiveContext(loreService, userQuery) + 
             "\n\n[SYSTEM DATA REPOSITORY]\n" + systemData + 
             "\n\nINSTRUCTION: Formulate a natural, conversational answer to the user's query using the SYSTEM DATA provided above.";
         
         ShortTermMemoryService.getMemory().setPrivilegedMode(true, 15);
-        AIEngine.chatFast(userQuery, context, () -> isBusy.set(false));
+        if (speechKey == null) {
+            AIEngine.chatFast(userQuery, context, () -> isBusy.set(false));
+        } else {
+            // Carry the report's identity through this request's own callback.
+            // A generic chatFast response loses the key at speakChunk(), which
+            // bypasses report credit policy. SpeechService handles English ->
+            // reviewed phonokana and mood parsing at its normal boundary.
+            ReportSpeechPolicy.routeRequestedReport(
+                    AIEngine.generateSilentLogic(userQuery, context, "Requested Daily Report Dialogue"),
+                    speechKey,
+                    (response, key) -> SpeechService.speakPreformatted(response, key, false, false),
+                    reason -> System.err.println("[Daily Report Speech] Generation failed; keyed report speech was not queued. reason=" + reason),
+                    () -> isBusy.set(false));
+        }
         return false; 
     }
 
@@ -579,7 +596,8 @@ public class CommandService {
             data = data + "\n\n[FINANCIAL REPORT]\n" + financeData;
         }
         
-        return sendToAiWithData(userText, "Daily Report Data: " + data);
+        return sendToAiWithData(userText, "Daily Report Data: " + data,
+                "idle_report.requested." + java.time.LocalDate.now());
     }
 
     private boolean handleGetMoonPhase(String userText) {

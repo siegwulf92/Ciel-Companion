@@ -196,6 +196,13 @@ public final class BreezeSpeechService {
             if (played) System.out.println("[Breeze TTS] Legacy cache hit; no credits consumed.");
             return played;
         }
+        // Report bodies change daily and can consume most of the shared grant.
+        // Existing matching audio above remains free and preferred. Enforce
+        // this before reservation/HTTP for playback, prefetch and final fallback.
+        if (!ReportSpeechPolicy.maySynthesize(key, Settings.isBreezeReportSynthesisEnabled())) {
+            if (playAudio) System.out.println("[Breeze TTS] Report cache miss; new synthesis disabled by report policy; Azure fallback selected.");
+            return false;
+        }
         if (!BreezeUsageTracker.reserve(text)) return false;
         HttpURLConnection connection = null;
         Path temp = null;

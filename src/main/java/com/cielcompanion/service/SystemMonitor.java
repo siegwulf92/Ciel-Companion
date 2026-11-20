@@ -23,6 +23,8 @@ public class SystemMonitor {
     
     private static long[] prevLoadTicks = new long[CentralProcessor.TickType.values().length];
     private static volatile boolean cpuMetricsUnavailable = false;
+    private static long lastCpuSampleNanos;
+    private static double cachedCpuLoad;
     private static volatile boolean processInventoryUnavailable = false;
     private static volatile long lastProcessInventoryFailure = 0;
 
@@ -51,12 +53,31 @@ public class SystemMonitor {
 
     public record ProcessInfo(String name, double usage, int pid) {}
 
+    private static synchronized double sampledCpuLoad() {
+        long now = System.nanoTime();
+        if (lastCpuSampleNanos != 0 && now - lastCpuSampleNanos < 1_000_000_000L)
+            return cachedCpuLoad;
+        long[] ticks = processor.getSystemCpuLoadTicks();
+        if (lastCpuSampleNanos != 0) {
+            long total = 0, idle = 0;
+            for (int i = 0; i < ticks.length; i++) {
+                long delta = Math.max(0L, ticks[i] - prevLoadTicks[i]);
+                total += delta;
+                if (i == CentralProcessor.TickType.IDLE.getIndex()
+                        || i == CentralProcessor.TickType.IOWAIT.getIndex()) idle += delta;
+            }
+            if (total > 0) cachedCpuLoad = Math.max(0, Math.min(100, 100.0 * (total - idle) / total));
+        }
+        prevLoadTicks = ticks;
+        lastCpuSampleNanos = now;
+        return cachedCpuLoad;
+    }
+
     public static SystemMetrics getSystemMetrics() {
         double cpuLoad = 0.0;
         if (!cpuMetricsUnavailable) {
             try {
-                cpuLoad = processor.getSystemCpuLoadBetweenTicks(prevLoadTicks) * 100;
-                prevLoadTicks = processor.getSystemCpuLoadTicks();
+                cpuLoad = sampledCpuLoad();
             } catch (RuntimeException unavailable) {
                 cpuMetricsUnavailable = true;
                 System.err.println("Ciel Warning: CPU metrics unavailable; using 0% fallback for this session: "

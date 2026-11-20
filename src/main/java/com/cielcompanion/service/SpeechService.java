@@ -798,7 +798,8 @@ public class SpeechService {
                 boolean breezeCacheHit = BreezeSpeechService.isCached(text, key, style, pitch, langCode);
                 boolean warmupComplete = Settings.isBreezeDynamicPrimary()
                         && BreezeSpeechService.isWarmupComplete();
-                if (breezeCacheHit || warmupComplete) {
+                if ((breezeCacheHit || warmupComplete)
+                        && ReportSpeechPolicy.useBreeze(key, breezeCacheHit, Settings.isBreezeReportSynthesisEnabled())) {
                     breezeSuccess = BreezeSpeechService.speak(text, key, style, pitch, langCode);
                     if (breezeSuccess) {
                         deliveryProvider = "breeze";
@@ -819,13 +820,16 @@ public class SpeechService {
                         queueBreezePrefetch(text, key, style, pitch, langCode);
                     }
                 } else {
-                    System.out.println("Ciel Warning: Azure Speech failed or skipped; trying Breeze generation.");
+                    System.out.println(ReportSpeechPolicy.maySynthesize(key, Settings.isBreezeReportSynthesisEnabled())
+                            ? "Ciel Warning: Azure Speech failed or skipped; trying Breeze generation."
+                            : "Ciel Warning: Azure report speech failed or skipped; report policy selects local speech fallback.");
                 }
             }
 
             // If both the Breeze cache and Azure are unavailable, a direct
             // Breeze request is still the last hosted-provider fallback.
-            if (!breezeSuccess && !azureSuccess && BreezeSpeechService.isAvailable() && breezeEligible) {
+            if (!breezeSuccess && !azureSuccess && BreezeSpeechService.isAvailable() && breezeEligible
+                    && ReportSpeechPolicy.maySynthesize(key, Settings.isBreezeReportSynthesisEnabled())) {
                 breezeSuccess = BreezeSpeechService.speak(text, key, style, pitch, langCode);
                 if (breezeSuccess) {
                     deliveryProvider = "breeze";
@@ -931,6 +935,7 @@ public class SpeechService {
     }
 
     private static void queueBreezePrefetch(String text, String key, String style, String pitch, String langCode) {
+        if (!ReportSpeechPolicy.maySynthesize(key, Settings.isBreezeReportSynthesisEnabled())) return;
         if (!Settings.isBreezePrefetchEnabled() || key == null || key.isBlank()
                 || !BreezeSpeechService.isAvailable()
                 || BreezeSpeechService.isCached(text, key, style, pitch, langCode)) return;

@@ -11,7 +11,8 @@ public class MediaTransportRegression {
         Path fixture = Files.createTempDirectory("ciel-media-transport-");
         System.setProperty("ciel.root", fixture.toString());
         AtomicReference<String> response = new AtomicReference<>();
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 8000), 0);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        System.setProperty("ciel.routerPort", Integer.toString(server.getAddress().getPort()));
         server.createContext("/active_media_data", exchange -> {
             byte[] body = response.get().getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
@@ -42,6 +43,7 @@ public class MediaTransportRegression {
             System.out.println("Java HTTP transport regressions passed: real client accepted typed observation, rejected malformed fields, and isolated UI evidence.");
         } finally {
             server.stop(0);
+            System.clearProperty("ciel.routerPort");
             // This fixture is created by this test under the platform temporary directory.
             if (!fixture.toAbsolutePath().normalize().startsWith(Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().normalize()))
                 throw new IllegalStateException("Unexpected fixture directory");

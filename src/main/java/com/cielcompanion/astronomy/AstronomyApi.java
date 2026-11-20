@@ -253,6 +253,11 @@ public class AstronomyApi {
         }
         ZoneId zone = ZoneId.of(LocationService.getTimezone());
         long capturedAt = ZonedDateTime.of(date, time == null ? LocalTime.NOON : time, zone).toEpochSecond();
+        // AstronomyAPI phase.fraction has contradicted its phase name and
+        // measured elongation in both documentation and live responses.
+        // Normalize the Moon's illumination from angular geometry instead.
+        if ("moon".equalsIgnoreCase(cell.id))
+            phaseFraction = AstronomyNarrativeFacts.illuminationFromElongation(elongation);
         return new CombinedAstronomyData.PlanetCoordinate(cell.id, cell.name, ra, dec, altitude, azimuth,
                 magnitude, elongation, phaseName, phaseFraction, capturedAt,
                 cell.position.constellation == null ? null : cell.position.constellation.name);

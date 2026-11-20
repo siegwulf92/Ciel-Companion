@@ -33,6 +33,8 @@ public class ObserverService {
     private static ScheduledExecutorService observerScheduler;
     
     private static volatile long lastSystemWarningTime = 0;
+    private static final com.cielcompanion.service.SystemPressureWindow systemPressure =
+            new com.cielcompanion.service.SystemPressureWindow();
     private static volatile String currentForegroundApp = "";
     private static long appFocusStartTime = System.currentTimeMillis();
     private static volatile boolean hasWarnedForFatigue = false;
@@ -129,7 +131,7 @@ public class ObserverService {
         SystemMetrics metrics = SystemMonitor.getSystemMetrics();
         
         // --- 1. Proactive System Guardian (RAM/CPU Overload) ---
-        if ((metrics.memoryUsagePercent() > 95 || metrics.cpuLoadPercent() > 95) 
+        if (systemPressure.observe(metrics.cpuLoadPercent(), metrics.memoryUsagePercent(), System.currentTimeMillis())
             && (System.currentTimeMillis() - lastSystemWarningTime > 5 * 60 * 1000)) { 
             
             Optional<ProcessInfo> topProc = metrics.memoryUsagePercent() > 95 ? SystemMonitor.getTopProcessByMemory() : SystemMonitor.getTopProcessByCpu();
@@ -141,19 +143,17 @@ public class ObserverService {
                 if (!IGNORED_GUARDIAN_PROCESSES.contains(procName)) {
                     lastSystemWarningTime = System.currentTimeMillis();
                     
-                    // Enforce strict JSON to prevent hallucinatory parsing errors
-                    String warningData = "SYSTEM ALERT: PC is under heavy load. CPU: " + metrics.cpuLoadPercent() + "%, RAM: " + metrics.memoryUsagePercent() + "%. The culprit process is " + topProc.get().name() + ".\n" +
-                        "CRITICAL INSTRUCTION: You MUST respond ONLY with a valid JSON object containing a 'speech' key. The speech string MUST start with a bracketed emotion tag like [Concerned] or [Annoyed].\n" +
-                        "Example: {\"speech\": \"[Concerned] Master, the system is under heavy load from an application.\"}";
-                        
-                    String context = ContextBuilder.buildObserverContext();
                     
-                    AIEngine.evaluateBackground(warningData, context).thenAccept(result -> {
-                        if (result != null && result.has("speech")) {
-                            System.out.println("Ciel Debug: Proactive System Guardian triggered!");
-                            extractAndSpeak(result.get("speech").getAsString());
-                        }
-                    });
+                    // Report measured local pressure directly. A queued model
+                    // response may arrive after the spike has already passed,
+                    // and must not invent a server problem or user instruction.
+                    System.out.printf(java.util.Locale.ROOT,
+                            "[System Guardian] sustained_pressure cpu=%.1f%% ram=%.1f%% top_process=%s%n",
+                            metrics.cpuLoadPercent(), metrics.memoryUsagePercent(), topProc.get().name());
+                    String measuredWarning = String.format(java.util.Locale.ROOT,
+                            "[Concerned] This computer has sustained high resource use: CPU %.0f percent and memory %.0f percent.",
+                            metrics.cpuLoadPercent(), metrics.memoryUsagePercent());
+                    extractAndSpeak(measuredWarning);
                     return; 
                 }
             }

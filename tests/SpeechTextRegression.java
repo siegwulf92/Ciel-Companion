@@ -17,7 +17,11 @@ public class SpeechTextRegression {
         check(!SpeechText.isValidKana("hello。"), "English phonokana accepted");
         check(SpeechText.isValidKana("テイラー様、大好きだよ。"), "Native affection rejected");
         check(SpeechText.normalizeKana("大好きだよ。").equals("大好きだよ。"), "Native Japanese rewritten");
+        // An unavailable isolated endpoint exercises failure without consuming
+        // credits or depending on whichever model the live router chooses.
+        System.setProperty("ciel.phonokana.endpoint", "http://127.0.0.1:1/katakana");
         String failedClosed = SpeechText.localKatakana("I read it yesterday, and I will read it tomorrow?");
+        System.clearProperty("ciel.phonokana.endpoint");
         check(failedClosed.isEmpty(), "Speech conversion silently used a local fallback when the contextual model was unavailable");
         Method syllables = PhonoKana.class.getDeclaredMethod("romajiLikeToKatakana", String.class);
         syllables.setAccessible(true);

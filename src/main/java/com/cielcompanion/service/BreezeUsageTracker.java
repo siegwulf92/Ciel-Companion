@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -36,14 +37,45 @@ public final class BreezeUsageTracker {
     public static boolean reserve(String text) {
         long credits = creditsFor(text);
         synchronized (LOCK) {
-            Boolean shared = reserveShared(credits, text);
-            if (shared != null) return shared;
-            // The allowance is shared across active devices. If the
-            // authenticated replicated ledger is unavailable, fail closed so
-            // SpeechService can use Azure rather than risking a second local
-            // counter that could overspend the shared daily grant.
-            System.err.println("[Breeze TTS] Shared usage ledger unavailable; declining Breeze request so Azure can take over.");
-            return false;
+            Process process = null;
+            Path resultFile = null;
+            try {
+                if (credits > Math.min(400L, Settings.getBreezeDailyCreditLimit())) return false;
+                String source = text == null ? "" : text;
+                String fingerprint = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                        .digest(source.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                java.nio.file.Path root = com.cielcompanion.util.ProjectPaths.root();
+                Path directory = root.resolve(".local/breeze-reservations");
+                Files.createDirectories(directory);
+                resultFile = Files.createTempFile(directory, "quorum-", ".json");
+                String requestId = UUID.randomUUID().toString().replace("-", "");
+                String requestDay = LocalDate.now(ZoneId.of("America/New_York")).toString();
+                process = new ProcessBuilder(com.cielcompanion.util.ProjectPaths.pythonBackgroundExecutable(),
+                        root.resolve("tools/memory-sync/breeze_quorum.py").toString(),
+                        "--request-id", requestId,
+                        "--credits", Long.toString(credits), "--characters", Integer.toString(source.codePointCount(0, source.length())),
+                        "--fingerprint", fingerprint, "--output", resultFile.toString()).directory(root.toFile())
+                        .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+                if (!process.waitFor(40, java.util.concurrent.TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    throw new IOException("quorum timeout; reservation retained");
+                }
+                if (Files.size(resultFile) > 4096) throw new IOException("oversized quorum response");
+                String output = Files.readString(resultFile, java.nio.charset.StandardCharsets.UTF_8);
+                JsonObject result = JsonParser.parseString(output).getAsJsonObject();
+                boolean confirmed = process.exitValue() == 0 && result.has("reserved")
+                        && result.get("reserved").isJsonPrimitive() && result.get("reserved").getAsBoolean()
+                        && requestId.equals(result.has("request_id") ? result.get("request_id").getAsString() : "")
+                        && requestDay.equals(result.has("day") ? result.get("day").getAsString() : "");
+                System.out.println("[Breeze TTS] Two-device reservation " + (confirmed ? "confirmed" : "declined; Azure fallback"));
+                return confirmed;
+            } catch (Exception unavailable) {
+                System.err.println("[Breeze TTS] Two-device reservation unavailable; Azure fallback (" + unavailable.getClass().getSimpleName() + ").");
+                return false;
+            } finally {
+                if (process != null && process.isAlive()) process.destroyForcibly();
+                if (resultFile != null) try { Files.deleteIfExists(resultFile); } catch (IOException ignored) { }
+            }
         }
     }
 
