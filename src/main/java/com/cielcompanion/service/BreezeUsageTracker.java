@@ -67,7 +67,10 @@ public final class BreezeUsageTracker {
                         && result.get("reserved").isJsonPrimitive() && result.get("reserved").getAsBoolean()
                         && requestId.equals(result.has("request_id") ? result.get("request_id").getAsString() : "")
                         && requestDay.equals(result.has("day") ? result.get("day").getAsString() : "");
-                System.out.println("[Breeze TTS] Two-device reservation " + (confirmed ? "confirmed" : "declined; Azure fallback"));
+                String reason = result.has("reason") && result.get("reason").isJsonPrimitive()
+                        ? result.get("reason").getAsString() : (confirmed ? "both-confirmed" : "unknown");
+                System.out.println("[Breeze TTS] Two-device reservation "
+                        + (confirmed ? "confirmed" : "declined; Azure fallback") + " (reason=" + reason + ")");
                 return confirmed;
             } catch (Exception unavailable) {
                 System.err.println("[Breeze TTS] Two-device reservation unavailable; Azure fallback (" + unavailable.getClass().getSimpleName() + ").");
