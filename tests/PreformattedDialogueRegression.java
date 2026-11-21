@@ -15,6 +15,11 @@ public final class PreformattedDialogueRegression {
         if (!reacquired.contains("リーアクワイアード")) {
             throw new AssertionError("reacquired phonokana regressed: " + reacquired);
         }
+        String boot = lines.getProperty("boot_greeting.0", "");
+        if (!boot.contains("プリペアード") || !boot.contains("ユー ライク イット")
+                || boot.contains("ジャスト ライク ユー ライク")) {
+            throw new AssertionError("boot greeting pronunciation regressed: " + boot);
+        }
         System.out.println("Preformatted dialogue pronunciation regression passed.");
     }
 }
