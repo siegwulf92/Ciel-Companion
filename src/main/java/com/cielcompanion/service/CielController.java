@@ -36,6 +36,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
@@ -62,6 +64,14 @@ public class CielController {
     private static volatile boolean loggedWaitingFor5s = false;
     private static volatile boolean loggedWaitingFor2m = false;
     private static volatile long nextWarmBootRetryAt;
+    // Warm-boot checks run from the monitoring loop.  Keep the greeting
+    // one-shot even if the loop is re-entered while TTS is still generating
+    // or while the audio backend reports a failed completion.  Without this
+    // guard every 15-second retry could enqueue the same offline message and
+    // consume another cloud TTS request.
+    private static final AtomicBoolean warmBootGreetingInFlight = new AtomicBoolean(false);
+    private static final AtomicInteger warmBootGreetingAttempts = new AtomicInteger(0);
+    private static final int MAX_WARM_BOOT_GREETING_ATTEMPTS = 2;
     private static volatile long lastAudioIdleDiagnostic;
     private static volatile String lastAudioIdleSignature = "";
     private static volatile boolean sessionWasLocked;
@@ -665,47 +675,56 @@ public class CielController {
             if (!CielState.isBootGreetingPlayed()) {
                 long warmNow = System.currentTimeMillis();
                 if (warmNow < nextWarmBootRetryAt) return;
-                nextWarmBootRetryAt = warmNow + 15_000L;
+                if (!warmBootGreetingInFlight.compareAndSet(false, true)) return;
+                int attempt = warmBootGreetingAttempts.incrementAndGet();
+                if (attempt > MAX_WARM_BOOT_GREETING_ATTEMPTS) {
+                    warmBootGreetingInFlight.set(false);
+                    CielState.setBootGreetingPlayed(true);
+                    CielState.setLoginGreetingPlayed(true);
+                    System.out.println("Ciel Debug: Warm Boot Greeting suppressed after bounded retries.");
+                    return;
+                }
+                // Give the first request time to finish before considering a
+                // single bounded retry.  This prevents overlapping TTS jobs.
+                nextWarmBootRetryAt = warmNow + 45_000L;
                 System.out.println("Ciel Debug: Executing Warm Boot Greeting (router readiness is required; retrying on failure).");
                 long offlineSeconds = CielState.getOfflineDurationSeconds();
+                java.util.function.Consumer<Boolean> warmBootCompletion = spoken -> {
+                    try {
+                        if (Boolean.TRUE.equals(spoken)) {
+                            CielState.setBootGreetingPlayed(true);
+                            CielState.setLoginGreetingPlayed(true);
+                            nextWarmBootRetryAt = 0;
+                            System.out.println("Ciel Debug: Warm Boot Greeting completed audibly.");
+                        } else if (attempt >= MAX_WARM_BOOT_GREETING_ATTEMPTS) {
+                            // A failed optional greeting must not keep replaying
+                            // or consuming TTS credits for the rest of the boot.
+                            CielState.setBootGreetingPlayed(true);
+                            CielState.setLoginGreetingPlayed(true);
+                            System.out.println("Ciel Debug: Warm Boot Greeting failed after bounded retries; suppressing further attempts.");
+                        } else {
+                            nextWarmBootRetryAt = System.currentTimeMillis() + 45_000L;
+                            System.out.println("Ciel Debug: Warm Boot Greeting was not audible; one bounded retry remains.");
+                        }
+                    } finally {
+                        warmBootGreetingInFlight.set(false);
+                    }
+                };
                 if (offlineSeconds >= 60) {
-                    long minutes = offlineSeconds / 60;
+                    // Preserve the exact elapsed duration instead of rounding
+                    // to minutes; it is both more accurate and avoids changing
+                    // the utterance merely because startup crossed a minute.
                     SpeechService.speakPreformattedWithResult(
-                            "Welcome back, Master. I was offline for " + minutes
-                                    + (minutes == 1 ? " minute." : " minutes."),
-                            "warm_boot_return", false, true, spoken -> {
-                                if (Boolean.TRUE.equals(spoken)) {
-                                    CielState.setBootGreetingPlayed(true);
-                                    CielState.setLoginGreetingPlayed(true);
-                                    nextWarmBootRetryAt = 0;
-                                    System.out.println("Ciel Debug: Warm Boot Greeting completed audibly.");
-                                } else {
-                                    System.out.println("Ciel Debug: Warm Boot Greeting was not audible; keeping startup flags clear for retry.");
-                                }
-                            });
+                            "Welcome back, Master. I was offline for " + offlineSeconds + " seconds.",
+                            "warm_boot_return", false, true, warmBootCompletion);
                 } else {
                     List<DialogueLine> warmLines = LineManager.getWarmLoginGreetingLines();
                     if (warmLines == null || warmLines.isEmpty()) {
                         SpeechService.speakPreformattedWithResult(
-                                "Welcome back, Master.", "warm_login_fallback", false, true, spoken -> {
-                                    if (Boolean.TRUE.equals(spoken)) {
-                                        CielState.setBootGreetingPlayed(true);
-                                        CielState.setLoginGreetingPlayed(true);
-                                        nextWarmBootRetryAt = 0;
-                                    }
-                                });
+                                "Welcome back, Master.", "warm_login_fallback", false, true, warmBootCompletion);
                     } else {
                         DialogueLine line = warmLines.get(random.nextInt(warmLines.size()));
-                        SpeechService.speakPreformattedWithResult(line.text(), line.key(), false, true, spoken -> {
-                            if (Boolean.TRUE.equals(spoken)) {
-                                CielState.setBootGreetingPlayed(true);
-                                CielState.setLoginGreetingPlayed(true);
-                                nextWarmBootRetryAt = 0;
-                                System.out.println("Ciel Debug: Warm Boot Greeting completed audibly.");
-                            } else {
-                                System.out.println("Ciel Debug: Warm Boot Greeting was not audible; keeping startup flags clear for retry.");
-                            }
-                        });
+                        SpeechService.speakPreformattedWithResult(line.text(), line.key(), false, true, warmBootCompletion);
                     }
                 }
             }
