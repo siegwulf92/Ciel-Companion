@@ -175,10 +175,15 @@ public class VaultService {
             
             startWatcher();
             
+            // Re-check the offline queue frequently while the device is online.
+            // The per-volume cooldown, ordered queue, and persisted checkpoints
+            // still prevent duplicate lore/API work; this only removes the old
+            // eight-hour blind spot after sleep, network recovery, or a failed
+            // model attempt.
             Executors.newSingleThreadScheduledExecutor().scheduleWithFixedDelay(() -> {
                 checkPipelineRecovery();
                 processExistingBacklog();
-            }, 60, 8 * 60 * 60, TimeUnit.SECONDS);
+            }, 60, 30 * 60, TimeUnit.SECONDS);
             
         } catch (IOException e) {
             System.err.println("Ciel Error: Failed to initialize Vault directories.");

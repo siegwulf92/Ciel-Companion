@@ -11,12 +11,16 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class FinanceService {
     private static ScheduledExecutorService scheduler;
@@ -316,6 +320,11 @@ public class FinanceService {
     private static boolean isValidatedHoldingsFallback(String result) {
         if (result == null) return false;
         String normalized = result.trim().toLowerCase(java.util.Locale.ROOT);
+        // The structured Python fallback retains the same evidence marker
+        // after its opening heading. Keep strategic retries eligible for it.
+        if (normalized.startsWith("### i. snapshot and concentration\n")) {
+            normalized = normalized.substring(normalized.indexOf('\n') + 1).stripLeading();
+        }
         boolean marker = normalized.startsWith("finance status: validated holdings fallback")
                 || normalized.startsWith("master, the recommendation models did not return prose this cycle");
         return marker
@@ -414,6 +423,131 @@ public class FinanceService {
         return close;
     }
 
+    /**
+     * Evidence generated from the files used for this run, not from model
+     * prose. This prevents an older "tracked value" sentence from being
+     * mistaken for the current portfolio after a refresh or model retry.
+     */
+    private static String currentPortfolioEvidence(Path financeDir) {
+        Path portfolio = financeDir.resolve("portfolio.csv");
+        if (!Files.exists(portfolio)) return "## Authoritative portfolio snapshot\n\n- `portfolio.csv` was not readable for this run.";
+        try {
+            var lines = Files.readAllLines(portfolio);
+            if (lines.size() < 2) return "## Authoritative portfolio snapshot\n\n- `portfolio.csv` contains no holding rows.";
+            String[] headers = lines.get(0).split(",", -1);
+            int accountIndex = -1, valueIndex = -1, quoteIndex = -1;
+            for (int i = 0; i < headers.length; i++) {
+                String header = headers[i].trim();
+                if ("Account".equalsIgnoreCase(header)) accountIndex = i;
+                if ("Total_Value".equalsIgnoreCase(header)) valueIndex = i;
+                if ("Price_As_Of".equalsIgnoreCase(header)) quoteIndex = i;
+            }
+            if (valueIndex < 0) return "## Authoritative portfolio snapshot\n\n- `Total_Value` was not present in the current portfolio file.";
+            double total = 0.0;
+            int rows = 0;
+            Map<String, Double> accounts = new LinkedHashMap<>();
+            String minQuote = null, maxQuote = null;
+            for (String line : lines.subList(1, lines.size())) {
+                if (line.isBlank()) continue;
+                String[] fields = line.split(",", -1);
+                if (fields.length <= valueIndex) continue;
+                try {
+                    double value = Double.parseDouble(fields[valueIndex].trim());
+                    total += value;
+                    rows++;
+                    if (accountIndex >= 0 && fields.length > accountIndex) {
+                        String account = fields[accountIndex].trim();
+                        if (account.isEmpty()) account = "unknown";
+                        accounts.merge(account, value, Double::sum);
+                    }
+                    if (quoteIndex >= 0 && fields.length > quoteIndex) {
+                        String quote = fields[quoteIndex].trim();
+                        if (quote.length() >= 10) {
+                            quote = quote.substring(0, 10);
+                            minQuote = minQuote == null || quote.compareTo(minQuote) < 0 ? quote : minQuote;
+                            maxQuote = maxQuote == null || quote.compareTo(maxQuote) > 0 ? quote : maxQuote;
+                        }
+                    }
+                } catch (NumberFormatException ignored) { }
+            }
+            StringBuilder out = new StringBuilder("## Authoritative portfolio snapshot\n\n")
+                    .append(String.format(java.util.Locale.US,
+                            "- Current normalized `portfolio.csv`: **%d holding rows; $%,.2f total tracked value**.\n",
+                            rows, total))
+                    .append("- Source file last modified: **")
+                    .append(Files.getLastModifiedTime(portfolio).toString())
+                    .append("**.\n");
+            if (minQuote != null) out.append("- Quote-date range present in the file: **")
+                    .append(minQuote).append(" through ").append(maxQuote).append("**.\n");
+            if (!accounts.isEmpty()) {
+                out.append("- Account totals: ");
+                boolean first = true;
+                for (Map.Entry<String, Double> entry : accounts.entrySet()) {
+                    if (!first) out.append(", ");
+                    out.append(String.format(java.util.Locale.US, "%s $%,.2f", entry.getKey(), entry.getValue()));
+                    first = false;
+                }
+                out.append(".\n");
+            }
+            return out.toString().trim();
+        } catch (Exception error) {
+            return "## Authoritative portfolio snapshot\n\n- Current snapshot could not be read ("
+                    + error.getClass().getSimpleName() + "); prior report preserved.";
+        }
+    }
+
+    /**
+     * Keep the deterministic collectible context in every accepted briefing.
+     * It is deliberately sourced from the local, structured MTG artifacts;
+     * model prose can omit or hallucinate this section and must not be the
+     * report's only source of truth.
+     */
+    private static String currentMtgEvidence(Path financeDir) {
+        Path reports = financeDir.resolve(Paths.get("mtg", "reports"));
+        Path review = reports.resolve("Latest_Collection_Review.md");
+        Path monitor = reports.resolve("Latest_Price_Monitor.md");
+        try {
+            if (!Files.isRegularFile(review)) {
+                return "## MTG collection and alternative-asset context\n\nNo normalized MTG collection review is available on this device; no value was inferred.";
+            }
+            String reviewText = Files.readString(review);
+            String monitorText = Files.isRegularFile(monitor) ? Files.readString(monitor) : "";
+            // Bound the appendix so a malformed local note cannot inflate a
+            // finance response or consume model context.
+            if (reviewText.length() > 12000) reviewText = reviewText.substring(0, 12000);
+            if (monitorText.length() > 2500) monitorText = monitorText.substring(0, 2500);
+            StringBuilder out = new StringBuilder("## MTG collection and alternative-asset context\n\n")
+                    .append("Collectible estimates are excluded from securities and FIRE totals.\n\n")
+                    .append(reviewText.trim());
+            if (!monitorText.isBlank()) {
+                out.append("\n\n### Price-source status\n\n").append(monitorText.trim());
+            }
+            out.append("\n\nNo automatic listing or selling is performed; verify condition, fees, liquidity, reprint risk, and cost basis first.");
+            return out.toString();
+        } catch (Exception error) {
+            return "## MTG collection and alternative-asset context\n\nCollection context could not be read ("
+                    + error.getClass().getSimpleName() + "); prior report data was preserved.";
+        }
+    }
+
+    /** Avoid replacing a newer root briefing with an older alternate-path run. */
+    private static boolean rootBriefingHasNewerPortfolioSource(Path briefing, Path portfolio) {
+        if (!Files.isRegularFile(briefing) || !Files.isRegularFile(portfolio)) return false;
+        try {
+            String current = Files.readString(briefing);
+            Matcher matcher = Pattern.compile("Source file last modified: \\*\\*(.*?)\\*\\*",
+                    Pattern.CASE_INSENSITIVE | Pattern.DOTALL).matcher(current);
+            if (!matcher.find()) return false;
+            Instant existing = Instant.parse(matcher.group(1).trim());
+            Instant source = Files.getLastModifiedTime(portfolio).toInstant();
+            return !existing.isBefore(source);
+        } catch (Exception ignored) {
+            // An unparseable/legacy report is not trusted as newer evidence;
+            // the next complete run is allowed to replace it.
+            return false;
+        }
+    }
+
     private static synchronized boolean writeFiles() {
         try {
             ZoneId estZone = ZoneId.of("America/New_York");
@@ -433,25 +567,34 @@ public class FinanceService {
             if (Files.exists(fireFile)) {
                 fireProgress = "\n\n## Deterministic FIRE Scenario Progress\n\n" + Files.readString(fireFile);
             }
+            String mtgEvidence = currentMtgEvidence(financeDir);
+            boolean recommendationAlreadyContainsMtg = latestRecommendations.toLowerCase(java.util.Locale.ROOT)
+                    .contains("mtg collection and alternative-asset context");
 
             // Never insert the raw CSV math here!
             boolean closed = FinanceSchedulePolicy.marketClosed(now.toLocalDate());
             String content = "# Ciel's " + (closed ? "Closed-Market Portfolio Plan" : "Daily Financial Briefing") + " (" + dateStr + ")\n\n" +
                              "## Portfolio Data Status\n" +
-                             latestPortfolioDataStatus + "\n\n" +
+                             latestPortfolioDataStatus + "\n\n" + currentPortfolioEvidence(financeDir) + "\n\n" +
                              "## Ciel's Portfolio Analysis and Recommendations\n" +
                              (closed ? "Planning for the next market session (verify the exchange calendar before trading).\n\n" : "Market-day review.\n\n") + latestRecommendations + "\n\n" +
                              "## Macro Market Scan\n" +
-                             latestMarketScan + fireProgress;
+                             latestMarketScan + (recommendationAlreadyContainsMtg ? "" : "\n\n" + mtgEvidence) + fireProgress;
 
             String filename = "Briefing_" + now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy_MM_dd")) + ".md";
             Path dailyReport = reportsDir.resolve(filename);
 
             writeAtomically(dailyReport, content);
 
-            // Copy to root
+            // Copy to root only when this run is at least as fresh as the
+            // source snapshot already represented there. Dated reports remain
+            // immutable evidence even when an older alternate run arrives.
             Path briefingPath = financeDir.resolve("Latest_Financial_Briefing.md");
-            writeAtomically(briefingPath, content);
+            if (rootBriefingHasNewerPortfolioSource(briefingPath, financeDir.resolve("portfolio.csv"))) {
+                System.out.println("[Raphael — Financial Analysis] Root briefing is newer than this source snapshot; preserving it.");
+            } else {
+                writeAtomically(briefingPath, content);
+            }
             System.out.println("[Raphael â€” Financial Analysis] Markdown written: daily=" + dailyReport.toAbsolutePath()
                     + " (" + Files.size(dailyReport) + " bytes), latest=" + briefingPath.toAbsolutePath()
                     + " (" + Files.size(briefingPath) + " bytes).");
