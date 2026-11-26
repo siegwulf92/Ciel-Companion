@@ -122,6 +122,13 @@ public class Settings {
     private static String LLM_ONLINE_FALLBACK_KEY;
     private static boolean AI_OBSERVER_ENABLED;
 
+    // Product capability policy is non-secret and may be overridden per
+    // installation. Owner defaults preserve the full local capability set.
+    private static String PRODUCT_TIER;
+    private static String PRODUCT_CAPABILITIES;
+    private static String PRODUCT_DENIED_CAPABILITIES;
+    private static String PRODUCT_POLICY_VERSION;
+
     public static void initialize() {
         synchronized (SETTINGS_LOCK) {
             loadSettings();
@@ -294,6 +301,11 @@ public class Settings {
             LLM_ONLINE_FALLBACK_KEY = props.getProperty("ciel.ai.fallbackKey", "");
             AI_OBSERVER_ENABLED = Boolean.parseBoolean(props.getProperty("ciel.ai.observerEnabled", "true"));
 
+            PRODUCT_TIER = props.getProperty("ciel.product.tier", "owner").trim().toLowerCase(Locale.ROOT);
+            PRODUCT_CAPABILITIES = props.getProperty("ciel.product.capabilities", "*").trim();
+            PRODUCT_DENIED_CAPABILITIES = props.getProperty("ciel.product.deniedCapabilities", "").trim();
+            PRODUCT_POLICY_VERSION = props.getProperty("ciel.product.policyVersion", "1").trim();
+
             System.out.println("Ciel Debug: Settings loaded successfully.");
 
             profileLastModified = lastModified(resolveProfilePath());
@@ -428,6 +440,10 @@ public class Settings {
     public static String getLlmOnlineFallbackUrl() { return LLM_ONLINE_FALLBACK_URL; }
     public static String getLlmOnlineFallbackKey() { return LLM_ONLINE_FALLBACK_KEY; }
     public static boolean isAiObserverEnabled() { return AI_OBSERVER_ENABLED; }
+    public static String getProductTier() { return PRODUCT_TIER; }
+    public static String getProductCapabilities() { return PRODUCT_CAPABILITIES; }
+    public static String getProductDeniedCapabilities() { return PRODUCT_DENIED_CAPABILITIES; }
+    public static String getProductPolicyVersion() { return PRODUCT_POLICY_VERSION; }
 
     private static String firstNonBlank(String preferred, String fallback) {
         return preferred != null && !preferred.isBlank() ? preferred : fallback;
