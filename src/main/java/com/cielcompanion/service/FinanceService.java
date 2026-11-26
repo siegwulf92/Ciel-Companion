@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.UUID;
 
 public class FinanceService {
     private static ScheduledExecutorService scheduler;
@@ -49,6 +50,10 @@ public class FinanceService {
         return state;
     }
     private static synchronized void recordSchedule(FinanceSchedulePolicy.Job job, Boolean succeeded) {
+        recordSchedule(job, succeeded, null);
+    }
+    private static synchronized void recordSchedule(FinanceSchedulePolicy.Job job, Boolean succeeded,
+                                                    LocalDate reportDate) {
         var state = scheduleState();
         String key = job.name() + ".";
         long now = System.currentTimeMillis();
@@ -56,6 +61,7 @@ public class FinanceService {
         else if (succeeded) {
             state.setProperty(key + "success", Long.toString(now));
             state.setProperty(key + "failures", "0");
+            if (reportDate != null) state.setProperty(key + "reportDate", reportDate.toString());
         } else {
             int failures = Integer.parseInt(state.getProperty(key + "failures", "0")) + 1;
             state.setProperty(key + "failures", Integer.toString(failures));
@@ -136,14 +142,19 @@ public class FinanceService {
     }
 
     private static void executeSilentMarketCheck(FinanceSchedulePolicy.Job job) {
+        ZoneId estZone = ZoneId.of("America/New_York");
+        ZonedDateTime scheduledAt = ZonedDateTime.now(estZone);
+        var priorState = scheduleState();
+        long priorSuccess = Long.parseLong(priorState.getProperty(job.name() + ".success", "0"));
+        LocalDate reportDate = FinanceSchedulePolicy.reportDate(scheduledAt, job, priorSuccess);
         String routerStatus = financeRouterStatus();
         if (!"ready".equals(routerStatus)) {
-            recordSchedule(job, false);
+            recordSchedule(job, false, reportDate);
             System.out.println("[Raphael â€” Financial Analysis] Deferred: local AI router " + routerStatus + "; retry state recorded.");
             return;
         }
         if (CodexAgentService.isMaintenanceActive()) {
-            recordSchedule(job, null);
+            recordSchedule(job, null, reportDate);
             System.out.println("[Raphael â€” Financial Analysis] Deferred while the daily health review is active.");
             return;
         }
@@ -154,11 +165,11 @@ public class FinanceService {
         // Close the race where daily maintenance claims its window after the first check.
         if (CodexAgentService.isMaintenanceActive()) {
             analysisRunning.set(false);
-            recordSchedule(job, null);
+            recordSchedule(job, null, reportDate);
             System.out.println("[Raphael â€” Financial Analysis] Deferred while the daily health review is active.");
             return;
         }
-        recordSchedule(job, null);
+        recordSchedule(job, null, reportDate);
         localAttemptTimeMs = System.currentTimeMillis();
         saveTimestamp(ATTEMPT_FILE, localAttemptTimeMs);
 
@@ -205,7 +216,7 @@ public class FinanceService {
                             && !isFinanceFailure(marketTask.getNow(null))
                             && !isFinanceFailure(portfolioTask.getNow(null))
                             && !isFinanceFailure(recommendationsTask.getNow(null));
-                    boolean reportWritten = runSucceeded && writeFiles();
+                    boolean reportWritten = runSucceeded && writeFiles(reportDate);
                     boolean strategicFallback = reportWritten
                             && needsStrategicRetry(recommendationsTask.getNow(null));
                     // Keep a dated, evidence-bounded report available, but do
@@ -213,7 +224,7 @@ public class FinanceService {
                     // output failed validation.  This preserves today's data
                     // and lets the exponential retry schedule try again later
                     // (including after a holdings import or market close).
-                    recordSchedule(job, reportWritten && !strategicFallback);
+                    recordSchedule(job, reportWritten && !strategicFallback, reportDate);
                     if (reportWritten) {
                         CielController.noteMajorBackgroundActivity("I completed the "
                                 + (job == FinanceSchedulePolicy.Job.CLOSED_MARKET_PLAN ? "closed-market portfolio plan" : "daily portfolio briefing"));
@@ -380,19 +391,25 @@ public class FinanceService {
 
     private static CompletableFuture<String> runFinanceTask(String label, String prompt, String context) {
         return CompletableFuture.supplyAsync(() -> {
-            System.out.println("[Raphael â€” Financial Analysis] Starting stage: " + label);
+            String taskId = "finance-" + UUID.randomUUID();
+            System.out.println("[Raphael â€” Financial Analysis] Starting stage: " + label + " task_id=" + taskId);
             try {
-                String result = AIEngine.generateSilentLogic(prompt, context, "Financial Report Generation").get(10, TimeUnit.MINUTES);
+                // The router owns the five-attempt provider failover and has a
+                // 15-minute evidence budget. Java must wait longer than that
+                // so a slow large-context report is never mislabeled as empty.
+                String result = AIEngine.generateSilentLogic(
+                        prompt, context, "Financial Report Generation", taskId)
+                        .get(20, TimeUnit.MINUTES);
                 if (result == null || result.isBlank()) {
-                    System.err.println("[Raphael â€” Financial Analysis] Stage '" + label + "' returned an empty result.");
+                    System.err.println("[Raphael â€” Financial Analysis] Stage '" + label + "' failed task_id=" + taskId + " reason=empty-result.");
                     return label + " returned no result.";
                 }
                 String resultKind = isValidatedHoldingsFallback(result) ? "; validated holdings fallback" : "";
-                System.out.println("[Raphael â€” Financial Analysis] Stage '" + label + "' completed (" + result.length() + " chars" + resultKind + ").");
+                System.out.println("[Raphael â€” Financial Analysis] Stage '" + label + "' completed task_id=" + taskId + " (" + result.length() + " chars" + resultKind + ").");
                 return result;
             } catch (Exception e) {
                 String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                System.err.println("[Raphael â€” Financial Analysis] Stage '" + label + "' failed: " + message);
+                System.err.println("[Raphael â€” Financial Analysis] Stage '" + label + "' failed task_id=" + taskId + ": " + message);
                 return label + " failed: " + message;
             }
         }, financeExecutor);
@@ -406,18 +423,20 @@ public class FinanceService {
         int hour = now.getHour();
         int minute = now.getMinute();
 
-        if (hour < 9 || (hour == 9 && minute < 30)) return false;
-        return hour < 16;
+        if (hour < FinanceSchedulePolicy.MARKET_OPEN.getHour()
+                || (hour == FinanceSchedulePolicy.MARKET_OPEN.getHour()
+                && minute < FinanceSchedulePolicy.MARKET_OPEN.getMinute())) return false;
+        return now.toLocalTime().isBefore(FinanceSchedulePolicy.FINAL_REPORT_TIME);
     }
 
     private static ZonedDateTime getMostRecentMarketClose(ZonedDateTime now) {
-        ZonedDateTime close = now.withHour(16).withMinute(0).withSecond(0).withNano(0);
+        ZonedDateTime close = now.with(FinanceSchedulePolicy.FINAL_REPORT_TIME).withSecond(0).withNano(0);
         DayOfWeek day = now.getDayOfWeek();
 
         if (day == DayOfWeek.SATURDAY) return close.minusDays(1);
         if (day == DayOfWeek.SUNDAY) return close.minusDays(2);
 
-        if (now.getHour() < 16) {
+        if (now.toLocalTime().isBefore(FinanceSchedulePolicy.FINAL_REPORT_TIME)) {
             return (day == DayOfWeek.MONDAY) ? close.minusDays(3) : close.minusDays(1);
         }
         return close;
@@ -548,20 +567,20 @@ public class FinanceService {
         }
     }
 
-    private static synchronized boolean writeFiles() {
+    private static synchronized boolean writeFiles(LocalDate reportDate) {
         try {
             ZoneId estZone = ZoneId.of("America/New_York");
-            ZonedDateTime now = ZonedDateTime.now(estZone);
-            String yearStr = String.format("%04d", now.getYear());
-            String monthStr = String.format("%02d", now.getMonthValue());
-            String dayStr = String.format("%02d", now.getDayOfMonth());
+            ZonedDateTime generatedAt = ZonedDateTime.now(estZone);
+            String yearStr = String.format("%04d", reportDate.getYear());
+            String monthStr = String.format("%02d", reportDate.getMonthValue());
+            String dayStr = String.format("%02d", reportDate.getDayOfMonth());
 
             // Build dynamic folders
             Path financeDir = Paths.get(System.getProperty("user.dir"), "Ciel", "finance").toAbsolutePath().normalize();
             Path reportsDir = financeDir.resolve(Paths.get("reports", yearStr, monthStr, dayStr));
             Files.createDirectories(reportsDir);
 
-            String dateStr = now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+            String dateStr = generatedAt.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
             String fireProgress = "";
             Path fireFile = financeDir.resolve("Latest_FIRE_Progress.md");
             if (Files.exists(fireFile)) {
@@ -572,7 +591,7 @@ public class FinanceService {
                     .contains("mtg collection and alternative-asset context");
 
             // Never insert the raw CSV math here!
-            boolean closed = FinanceSchedulePolicy.marketClosed(now.toLocalDate());
+            boolean closed = FinanceSchedulePolicy.marketClosed(reportDate);
             String content = "# Ciel's " + (closed ? "Closed-Market Portfolio Plan" : "Daily Financial Briefing") + " (" + dateStr + ")\n\n" +
                              "## Portfolio Data Status\n" +
                              latestPortfolioDataStatus + "\n\n" + currentPortfolioEvidence(financeDir) + "\n\n" +
@@ -581,7 +600,7 @@ public class FinanceService {
                              "## Macro Market Scan\n" +
                              latestMarketScan + (recommendationAlreadyContainsMtg ? "" : "\n\n" + mtgEvidence) + fireProgress;
 
-            String filename = "Briefing_" + now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy_MM_dd")) + ".md";
+            String filename = "Briefing_" + reportDate.format(java.time.format.DateTimeFormatter.ofPattern("yyyy_MM_dd")) + ".md";
             Path dailyReport = reportsDir.resolve(filename);
 
             writeAtomically(dailyReport, content);

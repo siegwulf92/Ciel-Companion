@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.UUID;
 
 public class AIEngine {
 
@@ -128,13 +129,12 @@ public class AIEngine {
         System.out.println("[Raphael — Japanese Speech Formatting] Models load on demand; startup inference warm-up skipped.");
     }
 
-    // Python owns the three-model formatter/manager repair chain. Retrying
-    // that entire endpoint in Java multiplied one failure into nine attempts.
-    private static final int PHONOKANA_MAX_ATTEMPTS = 1;
-    private static final long PHONOKANA_ATTEMPT_TIMEOUT_SECONDS = 300L;
-    // This covers three bounded router calls plus short retry backoff.  It is
-    // deliberately larger than a single model turn, while still preventing a
-    // stuck formatter from holding the speech worker forever.
+    // The router has its own provider failover, but Java must also tolerate a
+    // startup race or a transient HTTP failure. Five bounded endpoint attempts
+    // are allowed; the total speech budget remains finite and independent of
+    // the much longer finance/report budget.
+    private static final int PHONOKANA_MAX_ATTEMPTS = 5;
+    private static final long PHONOKANA_ATTEMPT_TIMEOUT_SECONDS = 60L;
     private static final long PHONOKANA_TOTAL_TIMEOUT_SECONDS = 305L;
 
     public static CompletableFuture<String> transliterateAsync(String englishText) {
@@ -150,7 +150,10 @@ public class AIEngine {
                 lastFailure = result.failure();
                 if (attempt < PHONOKANA_MAX_ATTEMPTS) {
                     try {
-                        Thread.sleep(350L * attempt);
+                        // Router startup/model discovery can take several
+                        // seconds. Linear backoff prevents all five attempts
+                        // from racing the same unavailable endpoint.
+                        Thread.sleep(4000L * attempt);
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
                         throw new IllegalStateException("Phonokana formatting interrupted", interrupted);
@@ -269,7 +272,15 @@ public class AIEngine {
     public static CompletableFuture<String> generateSilentLogic(String userMessage, String systemContext, String taskIntent) {
         double temp = systemContext.toLowerCase().contains("worker") ||
                       systemContext.toLowerCase().contains("lore") ? 0.3 : 0.1;
-        return generateSilentLogicWithModel(userMessage, systemContext, null, temp, taskIntent);
+        return generateSilentLogicWithModel(userMessage, systemContext, null, temp, taskIntent, null);
+    }
+
+    /** Submit a request with a caller-owned id so Java/router logs correlate. */
+    public static CompletableFuture<String> generateSilentLogic(
+            String userMessage, String systemContext, String taskIntent, String taskId) {
+        double temp = systemContext.toLowerCase().contains("worker") ||
+                      systemContext.toLowerCase().contains("lore") ? 0.3 : 0.1;
+        return generateSilentLogicWithModel(userMessage, systemContext, null, temp, taskIntent, taskId);
     }
 
     public static CompletableFuture<String> generateSilentLogicWithModel(
@@ -278,6 +289,16 @@ public class AIEngine {
             String forcedModel,
             double temperature,
             String taskIntent) {
+        return generateSilentLogicWithModel(userMessage, systemContext, forcedModel, temperature, taskIntent, null);
+    }
+
+    public static CompletableFuture<String> generateSilentLogicWithModel(
+            String userMessage,
+            String systemContext,
+            String forcedModel,
+            double temperature,
+            String taskIntent,
+            String taskId) {
 
         activeSwarmTasks.incrementAndGet();
         String url = ModelManager.getUrlForTier(ModelManager.ModelTier.LOGIC);
@@ -292,6 +313,13 @@ public class AIEngine {
 
         payload.addProperty("task_intent", taskIntent);
         payload.addProperty("temperature", temperature);
+        payload.addProperty("task_id", (taskId == null || taskId.isBlank()) ? UUID.randomUUID().toString() : taskId);
+        // The router owns the five-attempt failover budget. This is a generous
+        // upper bound for queueing/large evidence; Java's future wait below is
+        // deliberately longer than the router's 15-minute budget.
+        if (taskIntent != null && taskIntent.toLowerCase(java.util.Locale.ROOT).contains("financ")) {
+            payload.addProperty("timeout", 900.0);
+        }
 
         ensureLiteLlmProvider(payload);
 
@@ -306,15 +334,16 @@ public class AIEngine {
 
         return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
                 .thenApply(response -> {
-                    if (response.statusCode() == 200) {
-                        String rawContent = ModelManager.extractMessageContent(response.body());
-                        if (rawContent != null) {
-                            String cleanContent = THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim();
-                            // FIX: If the regex deletes the entire response (because the LLM wrapped the whole thing in <think>), return raw
-                            return cleanContent.isEmpty() ? rawContent.trim() : cleanContent;
-                        }
+                    if (response.statusCode() != 200) {
+                        throw new IllegalStateException("router-http-" + response.statusCode());
                     }
-                    return null;
+                    String rawContent = ModelManager.extractMessageContent(response.body());
+                    if (rawContent != null) {
+                        String cleanContent = THINK_TAG_PATTERN.matcher(rawContent).replaceAll("").trim();
+                        // FIX: If the regex deletes the entire response (because the LLM wrapped the whole thing in <think>), return raw
+                        return cleanContent.isEmpty() ? rawContent.trim() : cleanContent;
+                    }
+                    throw new IllegalStateException("router-empty-response");
                 })
                 .whenComplete((res, ex) -> activeSwarmTasks.decrementAndGet());
     }
