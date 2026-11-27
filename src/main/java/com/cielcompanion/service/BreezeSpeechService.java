@@ -41,7 +41,8 @@ public final class BreezeSpeechService {
     private static final Path CACHE_ROOT = Path.of("voice_cache");
     // Bump this whenever speech normalization or delivery semantics change so
     // an older malformed WAV cannot silently win over the corrected source.
-    private static final String CACHE_PROFILE_VERSION = "breeze-cache-v2-phonetic";
+    // Keep old Breeze audio from bypassing the corrected phonetic audit.
+    private static final String CACHE_PROFILE_VERSION = "breeze-cache-v3-phonetic";
 
     private BreezeSpeechService() {}
 

@@ -533,7 +533,7 @@ public class SpeechService {
                     // Keep dynamic keys uncached, and version reusable clips
                     // generated before the manager-reviewed phonetics path.
                     String cacheKey = requiresPhonokana && !AzureSpeechService.isDynamicKey(speechKeyBase)
-                            ? "phonokana-v7-reviewed:" + speechKeyBase : speechKeyBase;
+                            ? "phonokana-v8-reviewed:" + speechKeyBase : speechKeyBase;
                     String speechKey = com.cielcompanion.util.SpeechText.cacheKey(cacheKey, finalCleanText, langCode);
                     boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, finalStyle, langCode);
 
@@ -715,7 +715,7 @@ public class SpeechService {
                                 && langCode.equals("ja-JP")
                                 && Pattern.compile("[a-zA-Z]").matcher(textToSpeak).find();
                         String cacheKey = requiresPhonokana && !AzureSpeechService.isDynamicKey(lineKey)
-                                ? "phonokana-v7-reviewed:" + lineKey : lineKey;
+                                ? "phonokana-v8-reviewed:" + lineKey : lineKey;
                         String speechKey = com.cielcompanion.util.SpeechText.cacheKey(cacheKey, textToSpeak, langCode);
                         boolean isAlreadyCached = AzureSpeechService.isCached(speechKey, style, langCode);
 
