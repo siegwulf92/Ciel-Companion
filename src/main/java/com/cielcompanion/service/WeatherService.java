@@ -114,7 +114,9 @@ public class WeatherService {
     }
 
     private static String getWeatherData(boolean isForecast) {
-        String apiKey = weatherProps.getProperty("weather.apiKey");
+        // Keep credentials out of the packaged resource. Settings resolves the
+        // ACL-protected external secret or WEATHER_API_KEY environment variable.
+        String apiKey = Settings.getWeatherApiKey();
         if (apiKey == null || apiKey.isBlank() || apiKey.equalsIgnoreCase("YOUR_API_KEY_HERE")) {
             logWeatherFailure("API configuration", null);
             return "Weather API key not configured.";
@@ -138,7 +140,7 @@ public class WeatherService {
 
     private static String fetchAndCacheNewData(String apiKey, boolean isForecast) {
         String location = String.format("%f,%f", LocationService.getLatitude(), LocationService.getLongitude());
-        String urlString = String.format("http://api.weatherapi.com/v1/forecast.json?key=%s&q=%s&days=3&aqi=no&alerts=yes", apiKey, location);
+        String urlString = String.format("https://api.weatherapi.com/v1/forecast.json?key=%s&q=%s&days=3&aqi=no&alerts=yes", apiKey, location);
 
         try {
             URL url = new URL(urlString);

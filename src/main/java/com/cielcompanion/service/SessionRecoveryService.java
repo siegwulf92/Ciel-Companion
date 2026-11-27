@@ -80,12 +80,14 @@ public final class SessionRecoveryService {
                     && (previousIntent == null || previousIntent.isBlank())
                     ? "initial_startup"
                     : classifyTermination(previousTerminal, previousIntent, systemEvents);
+            // Any explicit planned classification is a normal lifecycle event,
+            // even when Windows/task termination prevents the final clean marker
+            // from being written. Only an unplanned, evidence-free stop is an
+            // interruption that should create a recovery incident.
+            boolean planned = classification.toLowerCase(Locale.ROOT).startsWith("planned_")
+                    || "clean_shutdown".equalsIgnoreCase(classification);
             boolean interrupted = previousId != null && !previousId.isBlank()
-                    && !"clean_shutdown".equalsIgnoreCase(previousTerminal)
-                    && !"planned_windows_shutdown".equalsIgnoreCase(classification);
-            boolean planned = "planned_windows_shutdown".equalsIgnoreCase(classification)
-                    || previousIntent.toLowerCase(Locale.ROOT).startsWith("planned_")
-                    || previousIntent.toLowerCase(Locale.ROOT).startsWith("ciel_");
+                    && !planned;
 
             sessionId = UUID.randomUUID().toString();
             JsonObject current = new JsonObject();
@@ -102,7 +104,7 @@ public final class SessionRecoveryService {
             current.addProperty("last_health_report_at", text(previous, "last_health_report_at"));
 
             String incidentId = previousId + ":" + classification;
-            boolean newIncident = interrupted || planned;
+            boolean newIncident = interrupted;
             boolean dailyDue = secondsSince(text(previous, "last_health_report_at")) >= DAILY_REPORT_SECONDS;
             boolean alreadyReported = incidentId.equals(text(previous, "last_reported_incident_id"));
             if ((newIncident && !alreadyReported) || dailyDue) {

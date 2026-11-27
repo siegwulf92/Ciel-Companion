@@ -238,6 +238,18 @@ public class CielController {
             // Activity transitions must be processed even while speech is in progress.
             // In particular, returning from idle cancels the report before its next line.
             if (currentTime < memory.getSpeechEndTime()) return;
+
+            // A media-active login may intentionally skip the two-minute
+            // greeting. Do not let that also swallow a holiday notice: deliver
+            // it at the next quiet, active tick, once per holiday/date.
+            if (newPhase == 0 && oldPhase == 0 && !isMedia && !isGaming
+                    && !metrics.isStreaming() && !metrics.isHardMuted()
+                    && !CielState.isManuallyMuted() && !SpeechService.isActivelySpeaking()) {
+                HolidayService.claimHolidayGreeting().ifPresent(greeting -> {
+                    System.out.println("Ciel Debug: Delivering pending holiday notice after a quiet activity window.");
+                    SpeechService.speakPreformatted(greeting, "holiday_notice", false, false);
+                });
+            }
             handleSystemAlerts(metrics);
 
             // --- ALWAYS ALLOW MEDIA COMMENTARY IF NOT HARD MUTED ---
@@ -763,7 +775,7 @@ public class CielController {
                     System.out.println("Ciel Debug: 2m Login Greeting Timer HIT. Sending to SpeechService.");
                     speakRandomLine(LineManager.getLoginGreetingLines(), null, 1, false, false);
                     
-                    HolidayService.getHolidayGreeting().ifPresent(greeting -> {
+                    HolidayService.claimHolidayGreeting().ifPresent(greeting -> {
                         SpeechService.speakPreformatted(greeting, null, false, false);
                     });
                     

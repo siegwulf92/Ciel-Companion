@@ -9,42 +9,57 @@ import java.util.Optional;
 
 public class HolidayService {
 
+    private static final Object GREETING_LOCK = new Object();
+    private static String claimedGreetingKey = "";
+
     /**
      * Checks for holidays today or tomorrow and returns a conversational warning for Ciel to speak.
      */
     public static Optional<String> getHolidayGreeting() {
-        // Holiday wording must follow the user's local calendar rather than the
-        // JVM/default timezone (which can still be UTC on a newly provisioned PC).
+        if (!Settings.areHolidayNotificationsEnabled()) return Optional.empty();
         LocalDate today = LocalDate.now(ZoneId.of("America/New_York"));
         LocalDate tomorrow = today.plusDays(1);
-        
-        String todayHoliday = checkDate(today);
-        if (todayHoliday != null) {
-            if (todayHoliday.equals("Master Taylor's Birthday")) {
-                return Optional.of("[Happy] マスター、 ハッピー バースデー。 アイ ウィッシュ ユー ナッシング バット サクセス イン ザ カミング イヤー。");
-            }
-            return Optional.of("[Observing] " + holidayMessage(todayHoliday, true));
+
+        LocalDate noticeDate = null;
+        String holiday = null;
+        boolean todayNotice = false;
+        if (Settings.isHolidayNotifyTodayEnabled()) {
+            holiday = checkDate(today);
+            if (holiday != null) { noticeDate = today; todayNotice = true; }
         }
-        
-        String tomorrowHoliday = checkDate(tomorrow);
-        if (tomorrowHoliday != null) {
-            return Optional.of("[Observing] " + holidayMessage(tomorrowHoliday, false));
+        if (holiday == null && Settings.isHolidayNotifyTomorrowEnabled()) {
+            holiday = checkDate(tomorrow);
+            if (holiday != null) noticeDate = tomorrow;
         }
-        
-        return Optional.empty();
+        if (holiday == null || noticeDate == null) return Optional.empty();
+
+        String claimKey = noticeDate + ":" + holiday;
+        synchronized (GREETING_LOCK) {
+            if (claimKey.equals(claimedGreetingKey)) return Optional.empty();
+            claimedGreetingKey = claimKey;
+        }
+        return Optional.of("[Observing] " + holidayMessage(holiday, todayNotice));
     }
-    
+
+    /** One-shot alias used by newer callers during a safe speech window. */
+    public static Optional<String> claimHolidayGreeting() {
+        return getHolidayGreeting();
+    }
+
     /**
      * Appends to the daily idle report or explicit command report.
      */
     public static Optional<String> getDailyReportAddition() {
+        if (!Settings.areHolidayNotificationsEnabled() || !Settings.isHolidayIncludedInIdleReport()) {
+            return Optional.empty();
+        }
         LocalDate today = LocalDate.now(ZoneId.of("America/New_York"));
         LocalDate tomorrow = today.plusDays(1);
         String todayH = checkDate(today);
         String tomH = checkDate(tomorrow);
         
-        if (todayH != null) return Optional.of("Today is " + todayH + " (" + formatDate(today) + ").");
-        if (tomH != null) return Optional.of("Tomorrow will be " + tomH + " (" + formatDate(tomorrow) + ").");
+        if (todayH != null && Settings.isHolidayNotifyTodayEnabled()) return Optional.of("Today is " + todayH + " (" + formatDate(today) + ").");
+        if (tomH != null && Settings.isHolidayNotifyTomorrowEnabled()) return Optional.of("Tomorrow will be " + tomH + " (" + formatDate(tomorrow) + ").");
         return Optional.empty();
     }
 
@@ -94,6 +109,9 @@ public class HolidayService {
             case "Thanksgiving" -> today
                     ? "It is Thanksgiving today, Master. I hope the day leaves room for good food, gratitude, and a little rest."
                     : "Thanksgiving is tomorrow, Master. Shall we leave room for good food, gratitude, and a little rest?";
+            case "Martin Luther King Jr. Day", "Presidents' Day", "Memorial Day", "Juneteenth", "Labor Day", "Columbus Day", "Veterans Day" -> today
+                    ? "It is " + holiday + " today, Master. I hope the day gives us a thoughtful moment to reflect and enjoy a little rest."
+                    : holiday + " is tomorrow, Master. Shall we leave room for a thoughtful moment and some rest?";
             case "Mother's Day", "Father's Day" -> today
                     ? "It is " + holiday + " today, Master. A thoughtful message or small kindness would be a fitting way to mark it."
                     : holiday + " is tomorrow, Master. Shall we plan a thoughtful message or small kindness?";
@@ -105,6 +123,8 @@ public class HolidayService {
     }
     
     private static String checkDate(LocalDate date) {
+        String custom = customHolidayFor(date);
+        if (custom != null) return custom;
         int month = date.getMonthValue();
         int day = date.getDayOfMonth();
         
@@ -124,10 +144,30 @@ public class HolidayService {
         if (month == 12 && day == 31) return "New Year's Eve";
         
         // Dynamic US Holidays
+        if (date.equals(LocalDate.of(date.getYear(), Month.JANUARY, 1).with(TemporalAdjusters.dayOfWeekInMonth(3, DayOfWeek.MONDAY)))) return "Martin Luther King Jr. Day";
+        if (date.equals(LocalDate.of(date.getYear(), Month.FEBRUARY, 1).with(TemporalAdjusters.dayOfWeekInMonth(3, DayOfWeek.MONDAY)))) return "Presidents' Day";
+        if (date.equals(LocalDate.of(date.getYear(), Month.MAY, 1).with(TemporalAdjusters.lastInMonth(DayOfWeek.MONDAY)))) return "Memorial Day";
         if (date.equals(LocalDate.of(date.getYear(), Month.MAY, 1).with(TemporalAdjusters.dayOfWeekInMonth(2, DayOfWeek.SUNDAY)))) return "Mother's Day";
         if (date.equals(LocalDate.of(date.getYear(), Month.JUNE, 1).with(TemporalAdjusters.dayOfWeekInMonth(3, DayOfWeek.SUNDAY)))) return "Father's Day";
+        if (month == 6 && day == 19) return "Juneteenth";
+        if (date.equals(LocalDate.of(date.getYear(), Month.SEPTEMBER, 1).with(TemporalAdjusters.dayOfWeekInMonth(1, DayOfWeek.MONDAY)))) return "Labor Day";
+        if (date.equals(LocalDate.of(date.getYear(), Month.OCTOBER, 1).with(TemporalAdjusters.dayOfWeekInMonth(2, DayOfWeek.MONDAY)))) return "Columbus Day";
+        if (month == 11 && day == 11) return "Veterans Day";
         if (date.equals(LocalDate.of(date.getYear(), Month.NOVEMBER, 1).with(TemporalAdjusters.dayOfWeekInMonth(4, DayOfWeek.THURSDAY)))) return "Thanksgiving";
         
+        return null;
+    }
+
+    private static String customHolidayFor(LocalDate date) {
+        String configured = Settings.getHolidayCustomDates();
+        if (configured == null || configured.isBlank()) return null;
+        String wanted = String.format("%02d-%02d", date.getMonthValue(), date.getDayOfMonth());
+        for (String entry : configured.split(";")) {
+            String[] pair = entry.split("=", 2);
+            if (pair.length != 2 || !wanted.equals(pair[0].trim())) continue;
+            String name = pair[1].trim();
+            if (!name.isBlank() && name.length() <= 120) return name;
+        }
         return null;
     }
 }

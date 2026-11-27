@@ -30,6 +30,9 @@ public final class SessionRecoveryRegression {
         require("planned_windows_shutdown".equals(
                         SessionRecoveryService.classifyTermination("running", "planned_windows_shutdown", "")),
                 "explicit planned Windows shutdown intent was not classified as planned");
+        require("planned_ciel_shutdown".equals(
+                        SessionRecoveryService.classifyTermination("running", "planned_paired_update", "")),
+                "planned Ciel update was not classified as planned");
         require("interrupted_session".equals(
                         SessionRecoveryService.classifyTermination("running", "none", "")),
                 "unmarked running session was not retained as interrupted");

@@ -84,6 +84,13 @@ public class Settings {
     private static String ASTRONOMY_API_APPLICATION_ID;
     private static String ASTRONOMY_API_APPLICATION_SECRET;
     private static String IPGEOLOCATION_API_KEY;
+    private static String WEATHER_API_KEY;
+
+    private static boolean HOLIDAY_NOTIFICATIONS_ENABLED;
+    private static boolean HOLIDAY_NOTIFY_TODAY;
+    private static boolean HOLIDAY_NOTIFY_TOMORROW;
+    private static boolean HOLIDAY_INCLUDE_IDLE_REPORT;
+    private static String HOLIDAY_CUSTOM_DATES;
 
     private static String AZURE_SPEECH_KEY;
     private static String AZURE_SPEECH_REGION;
@@ -255,6 +262,19 @@ public class Settings {
             ASTRONOMY_API_APPLICATION_ID = props.getProperty("astronomy.api.applicationId", "");
             ASTRONOMY_API_APPLICATION_SECRET = props.getProperty("astronomy.api.applicationSecret", "");
             IPGEOLOCATION_API_KEY = props.getProperty("api.ipgeolocation.key", ""); 
+            WEATHER_API_KEY = firstNonBlank(System.getenv("WEATHER_API_KEY"),
+                    firstNonBlank(props.getProperty("weather.apiKey", ""),
+                            props.getProperty("WEATHER_API_KEY", "")));
+
+            HOLIDAY_NOTIFICATIONS_ENABLED = Boolean.parseBoolean(
+                    props.getProperty("ciel.holidays.enabled", "true"));
+            HOLIDAY_NOTIFY_TODAY = Boolean.parseBoolean(
+                    props.getProperty("ciel.holidays.notifyToday", "true"));
+            HOLIDAY_NOTIFY_TOMORROW = Boolean.parseBoolean(
+                    props.getProperty("ciel.holidays.notifyTomorrow", "true"));
+            HOLIDAY_INCLUDE_IDLE_REPORT = Boolean.parseBoolean(
+                    props.getProperty("ciel.holidays.includeInIdleReport", "true"));
+            HOLIDAY_CUSTOM_DATES = props.getProperty("ciel.holidays.customDates", "").trim();
 
             AZURE_SPEECH_KEY = props.getProperty("azure.speech.key", "");
             AZURE_SPEECH_REGION = props.getProperty("azure.speech.region", "");
@@ -410,6 +430,12 @@ public class Settings {
     public static String getAstronomyApiApplicationId() { return ASTRONOMY_API_APPLICATION_ID; }
     public static String getAstronomyApiApplicationSecret() { return ASTRONOMY_API_APPLICATION_SECRET; }
     public static String getIpGeolocationApiKey() { return IPGEOLOCATION_API_KEY; }
+    public static String getWeatherApiKey() { return WEATHER_API_KEY; }
+    public static boolean areHolidayNotificationsEnabled() { return HOLIDAY_NOTIFICATIONS_ENABLED; }
+    public static boolean isHolidayNotifyTodayEnabled() { return HOLIDAY_NOTIFY_TODAY; }
+    public static boolean isHolidayNotifyTomorrowEnabled() { return HOLIDAY_NOTIFY_TOMORROW; }
+    public static boolean isHolidayIncludedInIdleReport() { return HOLIDAY_INCLUDE_IDLE_REPORT; }
+    public static String getHolidayCustomDates() { return HOLIDAY_CUSTOM_DATES; }
     public static String getAzureSpeechKey() { return AZURE_SPEECH_KEY; }
     public static String getAzureSpeechRegion() { return AZURE_SPEECH_REGION; }
     public static String getAzureVoiceName() { return AZURE_VOICE_NAME; }
